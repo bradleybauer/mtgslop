@@ -38,7 +38,7 @@ const app = new PIXI.Application();
   for (let i=0;i<200;i++) createCard(i+1, (i%20)*SPACING_X, Math.floor(i/20)*SPACING_Y);
 
   // Groups container + visuals
-  interface GroupVisual { id:number; gfx: PIXI.Graphics; items: Set<number>; w:number; h:number; handle: PIXI.Graphics; }
+  interface GroupVisual { id:number; gfx: PIXI.Graphics; items: Set<number>; w:number; h:number; handle: PIXI.Graphics; header: PIXI.Graphics; label: PIXI.Text; name: string; }
   const groupLayer = new PIXI.Container();
   const cardLayer = new PIXI.Container();
   world.addChild(groupLayer);
@@ -48,14 +48,20 @@ const app = new PIXI.Application();
   groupLayer.zIndex = 0; cardLayer.zIndex = 10;
   const groups = new Map<number, GroupVisual>();
 
+  const HEADER_H = 28;
   function createGroupVisual(id:number, x:number, y:number, w=300, h=300) {
-    const gfx = new PIXI.Graphics();
-    gfx.x = x; gfx.y = y; gfx.zIndex = 1; gfx.eventMode='static'; gfx.cursor='pointer';
+  const gfx = new PIXI.Graphics();
+  gfx.x = x; gfx.y = y; gfx.zIndex = 1; gfx.eventMode='static'; // body interactive to allow marquee start
+    const header = new PIXI.Graphics(); header.eventMode='static'; header.cursor='move';
     const handle = new PIXI.Graphics(); handle.eventMode='static'; handle.cursor='nwse-resize';
-    const gv: GroupVisual = { id, gfx, items: new Set(), w, h, handle };
+  const label = new PIXI.Text({ text: `Group ${id}`, style: { fill: 0xffffff, fontSize: 14 } });
+  label.eventMode = 'none'; // let header receive the events
+    const gv: GroupVisual = { id, gfx, items: new Set(), w, h, handle, header, label, name: `Group ${id}` };
     drawGroup(gv, false);
     groupLayer.addChild(gfx);
     gfx.addChild(handle);
+    gfx.addChild(header);
+    gfx.addChild(label);
     groups.set(id, gv);
     attachGroupInteractions(gv);
     attachResizeHandle(gv);
@@ -63,13 +69,21 @@ const app = new PIXI.Application();
   }
 
   function drawGroup(gv: GroupVisual, selected:boolean) {
-    const {gfx,w,h,handle} = gv;
+    const {gfx,w,h,handle,header,label} = gv;
     gfx.clear();
     gfx.roundRect(0,0,w,h,12).stroke({color: selected?0x33bbff:0x555555,width:selected?4:2}).fill({color:0x222222, alpha:0.25});
     handle.clear();
     handle.rect(0,0,14,14).fill({color:0xffffff}).stroke({color:selected?0x33bbff:0x555555,width:1});
     handle.x = w-14; handle.y = h-14;
-    // (single layout mode: grid) optional indicator removed
+    // header band
+    header.clear();
+  header.clear();
+  header.rect(0,0,w,HEADER_H).fill({color: selected?0x226688:0x333333}).stroke({color: selected?0x33bbff:0x555555,width:1});
+    header.x = 0; header.y = 0;
+  // ensure hitArea covers full header (esp. after resize)
+  header.hitArea = new PIXI.Rectangle(0,0,w,HEADER_H);
+    label.text = gv.name;
+    label.x = 8; label.y = 6; // within header
   }
 
   function attachResizeHandle(gv: GroupVisual) {
@@ -82,11 +96,22 @@ const app = new PIXI.Application();
 
   function attachGroupInteractions(gv: GroupVisual) {
     let drag=false; let dx=0; let dy=0; const g=gv.gfx; let memberOffsets: {sprite:CardSprite, ox:number, oy:number}[] = [];
-    g.on('pointerdown', e=> {
+  gv.header.eventMode = 'static';
+  gv.header.cursor = 'move';
+    gv.header.on('pointerdown', e=> {
+      e.stopPropagation(); // prevent body/stage marquee
       if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id)) SelectionStore.selectOnlyGroup(gv.id); else if (e.shiftKey) SelectionStore.toggleGroup(gv.id);
       const local = world.toLocal(e.global);
       drag = true; dx = local.x - g.x; dy = local.y - g.y;
       memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox: s.x - g.x, oy: s.y - g.y}: null; }).filter(Boolean) as any;
+    });
+    // Body pointerdown (only if not clicking a card) should start marquee selection.
+    g.on('pointerdown', e=> {
+      // If clicking header, header handler already ran (with stopPropagation). If clicking a card, card handler will run first and we can ignore here because selection store changes.
+      // Start marquee only if click is on empty body area (no card hit). We approximate by checking e.target === g.
+      if (e.target !== g) return;
+      if (drag) return; // header already initiating drag
+      startMarquee(e.global, e.shiftKey);
     });
     app.stage.on('pointermove', e=> { if (!drag) return; const local = world.toLocal(e.global); g.x = local.x - dx; g.y = local.y - dy; memberOffsets.forEach(m=> { m.sprite.x = g.x + m.ox; m.sprite.y = g.y + m.oy; }); });
     app.stage.on('pointerup', ()=> { if (!drag) return; drag=false; g.x = snap(g.x); g.y = snap(g.y); memberOffsets.forEach(m=> { m.sprite.x = snap(m.sprite.x); m.sprite.y = snap(m.sprite.y); }); });
@@ -209,16 +234,16 @@ const app = new PIXI.Application();
     const items = [...gv.items].map(id=> sprites.find(s=> s.__id===id)).filter(Boolean) as CardSprite[];
     if (!items.length) return;
     const usableW = Math.max(1, gv.w - PAD*2);
-    const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
+  const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
     items.forEach((s,i)=> {
       const col=i%cols; const row=Math.floor(i/cols);
-      const tx = gv.gfx.x + PAD + col*(CARD_W+GAP_X);
-      const ty = gv.gfx.y + PAD + row*(CARD_H+GAP_Y);
+  const tx = gv.gfx.x + PAD + col*(CARD_W+GAP_X);
+  const ty = gv.gfx.y + HEADER_H + PAD + row*(CARD_H+GAP_Y);
       // snap explicitly (should already be aligned, but defensive if group x isn't snapped yet)
       s.x = snap(tx);
       s.y = snap(ty);
     });
-    const rows = Math.ceil(items.length/cols); const neededH = PAD*2 + rows*CARD_H + (rows-1)*GAP_Y; if (neededH>gv.h) { gv.h = neededH; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); }
+  const rows = Math.ceil(items.length/cols); const neededH = HEADER_H + PAD*2 + rows*CARD_H + (rows-1)*GAP_Y; if (neededH>gv.h) { gv.h = neededH; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); }
     items.forEach(s=> redrawCardSprite(s, SelectionStore.state.cardIds.has(s.__id)));
   }
 
