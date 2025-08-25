@@ -48,6 +48,77 @@ const app = new PIXI.Application();
   groupLayer.zIndex = 0; cardLayer.zIndex = 10;
   const groups = new Map<number, GroupVisual>();
 
+  // Forward declarations for help overlay (defined later)
+  let helpEl: HTMLDivElement | null = null; let helpVisible=false;
+  const HELP_SECTIONS = [
+    { title:'Navigation', items:[
+      ['Pan','Space + Drag / Middle Mouse Drag'],
+      ['Zoom','Wheel (cursor focus)'],
+      ['Zoom In / Out','Ctrl + (+ / -)'],
+      ['Fit All','F'],
+      ['Fit Selection','Shift+F or Z'],
+      ['Reset Zoom','Ctrl+0']
+    ]},
+    { title:'Selection', items:[
+      ['Single','Click'],
+      ['Add / Toggle','Shift+Click'],
+      ['Marquee','Drag empty space (Shift = additive)'],
+      ['Select All / Clear','Ctrl+A / Esc']
+    ]},
+    { title:'Cards', items:[
+      ['Move','Drag'],
+      ['Nudge','Arrow Keys (Shift = 5×)']
+    ]},
+    { title:'Groups', items:[
+      ['Create','G (around selection) or empty at center'],
+      ['Move','Drag header'],
+      ['Resize','Drag bottom-right handle'],
+      ['Rename','Double-click header or F2'],
+      ['Delete','Del (cards or groups)'],
+      ['Layout','Grid auto-layout']
+    ]},
+    { title:'Help & Misc', items:[
+      ['Toggle Help','H or ?'],
+      ['Help FAB','Hover / click “?” bottom-right'],
+      ['Recover View','Press F if you get lost']
+    ]}
+  ];
+  function buildHelpHTML(){
+    return `<div class="help-root">${HELP_SECTIONS.map(sec=> `
+      <section><h2>${sec.title}</h2><ul>${sec.items.map(i=> `<li><b>${i[0]}:</b> <span>${i[1]}</span></li>`).join('')}</ul></section>`).join('')}
+      <section class="tips"><h2>Tips</h2><ul><li>Alt disables snapping temporarily.</li><li>Shift while marquee adds to selection.</li><li>Use Fit Selection (Z) to zoom to current work.</li></ul></section>
+    </div>`;
+  }
+  function ensureHelpStyles(){ if (document.getElementById('help-style')) return; const style=document.createElement('style'); style.id='help-style'; style.textContent=`.help-root{font:12px/1.5 "Inter",system-ui,monospace;padding:2px 0;} .help-root h2{margin:12px 0 4px;font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:#6fb9ff;} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 4px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.06);} .help-root li:last-child{border-bottom:none;} .help-root b{color:#fff;font-weight:600;} .help-root span{color:#ddd;} .help-root section{margin-bottom:6px;} .help-root .tips ul li{border-bottom:none;} #help-fab-panel .help-root{padding:0;} #help-fab-panel{scrollbar-width:thin;} #help-fab-panel::-webkit-scrollbar{width:8px;} #help-fab-panel::-webkit-scrollbar-track{background:#141b22;} #help-fab-panel::-webkit-scrollbar-thumb{background:#2f4f62;border-radius:4px;} `; document.head.appendChild(style); }
+  function toggleHelp() { if (!helpEl) createHelp(); helpVisible=!helpVisible; if (helpEl) helpEl.style.display = helpVisible? 'block':'none'; }
+  function createHelp() { ensureHelpStyles(); helpEl = document.createElement('div'); helpEl.style.cssText='position:fixed;top:10px;right:10px;width:460px;max-height:70vh;background:#111c;padding:16px 18px;font:12px/1.5 "Inter",system-ui,monospace;color:#eee;border:1px solid #235;border-radius:10px;z-index:9998;overflow:auto;box-shadow:0 4px 14px rgba(0,0,0,0.55);'; helpEl.innerHTML = buildHelpHTML(); document.body.appendChild(helpEl); }
+
+  // Floating help fab (bottom-right hover to expand)
+  function initHelpFab() {
+    const fab = document.createElement('div');
+    fab.id='help-fab';
+    fab.style.cssText='position:fixed;bottom:14px;right:14px;width:44px;height:44px;border-radius:50%;background:#264b66;color:#fff;font:24px/44px sans-serif;text-align:center;cursor:help;user-select:none;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,0.4);';
+    fab.textContent='?';
+    fab.title='Help';
+    const panel = document.createElement('div');
+    panel.id='help-fab-panel';
+  panel.style.cssText='position:absolute;bottom:52px;right:0;width:460px;max-height:60vh;display:none;background:#111c;padding:16px 18px;font:12px/1.5 "Inter",system-ui,monospace;color:#eee;border:1px solid #235;border-radius:10px;overflow:auto;box-shadow:0 4px 14px rgba(0,0,0,0.55);';
+    ensureHelpStyles(); panel.innerHTML = buildHelpHTML();
+    fab.appendChild(panel);
+    let hover=false; let hideTimer:any=null;
+    function show(){ panel.style.display='block'; }
+    function scheduleHide(){ if (hideTimer) clearTimeout(hideTimer); hideTimer = setTimeout(()=> { if(!hover) panel.style.display='none'; }, 250); }
+    fab.addEventListener('mouseenter', ()=> { hover=true; show(); });
+    fab.addEventListener('mouseleave', ()=> { hover=false; scheduleHide(); });
+    panel.addEventListener('mouseenter', ()=> { hover=true; show(); });
+    panel.addEventListener('mouseleave', ()=> { hover=false; scheduleHide(); });
+    // Click toggles pin
+    let pinned=false;
+    fab.addEventListener('click', (e)=> { e.stopPropagation(); pinned=!pinned; if (pinned) { show(); panel.style.display='block'; } else { hover=false; scheduleHide(); } });
+    document.body.appendChild(fab);
+  }
+  initHelpFab();
+
   const HEADER_H = 28;
   function createGroupVisual(id:number, x:number, y:number, w=300, h=300) {
   const gfx = new PIXI.Graphics();
@@ -86,6 +157,47 @@ const app = new PIXI.Application();
     label.x = 8; label.y = 6; // within header
   }
 
+  // Inline group renaming
+  function startGroupRename(gv: GroupVisual) {
+    // Avoid multiple editors
+    if (document.getElementById(`group-rename-${gv.id}`)) return;
+    const input = document.createElement('input');
+    input.id = `group-rename-${gv.id}`;
+    input.type = 'text';
+    input.value = gv.name;
+    input.maxLength = 64;
+    // Position over header using screen coordinates
+    const bounds = app.renderer.canvas.getBoundingClientRect();
+    // Transform group header position to screen
+    const global = new PIXI.Point(gv.gfx.x, gv.gfx.y);
+    const pt = world.toGlobal(global);
+    const scale = world.scale.x; // approximate uniform scale
+    const headerHeight = HEADER_H * scale;
+    input.style.position = 'fixed';
+    input.style.left = `${bounds.left + pt.x + 6}px`;
+    input.style.top = `${bounds.top + pt.y + 4}px`;
+    input.style.zIndex = '10000';
+    input.style.padding = '3px 6px';
+    input.style.font = '12px "Inter", system-ui, sans-serif';
+    input.style.color = '#fff';
+    input.style.background = '#1c2a33';
+    input.style.border = '1px solid #3d6175';
+    input.style.borderRadius = '4px';
+    input.style.outline = 'none';
+    input.style.width = `${Math.max(80, Math.min(240, gv.w * scale - 20))}px`;
+    document.body.appendChild(input);
+    input.select();
+    function commit(save:boolean) {
+      if (save) { const val = input.value.trim(); if (val) { gv.name = val; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); } }
+      input.remove();
+    }
+    input.addEventListener('keydown', ev=> {
+      if (ev.key==='Enter') { commit(true); }
+      else if (ev.key==='Escape') { commit(false); }
+    });
+    input.addEventListener('blur', ()=> commit(true));
+  }
+
   function attachResizeHandle(gv: GroupVisual) {
     const h = gv.handle; let resizing=false; let startW=0; let startH=0; let anchorX=0; let anchorY=0;
     h.on('pointerdown', e=> { e.stopPropagation(); const local = world.toLocal(e.global); resizing = true; startW = gv.w; startH = gv.h; anchorX = local.x; anchorY = local.y; });
@@ -105,6 +217,9 @@ const app = new PIXI.Application();
       drag = true; dx = local.x - g.x; dy = local.y - g.y;
       memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox: s.x - g.x, oy: s.y - g.y}: null; }).filter(Boolean) as any;
     });
+    gv.header.on('pointertap', (e:any)=> { if (e.detail===2) { // double click
+      startGroupRename(gv);
+    }});
     // Body pointerdown (only if not clicking a card) should start marquee selection.
     g.on('pointerdown', e=> {
       // If clicking header, header handler already ran (with stopPropagation). If clicking a card, card handler will run first and we can ignore here because selection store changes.
@@ -130,6 +245,7 @@ const app = new PIXI.Application();
   }
 
   window.addEventListener('keydown', e=> {
+  // (Alt previously disabled snapping; feature removed)
     if (e.key==='g' || e.key==='G') {
       const id = groups.size ? Math.max(...groups.keys())+1 : 1;
       const b = computeSelectionBounds();
@@ -147,7 +263,37 @@ const app = new PIXI.Application();
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       }
     }
-  // Removed layout mode toggle (only grid layout exists now)
+    // Removed layout mode toggle (only grid layout exists now)
+
+    // Select all (Ctrl+A)
+    if ((e.key==='a' || e.key==='A') && (e.ctrlKey||e.metaKey)) { e.preventDefault(); SelectionStore.replace({ cardIds: new Set(sprites.map(s=> s.__id)), groupIds: new Set() }); }
+    // Clear selection (Esc)
+    if (e.key==='Escape') { SelectionStore.clear(); }
+  // Duplicate removed
+    // Rename single selected group (F2) inline
+    if (e.key==='F2') {
+      const gids = SelectionStore.getGroups(); if (gids.length===1) { const gv = groups.get(gids[0]); if (gv) startGroupRename(gv); }
+    }
+    // Nudge selected cards by arrow keys (Shift = larger step)
+    const ARROW_KEYS = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
+    if (ARROW_KEYS.includes(e.key)) {
+      const step = (e.shiftKey? GRID_SIZE*5 : GRID_SIZE);
+      const dx = e.key==='ArrowLeft'? -step : e.key==='ArrowRight'? step : 0;
+      const dy = e.key==='ArrowUp'? -step : e.key==='ArrowDown'? step : 0;
+      if (dx||dy) {
+        e.preventDefault();
+        SelectionStore.getCards().forEach(id=> { const s = sprites.find(sp=> sp.__id===id); if (!s) return; s.x += dx; s.y += dy; assignCardToGroupByPosition(s); });
+      }
+    }
+    // Zoom shortcuts (+ / - / 0 reset, F fit all, Shift+F fit selection, Z fit selection)
+    if ((e.key==='+' || e.key==='=' ) && (e.ctrlKey||e.metaKey)) { e.preventDefault(); keyboardZoom(1.1); }
+    if (e.key==='-' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); keyboardZoom(0.9); }
+    if (e.key==='0' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); resetZoom(); }
+    if (e.key==='f' || e.key==='F') { if (e.shiftKey) fitSelection(); else fitAll(); }
+    if (e.key==='z' || e.key==='Z') { fitSelection(); }
+    // Help overlay toggle (H or ?)
+    if (e.key==='h' || e.key==='H' || e.key==='?') { toggleHelp(); }
+  // (Alt snap override removed)
     if (e.key==='Delete') {
       const cardIds = SelectionStore.getCards();
       const groupIds = SelectionStore.getGroups();
@@ -296,16 +442,43 @@ const app = new PIXI.Application();
 
   // (Old marquee code removed; unified handlers added later.)
 
-  // Basic wheel zoom centered at pointer
-  window.addEventListener('wheel', (e) => {
-    const scaleFactor = e.deltaY < 0 ? 1.1 : 0.9;
-    const mousePos = new PIXI.Point(app.renderer.events.pointer.global.x, app.renderer.events.pointer.global.y);
-    const worldPosBefore = world.toLocal(mousePos);
-    world.scale.x *= scaleFactor; world.scale.y *= scaleFactor;
-    const worldPosAfter = world.toLocal(mousePos);
-    world.position.x += (worldPosAfter.x - worldPosBefore.x) * world.scale.x;
-    world.position.y += (worldPosAfter.y - worldPosBefore.y) * world.scale.y;
-  });
+  // Zoom helpers (declared early so keyboard shortcuts can reference)
+  function applyZoom(scaleFactor:number, centerGlobal: PIXI.Point) {
+    const prevScale = world.scale.x;
+    let newScale = prevScale * scaleFactor; newScale = Math.min(5, Math.max(0.1, newScale));
+    scaleFactor = newScale / prevScale;
+    const before = world.toLocal(centerGlobal);
+    world.scale.set(newScale);
+    const after = world.toLocal(centerGlobal);
+    world.position.x += (after.x - before.x) * world.scale.x;
+    world.position.y += (after.y - before.y) * world.scale.y;
+  }
+  function keyboardZoom(f:number) { const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2); applyZoom(f, center); }
+  function resetZoom() { const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2); world.scale.set(1); world.position.set(0,0); applyZoom(1, center); }
+  function computeBoundsFromSprites(list:CardSprite[]) { if (!list.length) return null; const rects = list.map(s=> ({x:s.x,y:s.y,w:100,h:140})); return mergeRects(rects); }
+  function mergeRects(rects:{x:number,y:number,w:number,h:number}[]) {
+    const minX = Math.min(...rects.map(r=> r.x));
+    const minY = Math.min(...rects.map(r=> r.y));
+    const maxX = Math.max(...rects.map(r=> r.x + r.w));
+    const maxY = Math.max(...rects.map(r=> r.y + r.h));
+    return {x:minX,y:minY,w:maxX-minX,h:maxY-minY};
+  }
+  function computeAllBounds() { return computeBoundsFromSprites(sprites); }
+  function fitBounds(b:{x:number,y:number,w:number,h:number}|null) { if (!b) return; const margin = 40; const vw = window.innerWidth - margin*2; const vh = window.innerHeight - margin*2; const sx = vw / b.w; const sy = vh / b.h; const s = Math.min(5, Math.max(0.05, Math.min(sx, sy))); world.scale.set(s); world.position.x = (window.innerWidth/2) - (b.x + b.w/2)*s; world.position.y = (window.innerHeight/2) - (b.y + b.h/2)*s; }
+  function computeSelectionOrGroupsBounds() {
+    const ids = SelectionStore.getCards();
+    const gids = SelectionStore.getGroups();
+    const cardSprites = sprites.filter(s=> ids.includes(s.__id));
+    const groupSprites = gids.map(id=> groups.get(id)).filter(Boolean) as GroupVisual[];
+    if (!cardSprites.length && !groupSprites.length) return null;
+    const rects: {x:number,y:number,w:number,h:number}[] = [];
+    cardSprites.forEach(s=> rects.push({x:s.x,y:s.y,w:100,h:140}));
+    groupSprites.forEach(gv=> rects.push({x:gv.gfx.x,y:gv.gfx.y,w:gv.w,h:gv.h}));
+    return mergeRects(rects);
+  }
+  function fitAll() { fitBounds(computeAllBounds()); }
+  function fitSelection() { const b = computeSelectionOrGroupsBounds(); if (b) fitBounds(b); }
+  window.addEventListener('wheel', (e) => { const mousePos = new PIXI.Point(app.renderer.events.pointer.global.x, app.renderer.events.pointer.global.y); applyZoom(e.deltaY < 0 ? 1.1 : 0.9, mousePos); }, { passive: true });
 
   // Space-drag to pan
   let panning = false; let lastX=0; let lastY=0;
@@ -314,9 +487,14 @@ const app = new PIXI.Application();
   app.stage.eventMode='static';
   app.stage.on('pointerdown', e => { if (panning) { lastX = e.global.x; lastY = e.global.y; }});
   app.stage.on('pointermove', e => { if (panning && e.buttons===1) { const dx = e.global.x - lastX; const dy = e.global.y - lastY; world.position.x += dx; world.position.y += dy; lastX = e.global.x; lastY = e.global.y; }});
+  // Middle mouse drag pan support (one-time listeners)
+  app.canvas.addEventListener('pointerdown', ev => { if ((ev as PointerEvent).button===1) { panning = true; lastX = ev.clientX; lastY = ev.clientY; document.body.style.cursor='grabbing'; } });
+  app.canvas.addEventListener('pointerup', ev => { if ((ev as PointerEvent).button===1) { panning = false; document.body.style.cursor='default'; } });
+  app.canvas.addEventListener('contextmenu', ev => { ev.preventDefault(); });
 
   // Deselect when clicking empty space
-  app.stage.on('pointerdown', e => {
-    if (e.target === app.stage && !panning) SelectionStore.clear();
-  });
+  app.stage.on('pointerdown', e => { if (e.target === app.stage && !panning) SelectionStore.clear(); });
+
+  // Debug: log card count after seeding
+  console.log('[mtgcanvas] Seeded cards:', sprites.length);
 })();
