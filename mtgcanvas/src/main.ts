@@ -32,8 +32,10 @@ const app = new PIXI.Application();
     sprites.push(g);
   }
 
-  // Dummy in-memory seed (no DB) so we always see cards
-  for (let i=0;i<200;i++) createCard(i+1, (i%20)*110, Math.floor(i/20)*150);
+  // Dummy in-memory seed (no DB) so we always see cards; align to grid (spacing = card size + grid)
+  const SPACING_X = 100 + GRID_SIZE; // 120 (multiple of 20)
+  const SPACING_Y = 140 + GRID_SIZE; // 160 (multiple of 20)
+  for (let i=0;i<200;i++) createCard(i+1, (i%20)*SPACING_X, Math.floor(i/20)*SPACING_Y);
 
   // Groups container + visuals
   interface GroupVisual { id:number; gfx: PIXI.Graphics; items: Set<number>; w:number; h:number; handle: PIXI.Graphics; }
@@ -67,12 +69,13 @@ const app = new PIXI.Application();
     handle.clear();
     handle.rect(0,0,14,14).fill({color:0xffffff}).stroke({color:selected?0x33bbff:0x555555,width:1});
     handle.x = w-14; handle.y = h-14;
+    // (single layout mode: grid) optional indicator removed
   }
 
   function attachResizeHandle(gv: GroupVisual) {
     const h = gv.handle; let resizing=false; let startW=0; let startH=0; let anchorX=0; let anchorY=0;
     h.on('pointerdown', e=> { e.stopPropagation(); const local = world.toLocal(e.global); resizing = true; startW = gv.w; startH = gv.h; anchorX = local.x; anchorY = local.y; });
-    app.stage.on('pointermove', e=> { if (!resizing) return; const local = world.toLocal(e.global); const dw = local.x - anchorX; const dh = local.y - anchorY; gv.w = Math.max(60, snap(startW + dw)); gv.h = Math.max(60, snap(startH + dh)); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); });
+  app.stage.on('pointermove', e=> { if (!resizing) return; const local = world.toLocal(e.global); const dw = local.x - anchorX; const dh = local.y - anchorY; gv.w = Math.max(120, snap(startW + dw)); gv.h = Math.max(160, snap(startH + dh)); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); layoutGroup(gv); });
     function endResize() { if (resizing) resizing=false; }
     app.stage.on('pointerup', endResize); app.stage.on('pointerupoutside', endResize);
   }
@@ -109,19 +112,24 @@ const app = new PIXI.Application();
         const gv = createGroupVisual(id, b.minX-20, b.minY-20, (b.maxX-b.minX)+40, (b.maxY-b.minY)+40);
         gv.items = new Set(SelectionStore.getCards());
         gv.items.forEach(cid=> { const s = sprites.find(sp=> sp.__id===cid); if (s) s.__groupId = gv.id; });
+        layoutGroup(gv);
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       } else {
         const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2);
         const worldCenter = world.toLocal(center);
-        createGroupVisual(id, snap(worldCenter.x - 150), snap(worldCenter.y - 150), 300, 300);
+        const gv = createGroupVisual(id, snap(worldCenter.x - 150), snap(worldCenter.y - 150), 300, 300);
+        layoutGroup(gv);
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       }
     }
+  // Removed layout mode toggle (only grid layout exists now)
     if (e.key==='Delete') {
       const cardIds = SelectionStore.getCards();
       const groupIds = SelectionStore.getGroups();
       if (cardIds.length) {
-        cardIds.forEach(id=> { const idx = sprites.findIndex(s=> s.__id===id); if (idx>=0) { const s = sprites[idx]; const gid = s.__groupId; if (gid) { const gv = groups.get(gid); gv && gv.items.delete(s.__id); } s.destroy(); sprites.splice(idx,1); } });
+        const touchedGroups = new Set<number>();
+        cardIds.forEach(id=> { const idx = sprites.findIndex(s=> s.__id===id); if (idx>=0) { const s = sprites[idx]; const gid = s.__groupId; if (gid) { const gv = groups.get(gid); gv && gv.items.delete(s.__id); touchedGroups.add(gid); } s.destroy(); sprites.splice(idx,1); } });
+        touchedGroups.forEach(gid=> { const gv = groups.get(gid); if (gv) layoutGroup(gv); });
       }
       if (groupIds.length) {
         groupIds.forEach(id=> { const gv = groups.get(id); if (gv) { gv.gfx.destroy(); groups.delete(id);} });
@@ -183,11 +191,35 @@ const app = new PIXI.Application();
       if (cx >= gv.gfx.x && cx <= gv.gfx.x + gv.w && cy >= gv.gfx.y && cy <= gv.gfx.y + gv.h) { target = gv; break; }
     }
     if (target) {
-      if (s.__groupId && s.__groupId !== target.id) { const old = groups.get(s.__groupId); old && old.items.delete(s.__id); }
-      s.__groupId = target.id; target.items.add(s.__id);
+      let layoutOld: GroupVisual | undefined;
+      if (s.__groupId && s.__groupId !== target.id) { const old = groups.get(s.__groupId); if (old) { old.items.delete(s.__id); layoutOld = old; } }
+      s.__groupId = target.id; target.items.add(s.__id); layoutGroup(target); if (layoutOld) layoutGroup(layoutOld);
     } else if (s.__groupId) {
-      const old = groups.get(s.__groupId); old && old.items.delete(s.__id); s.__groupId = undefined;
+      const old = groups.get(s.__groupId); old && old.items.delete(s.__id); s.__groupId = undefined; if (old) layoutGroup(old);
     }
+  }
+
+  // Layout helpers
+  // Layout metrics aligned to grid so auto-layout preserves alignment
+  const CARD_W = 100, CARD_H = 140; // already multiples of GRID_SIZE (20)
+  const PAD = GRID_SIZE;            // 20
+  const GAP_X = GRID_SIZE;          // 20
+  const GAP_Y = GRID_SIZE;          // 20
+  function layoutGroup(gv: GroupVisual) {
+    const items = [...gv.items].map(id=> sprites.find(s=> s.__id===id)).filter(Boolean) as CardSprite[];
+    if (!items.length) return;
+    const usableW = Math.max(1, gv.w - PAD*2);
+    const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
+    items.forEach((s,i)=> {
+      const col=i%cols; const row=Math.floor(i/cols);
+      const tx = gv.gfx.x + PAD + col*(CARD_W+GAP_X);
+      const ty = gv.gfx.y + PAD + row*(CARD_H+GAP_Y);
+      // snap explicitly (should already be aligned, but defensive if group x isn't snapped yet)
+      s.x = snap(tx);
+      s.y = snap(ty);
+    });
+    const rows = Math.ceil(items.length/cols); const neededH = PAD*2 + rows*CARD_H + (rows-1)*GAP_Y; if (neededH>gv.h) { gv.h = neededH; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); }
+    items.forEach(s=> redrawCardSprite(s, SelectionStore.state.cardIds.has(s.__id)));
   }
 
   // Unified marquee + drag/resize state handlers
