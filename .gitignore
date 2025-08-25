@@ -1,0 +1,92 @@
+# Root ignores for MTGCards project
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.build/
+.dist/
+
+# Virtual environments
+.env
+.venv
+venv/
+.env*/
+
+# Jupyter / data exploration
+.ipynb_checkpoints/
+
+# Local data dumps (keep large source out of repo if desired)
+# Scryfall full data dump (adjust if you want it tracked)
+all.json
+*.ndjson
+
+# Card image caches
+card_images/
+image_cache/
+*.webp
+*.jpg
+*.png
+!mtgcanvas/src-tauri/icons/icon.png
+
+# Logs & temp
+*.log
+logs/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.tmp/
+.tmp*
+
+# Node / frontend
+mtgcanvas/node_modules/
+mtgcanvas/dist/
+mtgcanvas/.vite/
+mtgcanvas/.cache/
+
+# Build outputs & lock artifacts you might regenerate
+mtgcanvas/src-tauri/target/
+mtgcanvas/src-tauri/gen/
+
+# SQLite database (local state)
+mtgcanvas/mtgcanvas.sqlite*
+
+# Tauri updater / bundle output
+mtgcanvas/src-tauri/bundled/
+
+# Rust build info
+*.rlib
+*.rmeta
+Cargo.lock
+# (If you want to commit Cargo.lock for application reproducibility, remove the above line.)
+
+# IDE / Editor
+.vscode/
+.idea/
+*.iml
+
+# Coverage / test artifacts
+coverage/
+*.lcov
+
+# Misc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.env.local
+.env.production
+.env.development
+
+# Ignore large binary blobs just in case
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+

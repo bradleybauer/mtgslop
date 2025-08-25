@@ -1,0 +1,77 @@
+(
+(-t:instant)
+(-t:sorcery)
+(
+(o:"gain")
+(-o:"gained")
+(-o:"gain life")
+(-o:"gain control")
+(-o:"end of turn")
+)
+or
+(
+(-o:"end of turn")
+(-o:"can have")
+(-o:"didn't have")
+(-o:"have total")
+(-o:"can't have")
+(-o:"you have")
+(-o:"may have")
+(o:"have")
+(-o:"have no")
+(-o:"have a")
+)
+)
+legal:commander
+id:simic
+
+(
+(-t:instant)
+(-t:sorcery)
+(-o:"bands")
+(-o:"end of turn")
+(-o:"can have")
+(-o:"didn't have")
+(-o:"have total")
+(-o:"can't have")
+(-o:"you have")
+(-o:"may have")
+(o:"have")
+(-o:"have no")
+(-o:"have a")
+)
+legal:commander
+id:simic
+
+
+Indestructible
+Deathtouch
+Poisonous
+Double Strike
+First Strike
+Flying
+Haste
+Hexproof
+Reach
+Intimidate
+forestwalk
+islandwalk
+Protection
+Trample
+Vigilance
+Ward
+Shadow
+Horsemanship
+Affinity
+Level Up
+Evolve
+Myriad
+Improvise
+Flash
+Shroud
+Convoke
+Retrace
+
+
+
+"(-t:instant) (-t:sorcery) (-o:/bands/) (-o:/end of turn/) (-o:/can have/) (-o:/didn't have/) (-o:/have total/) (-o:/can't have/) (-o:/you have/) (-o:/may have/) (o:/have/) (-o:/have no/) (-o:/have a/)  legal:commander id:simic"

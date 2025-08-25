@@ -1,0 +1,1 @@
+-t:instant -t:sorcery -o:/bands|end of turn|can have|didn't have|have total|can't have|you have|may have|have no|have a/ o:/have/ legal:commander id:simic
