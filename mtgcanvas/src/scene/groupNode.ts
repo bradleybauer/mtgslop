@@ -47,13 +47,14 @@ const FONT_FAMILY = 'Inter, system-ui, sans-serif';
 // Vertical placement is computed per text based on its font size for precise centering.
 
 // Layout constants for cards inside a group
-const GRID_SIZE = 20;
+const GRID_SIZE = 8; // match reduced global grid for consistent snapping when resizing groups
 const CARD_W = 100, CARD_H = 140;
 const PAD_X = 16;      // inner left/right
 const PAD_Y = 12;      // inner top below header
 const PAD_BOTTOM_EXTRA = 8; // extra bottom padding so cards don't touch frame
-const GAP_X = 6;       // even tighter horizontal space between cards
-const GAP_Y = 6;       // even tighter vertical space between cards
+// Target: at zoom 2.69 screen gap ~8px -> world gap ≈ 8 / 2.69 ≈ 2.97 -> use 3
+const GAP_X = 3;       // ultra-tight horizontal space (≈8px at scale 2.69)
+const GAP_Y = 3;       // ultra-tight vertical space (≈8px at scale 2.69)
 function snap(v:number){ return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 
 // Muted header palette; can be recolored later via context menu.
@@ -165,8 +166,10 @@ export function layoutGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: (s
     const col = i % cols; const row = Math.floor(i / cols);
     const tx = gv.gfx.x + PAD_X + col * (CARD_W + GAP_X);
     const ty = gv.gfx.y + HEADER_HEIGHT + PAD_Y + row * (CARD_H + GAP_Y);
-    const nx = snap(tx); const ny = snap(ty);
-    if (s.x!==nx || s.y!==ny) { s.x = nx; s.y = ny; onMoved && onMoved(s); }
+  // Do NOT snap internal card placements to the global 20px grid; we need sub-grid precision
+  // so that tiny world gaps (e.g. 3) remain intact and scale predictably (≈8px at zoom 2.69).
+  const nx = tx; const ny = ty;
+  if (s.x!==nx || s.y!==ny) { s.x = nx; s.y = ny; onMoved && onMoved(s); }
   });
   const rows = Math.ceil(items.length / cols);
   const neededH = HEADER_HEIGHT + PAD_Y + rows * CARD_H + (rows-1) * GAP_Y + PAD_Y + PAD_BOTTOM_EXTRA;
@@ -246,6 +249,16 @@ export function updateGroupTextQuality(gv: GroupVisual, worldScale:number, dpr: 
   else if (cnt.texture?.baseTexture?.setResolution) cnt.texture.baseTexture.setResolution(target);
   if (pr.resolution !== undefined) { pr.resolution = target; pr.dirty = true; pr.updateText && pr.updateText(); }
   else if (pr.texture?.baseTexture?.setResolution) pr.texture.baseTexture.setResolution(target);
+  // Ensure mipmaps & filtering for text base textures (helps minified readability when zoomed out)
+  [lbl, cnt, pr].forEach(t=> {
+    try {
+      const bt:any = t.texture?.baseTexture; if (bt?.style) {
+        bt.style.mipmap = 'on';
+        bt.style.scaleMode = 'linear';
+        if (bt.style.anisotropicLevel !== undefined) bt.style.anisotropicLevel = 4;
+      }
+    } catch {}
+  });
   // After rebake widths may shift; re-truncate label if necessary.
   truncateLabelIfNeeded(gv);
 }

@@ -1,8 +1,10 @@
 // Large dataset loader for performance testing without touching persistence DB.
-// Attempts to fetch a card universe JSON (all.json) placed in public root (vite public/) or parent dir.
-// Spawns synthetic card instances using provided factory callback.
+// Attempts to fetch a card universe JSON (prefers legal.json then all.json) placed in public root (vite public/),
+// parent dir, or notes/ directory. Falls back to Tauri command. Spawns synthetic card instances using provided
+// factory callback.
 
 interface SpawnOptions { count: number; batchSize?: number; onProgress?: (done:number,total:number)=>void; }
+import { DATASET_PREFERRED, DATASET_FALLBACK, datasetCandidatePaths } from '../config/dataset';
 
 function parseUniverseText(txt:string): any[] {
   // Try standard JSON first
@@ -22,7 +24,8 @@ function parseUniverseText(txt:string): any[] {
 }
 
 export async function fetchCardUniverse(): Promise<any[]> {
-  const candidates = ['all.json','/all.json','../all.json','/mtgcanvas/all.json'];
+  // Order matters: prefer the (usually smaller) legal.json subset if present.
+  const candidates = datasetCandidatePaths();
   for (const url of candidates) {
     try {
       const res = await fetch(url, { cache: 'no-store' });
@@ -79,7 +82,7 @@ export async function fetchCardUniverse(): Promise<any[]> {
       }
     }
   } catch (e) { console.warn('[largeDataset] Tauri invoke load_universe failed', e); }
-  console.warn('[largeDataset] Unable to load all.json (place it in mtgcanvas/public/)');
+  console.warn(`[largeDataset] Unable to load ${DATASET_PREFERRED} or ${DATASET_FALLBACK} (place one in mtgcanvas/public/ or notes/)`);
   return [];
 }
 
@@ -87,7 +90,10 @@ export async function spawnLargeSet(cards: any[], create:(inst:{id:number,x:numb
   const total = Math.min(opts.count, cards.length || opts.count);
   const batchSize = opts.batchSize ?? 250;
   let produced = 0; let nextIdBase = Date.now();
-  const GRID_X = 120; const GRID_Y = 160; const cols = Math.ceil(Math.sqrt(total));
+  // Card dimensions 100x140; choose minimal gaps that preserve grid alignment for GRID_SIZE=8.
+  // Need (100+gapX) % 8 === 0 and (140+gapY) % 8 === 0 with smallest >0 -> gapX=4, gapY=4.
+  const GAP_X = 4, GAP_Y = 4; // keep in sync with main.ts logic
+  const GRID_X = 100 + GAP_X; const GRID_Y = 140 + GAP_Y; const cols = Math.ceil(Math.sqrt(total));
   return new Promise<void>(resolve=> {
     function step(){
       const start = performance.now();

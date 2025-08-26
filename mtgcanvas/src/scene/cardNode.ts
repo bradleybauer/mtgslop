@@ -1,5 +1,43 @@
 import * as PIXI from 'pixi.js';
 import { SelectionStore } from '../state/selectionStore';
+import { getCachedObjectURL } from '../services/imageCache';
+
+// --- Fast in-memory texture cache & loaders ---
+interface TexCacheEntry { tex: PIXI.Texture; level: number; }
+const textureCache = new Map<string, TexCacheEntry>(); // url -> texture
+const inflightTex = new Map<string, Promise<PIXI.Texture>>();
+
+export async function loadTextureFromCachedURL(url:string): Promise<PIXI.Texture> {
+  if (textureCache.has(url)) return textureCache.get(url)!.tex;
+  if (inflightTex.has(url)) return inflightTex.get(url)!;
+  const p = (async ()=> {
+    const objUrl = await getCachedObjectURL(url);
+    // Use createImageBitmap if available for off-main-thread decode
+    try {
+      const resp = await fetch(objUrl);
+      const blob = await resp.blob();
+  const canBitmap = typeof (window as any).createImageBitmap === 'function';
+  const bmp = await (canBitmap ? (window as any).createImageBitmap(blob) : new Promise<ImageBitmap>((res,rej)=>{
+        const img=new Image(); img.onload=()=>{ try { (res as any)(img as any); } catch(e){rej(e);} }; img.onerror=()=>rej(new Error('img error')); img.src=objUrl; }));
+      const tex = PIXI.Texture.from(bmp as any);
+      const bt:any = tex.baseTexture as any; if (bt?.style){ bt.style.mipmap='on'; bt.style.scaleMode='linear'; bt.style.anisotropicLevel=8; }
+      textureCache.set(url, { tex, level: 0 });
+      return tex;
+    } catch {
+      // Fallback: traditional Image path
+      const tex = await new Promise<PIXI.Texture>((resolve, reject)=> {
+        const img = new Image(); img.crossOrigin='anonymous';
+        img.onload = ()=> { try { const t = PIXI.Texture.from(img); const bt:any = t.baseTexture as any; if (bt?.style){ bt.style.mipmap='on'; bt.style.scaleMode='linear'; } resolve(t);} catch(e){ reject(e);} };
+        img.onerror = ()=> reject(new Error('img load error'));
+        img.src = objUrl;
+      });
+      textureCache.set(url, { tex, level: 0 });
+      return tex;
+    }
+  })();
+  inflightTex.set(url, p);
+  try { const tex = await p; return tex; } finally { inflightTex.delete(url); }
+}
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
 export interface CardSprite extends PIXI.Sprite { __id:number; __baseZ:number; __groupId?:number; __card?:any; __imgUrl?:string; __imgLoaded?:boolean; __imgLoading?:boolean; __outline?: PIXI.Graphics; __hiResUrl?:string; __hiResLoaded?:boolean; __hiResLoading?:boolean; __hiResAt?:number; __qualityLevel?: number; }
@@ -47,22 +85,9 @@ export function ensureCardImage(sprite: CardSprite) {
   const url = card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal;
   if (!url) return;
   sprite.__imgUrl = url; sprite.__imgLoading = true;
-  try {
-    // Register asset if not already present to be able to set crossOrigin.
-    if (!PIXI.Assets.cache.has(url)) {
-      PIXI.Assets.add({ alias: url, src: url, crossorigin: 'anonymous' } as any);
-    }
-    PIXI.Assets.load(url).then((tex: PIXI.Texture)=> {
-      if (!tex) { sprite.__imgLoading = false; return; }
-      sprite.texture = tex; // Force desired card display size
-      sprite.width = 100; sprite.height = 140;
-      sprite.__imgLoaded = true; sprite.__imgLoading = false;
-      // If currently selected, ensure outline is shown
-      if (SelectionStore.state.cardIds.has(sprite.__id)) {
-        updateCardSpriteAppearance(sprite, true);
-      }
-    }).catch(()=> { sprite.__imgLoading = false; });
-  } catch { sprite.__imgLoading = false; }
+  loadTextureFromCachedURL(url)
+    .then(tex=> { if (!tex) { sprite.__imgLoading=false; return; } sprite.texture = tex; sprite.width = 100; sprite.height = 140; sprite.__imgLoaded = true; sprite.__imgLoading=false; if (sprite.__qualityLevel===undefined) sprite.__qualityLevel = 0; if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); })
+    .catch(()=> { sprite.__imgLoading=false; });
 }
 
 // ---- High Resolution Upgrade Logic ----
@@ -98,32 +123,45 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   if (sprite.__hiResLoading) return;
   const card = sprite.__card;
   let url: string | undefined;
-  if (desired === 2) url = card.image_uris?.png || card.card_faces?.[0]?.image_uris?.png || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
-  else if (desired === 1) url = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  if (desired === 2) {
+    // Collapse intermediate: if jumping to highest tier and we never loaded 1, go straight to png
+    url = card.image_uris?.png || card.card_faces?.[0]?.image_uris?.png || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  } else if (desired === 1) {
+    url = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  }
   if (!url) return;
   // If already at this URL skip
   if (sprite.texture?.baseTexture?.resource?.url === url || sprite.__hiResUrl === url) { sprite.__qualityLevel = desired; return; }
   sprite.__hiResLoading = true; sprite.__hiResUrl = url;
-  try {
-    if (!PIXI.Assets.cache.has(url)) PIXI.Assets.add({ alias:url, src:url, crossorigin:'anonymous' } as any);
-    PIXI.Assets.load(url).then((tex:PIXI.Texture)=> {
-      sprite.__hiResLoading = false;
-      if (!tex) return;
-      // Improve sampling quality (Pixi v8): enable mipmaps + linear scaling if available
-      try {
-        const bt:any = tex.baseTexture as any;
-        if (bt.style) {
-          bt.style.mipmap = 'on';
-          bt.style.scaleMode = 'linear';
-        }
-      } catch {}
-      sprite.texture = tex; sprite.width = 100; sprite.height = 140;
-      sprite.__qualityLevel = desired;
-      if (desired >= 1) { sprite.__hiResLoaded = true; sprite.__hiResAt = performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); }
-      if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true);
-    }).catch(()=> { sprite.__hiResLoading = false; });
-  } catch { sprite.__hiResLoading = false; }
+  loadTextureFromCachedURL(url)
+    .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; sprite.texture=tex; sprite.width=100; sprite.height=140; sprite.__qualityLevel=desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); } if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); })
+    .catch(()=> { sprite.__hiResLoading=false; });
 }
+
+// Helper: derive image URL for a given quality tier (0 small,1 normal,2 png)
+export function getCardImageUrlForLevel(card:any, level:number): string | undefined {
+  if (level===2) return card.image_uris?.png || card.card_faces?.[0]?.image_uris?.png || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  if (level===1) return card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  return card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal;
+}
+
+// Preload a specific quality level regardless of current zoom thresholds; optionally apply resulting texture.
+export function preloadCardQuality(sprite: CardSprite, level:number, apply:boolean=true): Promise<void> {
+  if (!sprite.__card) return Promise.resolve();
+  const url = getCardImageUrlForLevel(sprite.__card, level); if (!url) return Promise.resolve();
+  return loadTextureFromCachedURL(url).then(tex=> {
+    if (apply) {
+      sprite.texture = tex; sprite.width=100; sprite.height=140;
+      sprite.__imgLoaded = true; // ensure marked loaded for metrics / logic
+      sprite.__qualityLevel = level;
+      if (level>=1){ sprite.__hiResLoaded = true; sprite.__hiResAt = performance.now(); }
+    }
+  }).catch(()=>{});
+}
+
+// --- Monitoring helpers ---
+export function getHiResQueueLength(){ return hiResQueue.length; }
+export function getInflightTextureCount(){ return inflightTex.size; }
 
 export function updateCardSpriteAppearance(s: CardSprite, selected:boolean) {
   if (!cachedTextures) return; // should exist after first card
@@ -185,5 +223,5 @@ export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], 
   stage.on('pointermove', (e:any)=> { if (!dragState) return; const local = world.toLocal(e.global); let moved=false; for (const off of dragState.offsets) { const nx = local.x - off.dx; const ny = local.y - off.dy; if (off.sprite.x!==nx || off.sprite.y!==ny) { off.sprite.x = nx; off.sprite.y = ny; moved=true; } } if (moved && onCommit) onCommit(dragState.sprites); });
 }
 
-const GRID_SIZE = 20;
+const GRID_SIZE = 8; // match global grid (was 20)
 function snap(v:number) { return Math.round(v/GRID_SIZE)*GRID_SIZE; }

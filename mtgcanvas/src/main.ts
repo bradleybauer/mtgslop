@@ -1,7 +1,8 @@
 import * as PIXI from 'pixi.js';
 import { SelectionStore } from './state/selectionStore';
 import { Camera } from './scene/camera';
-import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale } from './scene/cardNode';
+import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale, preloadCardQuality, getHiResQueueLength, getInflightTextureCount } from './scene/cardNode';
+import { getImageCacheStats, hasCachedURL, getCacheUsage } from './services/imageCache';
 import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, setGroupCollapsed, autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
@@ -11,10 +12,19 @@ import { UIState } from './state/uiState';
 import { loadAll, queuePosition } from './services/persistenceService';
 import { InstancesRepo } from './data/repositories';
 import { fetchCardUniverse, spawnLargeSet } from './services/largeDataset';
+import { DATASET_PREFERRED, DATASET_FALLBACK } from './config/dataset';
+import { ensureThemeToggleButton, ensureThemeStyles } from './ui/theme';
 
 // Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
 
-const GRID_SIZE = 20; const SPACING_X = 100 + GRID_SIZE; const SPACING_Y = 140 + GRID_SIZE;
+const GRID_SIZE = 8;  // global grid size
+// To align cards to the grid while keeping them as close as possible, we need (CARD + GAP) % GRID_SIZE === 0.
+// Card width=100 -> 100 % 8 = 4, so choose GAP_X=4 (smallest non-zero making 100+4=104 divisible by 8).
+// Card height=140 -> 140 % 8 = 4, so choose GAP_Y=4 (makes 140+4=144 divisible by 8).
+const CARD_W_GLOBAL = 100, CARD_H_GLOBAL = 140;
+const GAP_X_GLOBAL = 4, GAP_Y_GLOBAL = 4; // minimal gaps achieving grid alignment
+const SPACING_X = CARD_W_GLOBAL + GAP_X_GLOBAL;
+const SPACING_Y = CARD_H_GLOBAL + GAP_Y_GLOBAL;
 function snap(v:number) { return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 
 const app = new PIXI.Application();
@@ -49,11 +59,11 @@ const app = new PIXI.Application();
     (async ()=> {
       const universe = await fetchCardUniverse();
       if (universe.length) {
-        const TARGET = universe.length; // load all
-        console.log('[startup] spawning FULL all.json count=', TARGET);
+  const TARGET = universe.length; // load entire provided dataset
+  console.log(`[startup] spawning FULL dataset (${DATASET_PREFERRED} | fallback ${DATASET_FALLBACK}) count=`, TARGET);
   await spawnLargeSet(universe, inst=> { createSpriteForInstance(inst); }, { count: TARGET, batchSize: 800, onProgress:(done,total)=> { if (done===total) { console.log('[startup] full spawn complete'); fitAll(); } } });
       } else {
-        console.warn('[startup] all.json not found or empty; falling back to 200 dummy cards');
+  console.warn(`[startup] dataset (${DATASET_PREFERRED}/${DATASET_FALLBACK}) not found or empty; falling back to 200 dummy cards`);
         for (let i=0;i<200;i++) { const x=(i%20)*SPACING_X, y=Math.floor(i/20)*SPACING_Y; const id = InstancesRepo.create(1, x, y); createSpriteForInstance({ id, x, y, z:zCounter++ }); }
         fitAll();
       }
@@ -64,7 +74,7 @@ const app = new PIXI.Application();
   const groups = new Map<number, GroupVisual>();
   world.sortableChildren = true;
 
-  const help = initHelp(); help.ensureFab();
+  const help = initHelp(); help.ensureFab(); (window as any).__helpAPI = help; // debug access
   function toggleHelp() { help.toggle(); }
 
   // Inline group renaming (kept local for now)
@@ -236,7 +246,7 @@ const app = new PIXI.Application();
     if (e.key==='0' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); resetZoom(); }
     if (e.key==='f' || e.key==='F') { if (e.shiftKey) fitSelection(); else fitAll(); }
     if (e.key==='z' || e.key==='Z') { fitSelection(); }
-    // Large dataset load (Ctrl+Shift+L): progressive spawn using all.json
+  // Large dataset load (Ctrl+Shift+L): progressive spawn using legal.json/all.json
     if ((e.key==='l' || e.key==='L') && e.ctrlKey && e.shiftKey) {
       e.preventDefault();
       console.log('[largeDataset] begin load');
@@ -259,7 +269,11 @@ const app = new PIXI.Application();
       }
     }
     // Help overlay toggle (H or ?)
-    if (e.key==='h' || e.key==='H' || e.key==='?') { toggleHelp(); }
+    if (e.key==='h' || e.key==='H' || e.key==='?') {
+      if (e.repeat) return; // ignore auto-repeat
+      (e as any).__helpHandled = true;
+      toggleHelp();
+    }
   // (Alt snap override removed)
     if (e.key==='Delete') {
       const cardIds = SelectionStore.getCards();
@@ -405,12 +419,27 @@ const app = new PIXI.Application();
   // Debug: log card count after seeding
   console.log('[mtgcanvas] Seeded cards:', sprites.length);
 
+  // (Removed blocking hi-res preload progress bar; images now load lazily as needed.)
+
   // ---- Performance overlay ----
-  const perfEl = document.createElement('div');
-  perfEl.style.cssText='position:fixed;left:6px;top:6px;font:13px/1.35 monospace;background:#000a;color:#9fd;padding:6px 8px;border:1px solid #135;border-radius:4px;z-index:10000;pointer-events:none;';
+  ensureThemeStyles();
+  // Remove theme toggle FAB if it exists (user requested removal)
+  const oldThemeBtn = document.getElementById('theme-toggle-btn'); if (oldThemeBtn) oldThemeBtn.remove();
+  const perfEl = document.createElement('div'); perfEl.id='perf-overlay';
+  // Use shared panel theme (ensure fixed positioning & stacking above canvas)
+  perfEl.className='ui-panel perf-grid';
+  perfEl.style.position='fixed';
+  perfEl.style.left='6px';
+  perfEl.style.top='6px';
+  perfEl.style.zIndex='10002';
+  perfEl.style.minWidth='260px';
+  perfEl.style.padding='10px 12px';
+  perfEl.style.pointerEvents='none';
   document.body.appendChild(perfEl);
+  (window as any).__perfOverlay = perfEl;
   let frameCount=0; let lastFpsTime=performance.now(); let fps=0;
   let lastMemSample = 0; let jsHeapLine='JS ?'; let texLine='Tex ?';
+  let texResLine='Res ?'; let hiResPendingLine='GlobalPending ?'; let qualLine='Qual ?'; let queueLine='Q ?';
   function sampleMemory(){
     // JS heap (Chrome only):
     const anyPerf: any = performance as any;
@@ -419,12 +448,71 @@ const app = new PIXI.Application();
     else jsHeapLine = 'JS n/a';
     // Rough texture memory estimate (unique baseTextures)
     const seen = new Set<any>(); let bytes=0;
-    for (const s of sprites){ const tex:any = s.texture; const bt = tex?.baseTexture || tex?.source?.baseTexture || tex?.source; if (bt && !seen.has(bt)) { seen.add(bt); const w = bt.width || bt.realWidth || bt.resource?.width; const h = bt.height || bt.realHeight || bt.resource?.height; if (w&&h) bytes += w*h*4; } }
+    let hi=0, med=0, low=0, pending=0; let q0=0,q1=0,q2=0,loading=0;
+  for (const s of sprites){ const tex:any = s.texture; const bt = tex?.baseTexture || tex?.source?.baseTexture || tex?.source; if (!bt) continue; if (!seen.has(bt)) { seen.add(bt); const w = bt.width || bt.realWidth || bt.resource?.width; const h = bt.height || bt.realHeight || bt.resource?.height; if (w&&h) bytes += w*h*4; if (h>=1000) hi++; else if (h>=500) med++; else low++; } }
+  // Global pending (ignores visibility)
+  for (const s of sprites){ if (s.__imgLoaded && s.__qualityLevel !== 2) pending++; const q = s.__qualityLevel; if (q===0) q0++; else if (q===1) q1++; else if (q===2) q2++; if (s.__hiResLoading||s.__imgLoading) loading++; }
+  texResLine = `TexRes low:${low} med:${med} hi:${hi}`; hiResPendingLine = `GlobalPending ${pending}`;
+    qualLine = `Qual q0:${q0} q1:${q1} q2:${q2} load:${loading}`;
+    queueLine = `HiQ len:${getHiResQueueLength()} inflight:${getInflightTextureCount()}`;
     texLine = `Tex ~${(bytes/1048576).toFixed(1)} MB`;
   }
   function updatePerf(dt:number){ frameCount++; const now=performance.now(); if (now-lastFpsTime>500){ fps = Math.round(frameCount*1000/(now-lastFpsTime)); frameCount=0; lastFpsTime=now; }
     if (now - lastMemSample > 1000){ sampleMemory(); lastMemSample = now; }
-    perfEl.textContent = `FPS ${fps}\nCards ${sprites.length}\nScale ${world.scale.x.toFixed(2)}\n${jsHeapLine}\n${texLine}`; }
+    const stats = getImageCacheStats();
+    if ((now & 0x3ff) === 0) { // periodic usage refresh
+      getCacheUsage().then(u=> { (perfEl as any).__usage = u; });
+    }
+    const usage = (perfEl as any).__usage;
+  perfEl.textContent = 
+    `Status / Performance\n`+
+    ` FPS: ${fps}\n`+
+    ` Zoom: ${world.scale.x.toFixed(2)}x\n`+
+    ` JS Heap: ${jsHeapLine.replace('JS ','')}\n`+
+    `\nCards\n`+
+    ` Total Cards: ${sprites.length}\n`+
+    `\nImages / Textures\n`+
+    ` GPU Tex Mem: ${texLine.replace('Tex ','')}\n`+
+    ` Unique Tex Res: ${texResLine.replace('TexRes ','')}\n`+
+    ` Hi-Res Pending: ${hiResPendingLine.replace('GlobalPending ','')}\n`+
+    ` Quality Levels: ${qualLine.replace('Qual ','').replace(/q0:/,'small:').replace(/q1:/,'mid:').replace(/q2:/,'hi:').replace('load:','loading:')}\n`+
+    ` Hi-Res Queue Len: ${getHiResQueueLength()}\n`+
+    ` In-Flight Decodes: ${getInflightTextureCount()}\n`+
+    `\nCache Layers\n`+
+    ` Session Hits: ${stats.sessionHits}  IDB Hits: ${stats.idbHits}  Canonical Hits: ${stats.canonicalHits}\n`+
+    `\nNetwork\n`+
+    ` Fetches: ${stats.netFetches}  Data: ${(stats.netBytes/1048576).toFixed(1)} MB\n`+
+    ` Errors: ${stats.netErrors}  Resource Exhaust: ${stats.resourceErrors}\n`+
+    ` Active Fetches: ${stats.activeFetches}  Queued: ${stats.queuedFetches}\n`+
+    ` Last Fetch Duration: ${stats.lastNetMs.toFixed(1)} ms\n`+
+    `\nStorage\n`+
+    (usage? ` IDB Usage: ${(usage.bytes/1048576).toFixed(1)} / ${(usage.budget/1048576).toFixed(0)} MB (${usage.count} objects)${usage.over? '  OVER BUDGET (evicting on new writes)':''}` : ' IDB Usage: pending...'); }
+
+  // Explicit hi-res upgrade pass: ensure visible cards promote quickly (not limited by LOAD_PER_FRAME small image loader)
+  let hiResCursor = 0;
+  function upgradeVisibleHiRes(){
+    const scale = world.scale.x; const visibles = sprites.filter(s=> s.visible && s.__imgLoaded);
+    if (!visibles.length) return;
+    // Scale throughput with zoom level (more aggressive when fully zoomed) and cap by visible count
+    let perFrame = 40;
+    if (scale > 5) perFrame = 120;
+    if (scale > 8) perFrame = 200;
+    if (scale > 10) perFrame = 400;
+    perFrame = Math.min(perFrame, visibles.length);
+    let processed=0;
+    for (let i=0; i<visibles.length && processed<perFrame; i++){
+      hiResCursor = (hiResCursor + 1) % visibles.length; const s = visibles[hiResCursor];
+      if (s.__qualityLevel !== 2) { updateCardTextureForScale(s, scale); processed++; }
+    }
+  }
+
+  // Hotkey: press 'U' to force immediate hi-res request for all visible cards
+  window.addEventListener('keydown', e=> {
+    if (e.key==='u' || e.key==='U') {
+      const scale = world.scale.x;
+      sprites.forEach(s=> { if (s.visible && s.__imgLoaded) updateCardTextureForScale(s, scale); });
+    }
+  });
 
   installModeToggle();
 
@@ -477,5 +565,16 @@ const app = new PIXI.Application();
     }
   }
 
-  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
+  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
+
+  // Fallback global hotkey listener (capture) to ensure Help toggles even if earlier handler failed.
+  window.addEventListener('keydown', (e)=> {
+    if (e.key==='h' || e.key==='H' || e.key==='?') {
+      if ((e as any).__helpHandled) return; // primary handler already ran
+      if (e.repeat) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName==='INPUT' || target.tagName==='TEXTAREA' || target.isContentEditable)) return;
+      if ((window as any).__helpAPI) { console.log('[help] fallback listener toggle'); (window as any).__helpAPI.toggle(); }
+    }
+  }, {capture:true});
 })();

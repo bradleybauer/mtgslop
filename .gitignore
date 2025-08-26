@@ -23,6 +23,7 @@ venv/
 # Local data dumps (keep large source out of repo if desired)
 # Scryfall full data dump (adjust if you want it tracked)
 all.json
+legal.json
 *.ndjson
 
 # Card image caches

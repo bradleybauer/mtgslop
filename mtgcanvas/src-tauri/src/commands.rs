@@ -8,10 +8,20 @@ pub fn ping() -> &'static str { "pong" }
 
 #[command]
 pub fn load_universe() -> Result<String, String> {
+	// Keep these in sync with TypeScript config/dataset.ts
+	const PREFERRED: &str = "legal.json";
+	const FALLBACK: &str = "all.json";
 	let candidates = [
-		PathBuf::from("all.json"),
-		PathBuf::from("../all.json"),
-		PathBuf::from("../../all.json"),
+		PathBuf::from(PREFERRED),
+		PathBuf::from(format!("../{}", PREFERRED)),
+		PathBuf::from(format!("../../{}", PREFERRED)),
+		PathBuf::from(format!("../notes/{}", PREFERRED)),
+		PathBuf::from(format!("../../notes/{}", PREFERRED)),
+		PathBuf::from(FALLBACK),
+		PathBuf::from(format!("../{}", FALLBACK)),
+		PathBuf::from(format!("../../{}", FALLBACK)),
+		PathBuf::from(format!("../notes/{}", FALLBACK)),
+		PathBuf::from(format!("../../notes/{}", FALLBACK)),
 	];
 	for p in candidates.iter() {
 		if p.exists() {
@@ -26,5 +36,5 @@ pub fn load_universe() -> Result<String, String> {
 			}
 		}
 	}
-	Err("all.json not found in expected locations".into())
+	Err(format!("{} or {} not found in expected locations", PREFERRED, FALLBACK))
 }
