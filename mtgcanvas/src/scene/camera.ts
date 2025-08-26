@@ -11,8 +11,8 @@ export class Camera {
   private anim?: { t:number; duration:number; from:{x:number,y:number,scale:number}; to:{x:number,y:number,scale:number}; cb?:()=>void };
   constructor(opts: CameraOptions) {
     this.world = opts.world;
-    this.minScale = opts.minScale ?? 0.05;
-    this.maxScale = opts.maxScale ?? 5;
+  this.minScale = opts.minScale ?? 0.05;
+  this.maxScale = opts.maxScale ?? 10; // increased max zoom
   }
   zoomAt(factor:number, center: PIXI.Point) {
     const prev = this.world.scale.x;

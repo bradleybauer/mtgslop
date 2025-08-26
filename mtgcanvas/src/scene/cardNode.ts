@@ -134,6 +134,7 @@ export function updateCardSpriteAppearance(s: CardSprite, selected:boolean) {
 export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], world: PIXI.Container, stage: PIXI.Container, onCommit?: (moved: CardSprite[])=>void, isPanning?: ()=>boolean) {
   let dragState: null | { sprites: CardSprite[]; offsets: {sprite:CardSprite, dx:number, dy:number}[] } = null;
   s.on('pointerdown', (e:any)=> {
+  if (e.button!==0) return; // only left button selects / drags
   if (isPanning && isPanning()) return; // ignore clicks while panning with space
     if (!e.shiftKey && !SelectionStore.state.cardIds.has(s.__id)) SelectionStore.selectOnlyCard(s.__id); else if (e.shiftKey) SelectionStore.toggleCard(s.__id);
     const ids = SelectionStore.getCards();
@@ -151,7 +152,7 @@ export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], 
   };
   stage.on('pointerup', ()=> endDrag(true));
   stage.on('pointerupoutside', ()=> endDrag(true));
-  stage.on('pointermove', (e:any)=> { if (!dragState) return; const local = world.toLocal(e.global); for (const off of dragState.offsets) { off.sprite.x = local.x - off.dx; off.sprite.y = local.y - off.dy; } });
+  stage.on('pointermove', (e:any)=> { if (!dragState) return; const local = world.toLocal(e.global); let moved=false; for (const off of dragState.offsets) { const nx = local.x - off.dx; const ny = local.y - off.dy; if (off.sprite.x!==nx || off.sprite.y!==ny) { off.sprite.x = nx; off.sprite.y = ny; moved=true; } } if (moved && onCommit) onCommit(dragState.sprites); });
 }
 
 const GRID_SIZE = 20;

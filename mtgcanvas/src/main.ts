@@ -2,7 +2,7 @@ import * as PIXI from 'pixi.js';
 import { SelectionStore } from './state/selectionStore';
 import { Camera } from './scene/camera';
 import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, ensureCardHiRes } from './scene/cardNode';
-import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, setGroupCollapsed, autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup } from './scene/groupNode';
+import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, setGroupCollapsed, autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
 import { initHelp } from './ui/helpPanel';
@@ -119,18 +119,17 @@ const app = new PIXI.Application();
   function attachGroupInteractions(gv: GroupVisual) {
     let drag=false; let dx=0; let dy=0; const g=gv.gfx; let memberOffsets: {sprite:CardSprite, ox:number, oy:number}[] = [];
     gv.header.eventMode='static'; gv.header.cursor='move';
-    gv.header.on('pointerdown', (e:any)=> { e.stopPropagation(); if (e.button===2) return; // right-click handled separately
+  gv.header.on('pointerdown', (e:any)=> { e.stopPropagation(); if (e.button===2) return; // right-click handled separately
       if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id)) SelectionStore.selectOnlyGroup(gv.id); else if (e.shiftKey) SelectionStore.toggleGroup(gv.id); const local = world.toLocal(e.global); drag=true; dx = local.x - g.x; dy = local.y - g.y; memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox:s.x - g.x, oy:s.y - g.y}: null; }).filter(Boolean) as any; });
     gv.header.on('pointertap', (e:any)=> { if (e.detail===2 && e.button!==2) startGroupRename(gv); });
     // Context menu (right-click)
-    gv.header.on('rightclick', (e:any)=> { e.stopPropagation(); showGroupContextMenu(gv, e.global); });
-  // Group body click: select group; Alt+drag starts marquee inside group
-  g.on('pointerdown', (e:any)=> {
-    if (e.target!==g) return; if (drag) return;
-    if (e.altKey) { marquee.start(e.global, e.shiftKey); return; }
-    // Normal click selects (or toggles with shift) the group
-    if (e.shiftKey) SelectionStore.toggleGroup(gv.id); else SelectionStore.selectOnlyGroup(gv.id);
-  });
+    // Show context menu only if no significant right-drag (panning) occurred.
+    gv.header.on('rightclick', (e:any)=> {
+      e.stopPropagation();
+      if (rightPanning) return; // if we dragged, skip menu
+      showGroupContextMenu(gv, e.global);
+    });
+  // Group body interactions handled globally like canvas now.
   app.stage.on('pointermove', e=> { if (!drag) return; const local = world.toLocal(e.global); g.x = local.x - dx; g.y = local.y - dy; memberOffsets.forEach(m=> { m.sprite.x = g.x + m.ox; m.sprite.y = g.y + m.oy; }); });
   app.stage.on('pointerup', ()=> { if (!drag) return; drag=false; g.x = snap(g.x); g.y = snap(g.y); memberOffsets.forEach(m=> { m.sprite.x = snap(m.sprite.x); m.sprite.y = snap(m.sprite.y); spatial.update({ id:m.sprite.__id, minX:m.sprite.x, minY:m.sprite.y, maxX:m.sprite.x+100, maxY:m.sprite.y+140 }); }); });
   }
@@ -140,7 +139,7 @@ const app = new PIXI.Application();
   const PALETTE = [0x2d3e53,0x444444,0x554433,0x224433,0x333355,0x553355,0x335555,0x4a284a,0x3c4a28,0x284a4a];
   function ensureGroupMenu(){
     if (groupMenu) return groupMenu; const el = document.createElement('div'); groupMenu = el;
-    el.style.cssText='position:fixed;z-index:10001;background:#101820;border:1px solid #2d4652;border-radius:6px;min-width:180px;font:12px/1.4 "Inter",system-ui,sans-serif;color:#d0e7f1;box-shadow:0 4px 18px -4px #000c;padding:4px;';
+  el.style.cssText='position:fixed;z-index:10001;background:#101820;border:1px solid #2d4652;border-radius:6px;min-width:200px;font:14px/1.5 "Inter",system-ui,sans-serif;color:#d0e7f1;box-shadow:0 4px 18px -4px #000c;padding:6px 6px 4px;';
     el.addEventListener('mousedown', ev=> ev.stopPropagation());
     document.body.appendChild(el); return el;
   }
@@ -148,11 +147,11 @@ const app = new PIXI.Application();
   window.addEventListener('pointerdown', ()=> hideGroupMenu());
   function showGroupContextMenu(gv: GroupVisual, globalPt: PIXI.Point){
     const el = ensureGroupMenu(); menuTarget = gv; el.innerHTML='';
-    function addItem(label:string, action:()=>void){ const it=document.createElement('div'); it.textContent=label; it.style.cssText='padding:4px 8px;cursor:pointer;border-radius:4px;'; it.onmouseenter=()=> it.style.background='#1d3440'; it.onmouseleave=()=> it.style.background='transparent'; it.onclick=()=> { action(); hideGroupMenu(); }; el.appendChild(it); }
-  addItem(gv.collapsed? 'Expand':'Collapse', ()=> { if (gv.collapsed){ setGroupCollapsed(gv,false,sprites); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } else { setGroupCollapsed(gv,true,sprites); } });
-  addItem('Auto-pack', ()=> autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })));
+  function addItem(label:string, action:()=>void){ const it=document.createElement('div'); it.textContent=label; it.style.cssText='padding:6px 10px;cursor:pointer;border-radius:4px;'; it.onmouseenter=()=> it.style.background='#1d3440'; it.onmouseleave=()=> it.style.background='transparent'; it.onclick=()=> { action(); hideGroupMenu(); }; el.appendChild(it); }
+  addItem(gv.collapsed? 'Expand':'Collapse', ()=> { if (gv.collapsed){ setGroupCollapsed(gv,false,sprites); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); } else { setGroupCollapsed(gv,true,sprites); } });
+  addItem('Auto-pack', ()=> { autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); });
     addItem('Rename', ()=> startGroupRename(gv));
-    addItem('Recolor', ()=> { gv.color = PALETTE[Math.floor(Math.random()*PALETTE.length)]; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); });
+  addItem('Recolor', ()=> { gv.color = PALETTE[Math.floor(Math.random()*PALETTE.length)]; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); });
     addItem('Delete', ()=> { const row = groups.get(gv.id); if (row){ row.gfx.destroy(); groups.delete(gv.id);} SelectionStore.clear(); });
     const sw=document.createElement('div'); sw.style.cssText='display:flex;gap:4px;padding:4px 6px 2px;flex-wrap:wrap;';
     PALETTE.forEach(c=> { const sq=document.createElement('div'); sq.style.cssText=`width:16px;height:16px;border-radius:4px;background:#${c.toString(16).padStart(6,'0')};cursor:pointer;border:1px solid #182830;`; sq.onclick=()=> { gv.color=c; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); hideGroupMenu(); }; sw.appendChild(sq); });
@@ -185,14 +184,14 @@ const app = new PIXI.Application();
         const ids = SelectionStore.getCards();
         ids.forEach(cid=> { addCardToGroupOrdered(gv, cid, gv.order.length); const s = sprites.find(sp=> sp.__id===cid); if (s) s.__groupId = gv.id; });
   groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
-  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); drawGroup(gv, true);
+  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true);
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       } else {
         const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2);
         const worldCenter = world.toLocal(center);
         const gv = createGroupVisual(id, snap(worldCenter.x - 150), snap(worldCenter.y - 150), 300, 300);
   groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
-  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); drawGroup(gv, true);
+  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true);
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       }
     }
@@ -302,9 +301,9 @@ const app = new PIXI.Application();
         // Reposition within same group if significant horizontal move
         const gv = groups.get(s.__groupId); if (gv){ const desired = insertionIndexForPoint(gv, cx, cy); const curIdx = gv.order.indexOf(s.__id); if (desired!==curIdx && desired>=0){ gv.order.splice(curIdx,1); gv.order.splice(Math.min(desired, gv.order.length),0,s.__id); } }
       }
-  layoutGroup(target, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); if (layoutOld) layoutGroup(layoutOld, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+  layoutGroup(target, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(target, sprites); if (layoutOld) { layoutGroup(layoutOld, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(layoutOld, sprites); drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id)); } drawGroup(target, SelectionStore.state.groupIds.has(target.id));
     } else if (s.__groupId) {
-  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) layoutGroup(old, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 }));
+  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) { layoutGroup(old, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); }
     }
   }
 
@@ -322,7 +321,16 @@ const app = new PIXI.Application();
     });
   });
 
-  app.stage.on('pointerdown', e => { if (panning) return; if (e.target === app.stage || e.target === world) marquee.start(e.global, e.shiftKey); });
+  app.stage.on('pointerdown', e => {
+    if (panning || (e as any).button===2) return;
+    const tgt:any = e.target;
+    const groupBody = tgt && tgt.__groupBody;
+    if (e.target === app.stage || e.target === world || groupBody) {
+      // Clear selection unless additive
+      if (!e.shiftKey) SelectionStore.clear();
+      marquee.start(e.global, e.shiftKey);
+    }
+  });
   app.stage.on('pointermove', e => { if (marquee.isActive()) marquee.update(e.global); });
   app.stage.on('pointerup', () => { if (marquee.isActive()) marquee.finish(); });
   app.stage.on('pointerupoutside', () => { if (marquee.isActive()) marquee.finish(); });
@@ -358,27 +366,42 @@ const app = new PIXI.Application();
   function fitSelection() { const b = computeSelectionOrGroupsBounds(); if (b) fitBounds(b); }
   window.addEventListener('wheel', (e) => { const mousePos = new PIXI.Point(app.renderer.events.pointer.global.x, app.renderer.events.pointer.global.y); applyZoom(e.deltaY < 0 ? 1.1 : 0.9, mousePos); }, { passive: true });
 
-  // Space-drag to pan
-  let panning = false; let lastX=0; let lastY=0;
+  // Pan modes: space+left, middle button, or right button drag (on empty canvas/world area)
+  let panning = false;          // spacebar modifier for left button
+  let rightPanning = false;     // active right-button pan
+  let midPanning = false;       // active middle-button pan
+  let lastX=0; let lastY=0;
   window.addEventListener('keydown', e => { if (e.code==='Space') { panning = true; document.body.style.cursor='grab'; }});
-  window.addEventListener('keyup', e => { if (e.code==='Space') { panning = false; document.body.style.cursor='default'; }});
+  window.addEventListener('keyup', e => { if (e.code==='Space') { panning = false; if (!rightPanning && !midPanning) document.body.style.cursor='default'; }});
   app.stage.eventMode='static';
-  app.stage.on('pointerdown', e => { if (panning) { lastX = e.global.x; lastY = e.global.y; }});
-  app.stage.on('pointermove', e => { if (panning && e.buttons===1) { const dx = e.global.x - lastX; const dy = e.global.y - lastY; world.position.x += dx; world.position.y += dy; lastX = e.global.x; lastY = e.global.y; }});
-  // Middle mouse drag pan support (one-time listeners)
-  app.canvas.addEventListener('pointerdown', ev => { if ((ev as PointerEvent).button===1) { panning = true; lastX = ev.clientX; lastY = ev.clientY; document.body.style.cursor='grabbing'; } });
-  app.canvas.addEventListener('pointerup', ev => { if ((ev as PointerEvent).button===1) { panning = false; document.body.style.cursor='default'; } });
+  function beginPan(x:number,y:number){ lastX=x; lastY=y; document.body.style.cursor='grabbing'; }
+  function applyPan(e:PIXI.FederatedPointerEvent){ const dx = e.global.x - lastX; const dy = e.global.y - lastY; world.position.x += dx; world.position.y += dy; lastX = e.global.x; lastY = e.global.y; }
+  app.stage.on('pointerdown', e => {
+    if (panning && e.button===0) beginPan(e.global.x, e.global.y);
+    // Right button: allow panning start anywhere (cards, empty space); context menus still fire on rightclick if no movement
+    if (e.button===2) { rightPanning = true; beginPan(e.global.x, e.global.y); }
+  });
+  app.stage.on('pointermove', e => {
+    if ((panning && (e.buttons & 1)) || (rightPanning && (e.buttons & 2)) || (midPanning && (e.buttons & 4))) applyPan(e);
+  });
+  const endPan = (e:PIXI.FederatedPointerEvent) => {
+    if (e.button===2 && rightPanning) { rightPanning=false; if (!panning && !midPanning) document.body.style.cursor='default'; }
+  };
+  app.stage.on('pointerup', endPan); app.stage.on('pointerupoutside', endPan);
+  // Middle button (direct on canvas element)
+  app.canvas.addEventListener('pointerdown', ev => { const pev=ev as PointerEvent; if (pev.button===1) { midPanning=true; beginPan(pev.clientX, pev.clientY); } });
+  app.canvas.addEventListener('pointerup', ev => { const pev=ev as PointerEvent; if (pev.button===1) { midPanning=false; if (!panning && !rightPanning) document.body.style.cursor='default'; } });
+  app.canvas.addEventListener('mouseleave', () => { if (midPanning || rightPanning) { midPanning=false; rightPanning=false; if (!panning) document.body.style.cursor='default'; } });
   app.canvas.addEventListener('contextmenu', ev => { ev.preventDefault(); });
 
-  // Deselect when clicking empty space
-  app.stage.on('pointerdown', e => { if (e.target === app.stage && !panning) SelectionStore.clear(); });
+  // Deselect when clicking empty space (ignore while panning via any mode)
 
   // Debug: log card count after seeding
   console.log('[mtgcanvas] Seeded cards:', sprites.length);
 
   // ---- Performance overlay ----
   const perfEl = document.createElement('div');
-  perfEl.style.cssText='position:fixed;left:6px;top:6px;font:11px/1.3 monospace;background:#000a;color:#9fd;padding:4px 6px;border:1px solid #135;border-radius:4px;z-index:10000;pointer-events:none;';
+  perfEl.style.cssText='position:fixed;left:6px;top:6px;font:13px/1.35 monospace;background:#000a;color:#9fd;padding:6px 8px;border:1px solid #135;border-radius:4px;z-index:10000;pointer-events:none;';
   document.body.appendChild(perfEl);
   let frameCount=0; let lastFpsTime=performance.now(); let fps=0;
   let lastMemSample = 0; let jsHeapLine='JS ?'; let texLine='Tex ?';
@@ -436,5 +459,5 @@ const app = new PIXI.Application();
     }
   }
 
-  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); /* group animations removed */ updatePerf(dt); });
+  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
 })();

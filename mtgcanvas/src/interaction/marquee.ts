@@ -11,7 +11,7 @@ export class MarqueeSystem {
   start(globalPoint: PIXI.PointData, additive:boolean) {
     const ws = this.world.toLocal(globalPoint);
     const rect = new PIXI.Graphics();
-    this.world.addChild(rect);
+  rect.zIndex = 999999; (rect as any).eventMode='none'; this.world.addChild(rect); (this.world as any).sortDirty = true;
   (rect as any).__lastRect = {x:ws.x,y:ws.y,w:0,h:0};
   this.state = { start: new PIXI.Point(ws.x, ws.y), rect, additive, active:false };
   }
@@ -32,4 +32,5 @@ export class MarqueeSystem {
     if (additive) { const next=new Set(SelectionStore.getCards()); selected.forEach(id=> next.add(id)); SelectionStore.replace({ cardIds: next, groupIds: new Set(SelectionStore.getGroups()) }); } else { SelectionStore.replace({ cardIds: new Set(selected), groupIds: new Set() }); }
   }
   isActive() { return !!this.state; }
+  isActivated() { return !!this.state?.active; }
 }
