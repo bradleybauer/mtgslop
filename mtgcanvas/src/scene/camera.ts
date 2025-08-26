@@ -12,7 +12,7 @@ export class Camera {
   constructor(opts: CameraOptions) {
     this.world = opts.world;
   this.minScale = opts.minScale ?? 0.05;
-  this.maxScale = opts.maxScale ?? 10; // increased max zoom
+  this.maxScale = opts.maxScale ?? 13; // increased max zoom per request
   }
   zoomAt(factor:number, center: PIXI.Point) {
     const prev = this.world.scale.x;

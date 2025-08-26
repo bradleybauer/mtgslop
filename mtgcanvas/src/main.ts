@@ -1,7 +1,7 @@
 import * as PIXI from 'pixi.js';
 import { SelectionStore } from './state/selectionStore';
 import { Camera } from './scene/camera';
-import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, ensureCardHiRes } from './scene/cardNode';
+import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale } from './scene/cardNode';
 import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, setGroupCollapsed, autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
@@ -19,7 +19,7 @@ function snap(v:number) { return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 
 const app = new PIXI.Application();
 (async () => {
-  await app.init({ background: '#1e1e1e', resizeTo: window });
+  await app.init({ background: '#1e1e1e', resizeTo: window, antialias: true, resolution: window.devicePixelRatio || 1 });
   document.body.appendChild(app.canvas);
 
   const world = new PIXI.Container();
@@ -41,7 +41,7 @@ const app = new PIXI.Application();
       spatial.update({ id: ms.__id, minX:ms.x, minY:ms.y, maxX:ms.x+100, maxY:ms.y+140 });
       assignCardToGroupByPosition(ms);
       queuePosition(ms);
-  }), ()=>panning);
+  }), ()=>panning, (global, additive)=> marquee.start(global, additive));
     return s;
   }
   const loaded = loadAll();
@@ -338,7 +338,13 @@ const app = new PIXI.Application();
   // (Old marquee code removed; unified handlers added later.)
 
   // Zoom helpers (declared early so keyboard shortcuts can reference)
-  function applyZoom(scaleFactor:number, centerGlobal: PIXI.Point) { camera.zoomAt(scaleFactor, centerGlobal); }
+  let applyZoom = (scaleFactor:number, centerGlobal: PIXI.Point) => { camera.zoomAt(scaleFactor, centerGlobal); };
+  // Aggressive upgrade: after zoom adjust, request higher-quality textures for visible cards immediately
+  function postZoomUpgrade(){ const scale = world.scale.x; for (const s of sprites){ if (s.visible && s.__imgLoaded) { updateCardTextureForScale(s, scale); } } }
+  const origApplyZoom = applyZoom;
+  // Wrap applyZoom to call postZoomUpgrade after next frame
+  const wrappedZoom = (f:number, pt: PIXI.Point)=> { origApplyZoom(f, pt); queueMicrotask(()=> postZoomUpgrade()); };
+  applyZoom = wrappedZoom;
   function keyboardZoom(f:number) { const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2); applyZoom(f, center); }
   function resetZoom() { const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2); world.scale.set(1); world.position.set(0,0); applyZoom(1, center); }
   function computeBoundsFromSprites(list:CardSprite[]) { if (!list.length) return null; const rects = list.map(s=> ({x:s.x,y:s.y,w:100,h:140})); return mergeRects(rects); }
@@ -448,14 +454,26 @@ const app = new PIXI.Application();
   }
 
   // Lazy image loader: load some visible card images each frame
-  let imgCursor = 0; const LOAD_PER_FRAME = 40;
+  let imgCursor = 0; const LOAD_PER_FRAME = 70; // higher prefetch budget
   function loadVisibleImages(){
     const len = sprites.length; if (!len) return; let loaded=0; let attempts=0;
+    const scale = world.scale.x;
+    // Compute an expanded culling rect to prefetch just-outside cards
+    const vw = window.innerWidth; const vh = window.innerHeight;
+    const inv = 1/scale; const pad = 300; // prefetch margin
+    const left = (-world.position.x)*inv - pad;
+    const top = (-world.position.y)*inv - pad;
+    const right = left + vw*inv + pad*2;
+    const bottom = top + vh*inv + pad*2;
     while (loaded < LOAD_PER_FRAME && attempts < len) {
       imgCursor = (imgCursor + 1) % len; attempts++;
       const s = sprites[imgCursor];
-      if (s.visible && !s.__imgLoaded && s.__card) { ensureCardImage(s); loaded++; }
-  else if (s.visible && s.__imgLoaded && !s.__hiResLoaded && world.scale.x > 1.2) { ensureCardHiRes(s); }
+      if (!s.__card) continue;
+      // Prefetch if in expanded bounds
+      const inPrefetch = (s.x+100 >= left && s.x <= right && s.y+140 >= top && s.y <= bottom);
+      if (!inPrefetch) continue;
+      if (!s.__imgLoaded) { ensureCardImage(s); loaded++; }
+      else { updateCardTextureForScale(s, scale); }
     }
   }
 

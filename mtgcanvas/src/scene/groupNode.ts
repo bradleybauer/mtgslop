@@ -52,8 +52,8 @@ const CARD_W = 100, CARD_H = 140;
 const PAD_X = 16;      // inner left/right
 const PAD_Y = 12;      // inner top below header
 const PAD_BOTTOM_EXTRA = 8; // extra bottom padding so cards don't touch frame
-const GAP_X = 20;      // horizontal space between cards
-const GAP_Y = 20;      // vertical space between cards
+const GAP_X = 6;       // even tighter horizontal space between cards
+const GAP_Y = 6;       // even tighter vertical space between cards
 function snap(v:number){ return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 
 // Muted header palette; can be recolored later via context menu.

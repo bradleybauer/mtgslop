@@ -2,7 +2,7 @@ import * as PIXI from 'pixi.js';
 import { SelectionStore } from '../state/selectionStore';
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
-export interface CardSprite extends PIXI.Sprite { __id:number; __baseZ:number; __groupId?:number; __card?:any; __imgUrl?:string; __imgLoaded?:boolean; __imgLoading?:boolean; __outline?: PIXI.Graphics; __hiResUrl?:string; __hiResLoaded?:boolean; __hiResLoading?:boolean; __hiResAt?:number; }
+export interface CardSprite extends PIXI.Sprite { __id:number; __baseZ:number; __groupId?:number; __card?:any; __imgUrl?:string; __imgLoaded?:boolean; __imgLoading?:boolean; __outline?: PIXI.Graphics; __hiResUrl?:string; __hiResLoaded?:boolean; __hiResLoading?:boolean; __hiResAt?:number; __qualityLevel?: number; }
 
 export interface CardVisualOptions { id:number; x:number; y:number; z:number; renderer: PIXI.Renderer; card?: any; }
 
@@ -43,6 +43,7 @@ export function ensureCardImage(sprite: CardSprite) {
   if (sprite.__imgLoaded || sprite.__imgLoading) return;
   const card = sprite.__card; if (!card) return;
   // Support single or multi-faced cards
+  // Always start with "small" if available for fast initial load.
   const url = card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal;
   if (!url) return;
   sprite.__imgUrl = url; sprite.__imgLoading = true;
@@ -65,7 +66,9 @@ export function ensureCardImage(sprite: CardSprite) {
 }
 
 // ---- High Resolution Upgrade Logic ----
-const HI_RES_LIMIT = 250; // cap number of hi-res textures to bound memory
+// Relaxed hi-res cache: allow more upgraded textures to stay resident before eviction.
+// (Adjustable if memory pressure observed; tuned upward per user request.)
+const HI_RES_LIMIT = 800; // previous: 250
 const hiResQueue: CardSprite[] = []; // oldest at index 0
 
 function evictHiResIfNeeded() {
@@ -79,22 +82,44 @@ function evictHiResIfNeeded() {
   }
 }
 
-export function ensureCardHiRes(sprite: CardSprite) {
-  if (!sprite.__imgLoaded) return; // need base first
-  if (sprite.__hiResLoaded || sprite.__hiResLoading) return;
-  const card = sprite.__card; if (!card) return;
-  const url = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal;
-  if (!url || url === sprite.__imgUrl) return; // already using normal as base
+// Multi-tier quality loader: 0=small,1=normal/large,2=png (highest)
+export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
+  if (!sprite.__card) return;
+  // Estimate on-screen pixel height
+  const deviceRatio = (globalThis.devicePixelRatio||1);
+  const pxHeight = 140 * scale * deviceRatio;
+  let desired = 0;
+  // Lower thresholds so we promote quality sooner (helps moderate zoom levels remain crisp)
+  if (pxHeight > 140) desired = 2; // promote to png at lower on-screen size
+  else if (pxHeight > 90) desired = 1; // switch to normal sooner
+  // Avoid downgrade churn
+  if (sprite.__qualityLevel !== undefined && desired <= sprite.__qualityLevel) return;
+  // Already loading something higher
+  if (sprite.__hiResLoading) return;
+  const card = sprite.__card;
+  let url: string | undefined;
+  if (desired === 2) url = card.image_uris?.png || card.card_faces?.[0]?.image_uris?.png || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  else if (desired === 1) url = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+  if (!url) return;
+  // If already at this URL skip
+  if (sprite.texture?.baseTexture?.resource?.url === url || sprite.__hiResUrl === url) { sprite.__qualityLevel = desired; return; }
   sprite.__hiResLoading = true; sprite.__hiResUrl = url;
   try {
     if (!PIXI.Assets.cache.has(url)) PIXI.Assets.add({ alias:url, src:url, crossorigin:'anonymous' } as any);
     PIXI.Assets.load(url).then((tex:PIXI.Texture)=> {
       sprite.__hiResLoading = false;
       if (!tex) return;
-      sprite.texture = tex; // maintain display size
-      sprite.width = 100; sprite.height = 140;
-      sprite.__hiResLoaded = true; sprite.__hiResAt = performance.now();
-      hiResQueue.push(sprite); evictHiResIfNeeded();
+      // Improve sampling quality (Pixi v8): enable mipmaps + linear scaling if available
+      try {
+        const bt:any = tex.baseTexture as any;
+        if (bt.style) {
+          bt.style.mipmap = 'on';
+          bt.style.scaleMode = 'linear';
+        }
+      } catch {}
+      sprite.texture = tex; sprite.width = 100; sprite.height = 140;
+      sprite.__qualityLevel = desired;
+      if (desired >= 1) { sprite.__hiResLoaded = true; sprite.__hiResAt = performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); }
       if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true);
     }).catch(()=> { sprite.__hiResLoading = false; });
   } catch { sprite.__hiResLoading = false; }
@@ -131,11 +156,16 @@ export function updateCardSpriteAppearance(s: CardSprite, selected:boolean) {
   s.texture = inGroup ? (selected? cachedTextures.inGroupSelected : cachedTextures.inGroup) : (selected? cachedTextures.selected : cachedTextures.base);
 }
 
-export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], world: PIXI.Container, stage: PIXI.Container, onCommit?: (moved: CardSprite[])=>void, isPanning?: ()=>boolean) {
+export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], world: PIXI.Container, stage: PIXI.Container, onCommit?: (moved: CardSprite[])=>void, isPanning?: ()=>boolean, startMarquee?: (global: PIXI.Point, additive:boolean)=>void) {
   let dragState: null | { sprites: CardSprite[]; offsets: {sprite:CardSprite, dx:number, dy:number}[] } = null;
   s.on('pointerdown', (e:any)=> {
   if (e.button!==0) return; // only left button selects / drags
   if (isPanning && isPanning()) return; // ignore clicks while panning with space
+    // If Shift held, allow marquee instead of starting a card drag (when user intends multi-select)
+    if (e.shiftKey && startMarquee) {
+      startMarquee(new PIXI.Point(e.global.x, e.global.y), true);
+      return; // don't initiate drag
+    }
     if (!e.shiftKey && !SelectionStore.state.cardIds.has(s.__id)) SelectionStore.selectOnlyCard(s.__id); else if (e.shiftKey) SelectionStore.toggleCard(s.__id);
     const ids = SelectionStore.getCards();
     const all = getAll();
