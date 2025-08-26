@@ -1,3 +1,5 @@
+// Desktop (Node/Tauri) only module. Do not import directly in browser code paths.
+// Guard dynamic access via repositories.ts.
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
