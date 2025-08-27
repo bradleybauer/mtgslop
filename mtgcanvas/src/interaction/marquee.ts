@@ -3,7 +3,8 @@ import type { CardSprite } from '../scene/cardNode';
 import { SelectionStore } from '../state/selectionStore';
 
 interface MarqueeState { start: PIXI.Point; rect: PIXI.Graphics; additive: boolean; active:boolean; }
-type QueryFn = (rect:{x:number,y:number,w:number,h:number})=>CardSprite[];
+type QueryResult = { cardIds?: number[]; groupIds?: number[] };
+type QueryFn = (rect:{x:number,y:number,w:number,h:number})=>QueryResult;
 
 export class MarqueeSystem {
   private state: MarqueeState | null = null;
@@ -25,11 +26,20 @@ export class MarqueeSystem {
     const g = this.state.rect; g.clear(); g.rect(rx,ry,rw,rh).fill({color:0x0088ff, alpha:0.08}).stroke({color:0x00aaff,width:1,alpha:0.9}); (g as any).__lastRect = {x:rx,y:ry,w:rw,h:rh};
   }
   finish() {
-  if (!this.state) return; const s = this.state; const g = s.rect; const additive = s.additive; const data = (g as any).__lastRect; const activated = s.active; g.destroy(); this.state=null; if (!activated || !data) return; let candidates: CardSprite[];
-    if (this.query) { candidates = this.query({x:data.x,y:data.y,w:data.w,h:data.h}); }
-    else { const sprites = this.getSprites(); candidates = sprites.filter(s=> (s.x+100)>=data.x && s.x <= data.x+data.w && (s.y+140)>=data.y && s.y <= data.y+data.h); }
-    const selected = candidates.map(s=> s.__id);
-    if (additive) { const next=new Set(SelectionStore.getCards()); selected.forEach(id=> next.add(id)); SelectionStore.replace({ cardIds: next, groupIds: new Set(SelectionStore.getGroups()) }); } else { SelectionStore.replace({ cardIds: new Set(selected), groupIds: new Set() }); }
+    if (!this.state) return;
+    const s = this.state; const g = s.rect; const additive = s.additive; const data = (g as any).__lastRect; const activated = s.active; g.destroy(); this.state=null; if (!activated || !data) return;
+    let res: QueryResult | null = null;
+    if (this.query) { res = this.query({x:data.x,y:data.y,w:data.w,h:data.h}); }
+    else {
+      const sprites = this.getSprites();
+      const cards = sprites.filter(s=> (s.x+100)>=data.x && s.x <= data.x+data.w && (s.y+140)>=data.y && s.y <= data.y+data.h).map(s=> s.__id);
+      res = { cardIds: cards, groupIds: [] };
+    }
+    const selCards = new Set<number>(additive ? SelectionStore.getCards() : []);
+    const selGroups = new Set<number>(additive ? SelectionStore.getGroups() : []);
+    (res?.cardIds || []).forEach(id=> selCards.add(id));
+    (res?.groupIds || []).forEach(id=> selGroups.add(id));
+    SelectionStore.replace({ cardIds: selCards, groupIds: selGroups });
   }
   isActive() { return !!this.state; }
   isActivated() { return !!this.state?.active; }

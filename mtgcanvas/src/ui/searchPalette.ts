@@ -25,7 +25,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
   let cursor = 0; // index into currentMatches
   let navEl: HTMLDivElement | null = null; let counterEl: HTMLSpanElement | null = null; let prevBtn: HTMLButtonElement | null = null; let nextBtn: HTMLButtonElement | null = null; let groupBtn: HTMLButtonElement | null = null;
   type FilterMode = 'all' | 'ungrouped' | 'grouped';
-  let filterMode: FilterMode = 'all';
+  let filterMode: FilterMode = 'ungrouped';
 
   function ensure() {
     if (palette) return palette;
@@ -79,12 +79,61 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     function centerOnCursor(){ const id = currentMatches[cursor]; if (id!=null) focusSprite(id); }
     prevBtn.onclick=()=> { if (cursor>0){ cursor--; updateNavState(); centerOnCursor(); } };
     nextBtn.onclick=()=> { if (cursor<currentMatches.length-1){ cursor++; updateNavState(); centerOnCursor(); } };
-  groupBtn.onclick=()=> { if (currentMatches.length){ const q = inputEl?.value.trim() || ''; const name = `Search: ${q}`; createGroupForSprites(currentMatches.slice(), name); hide(); } };
+  groupBtn.onclick=()=> { if (currentMatches.length){ const q = inputEl?.value.trim() || ''; const name = q; createGroupForSprites(currentMatches.slice(), name); hide(); } };
     navEl.append(prevBtn, counterEl, nextBtn, groupBtn);
     wrap.appendChild(navEl);
     const hint = document.createElement('div');
-  hint.style.cssText = 'font-size:12px;opacity:.6;';
-  hint.innerHTML = 'Scryfall-like: name:, o:, t:, a:, ft:, wm:, r:, e:, lang:, game:, frame:, border:, stamp:.\nColors: c=uw, c>=ug, id<=wub. Mana: m:2WW, mana:{R/P}, manavalue>=3, manavalue:even.\nStats: pow>=3, pow>tou, pt>=10. Formats: f:modern, banned:legacy. Prices: usd>1.\nNegate with -, exact name with !"Lightning Bolt", regex with o:/^\\{T\\}:/. OR and (parentheses) supported.';
+    hint.style.cssText = 'font-size:12px;opacity:.6;white-space:normal;line-height:1.35;';
+    hint.innerHTML = `
+<details>
+  <summary style="cursor:pointer">Search syntax cheatsheet</summary>
+  <div style="margin-top:6px"></div>
+  <div><b>Basics</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+  <li>Free text matches name + type + oracle (Scryfall-like). Use quotes for phrases: <code>"draw a card"</code></li>
+    <li>Negate with <code>-</code>: <code>-o:land</code>. OR with the word <code>OR</code>. Parentheses supported.</li>
+    <li>Exact name: prefix token with <code>!</code> e.g. <code>!"Lightning Bolt"</code></li>
+    <li>Regex: wrap in slashes (case‑insensitive): <code>o:/^\\{T\\}:/</code>. Wildcard <code>*</code> works in text fields.</li>
+  </ul>
+  <div><b>Fields</b></div>
+  <div style="margin:6px 0 8px 0;">
+    <code>name</code>, <code>o</code> (oracle), <code>t</code> (type), <code>a</code> (artist), <code>ft</code> (flavor), <code>wm</code> (watermark),
+    <code>r</code> (rarity), <code>e</code>/<code>set</code>, <code>lang</code>, <code>game</code>, <code>frame</code>, <code>border</code>, <code>stamp</code>
+  </div>
+  <div><b>Colors</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+    <li><code>c</code> / <code>ci</code> = color identity (Scryfall): <code>c=uw</code> (exact UW), <code>c>=ug</code> (includes U and G), <code>c<=wub</code> (subset of W/U/B), <code>c!=g</code></li>
+    <li><code>color</code> = printed colors (use when you need printed, not identity): <code>color=rg</code></li>
+  </ul>
+  <div><b>Mana / Symbols</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+    <li>Cost: <code>m:2WW</code>, <code>mana:{R/P}</code> (supports <code>=, !=, &gt;, &gt;=, &lt;, &lt;=</code> against symbol multisets)</li>
+    <li>Devotion: <code>devotion:{G}{G}{G}</code>. Produced mana: <code>produces:ru</code></li>
+    <li>Search symbols in text or cost: <code>o:{R}</code>, <code>m:{R}</code></li>
+    <li>Mana value: <code>mv&gt;=3</code>, <code>manavalue:even</code></li>
+  </ul>
+  <div><b>Stats</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+    <li><code>pow</code>/<code>tou</code>/<code>loy</code>: <code>pow&gt;=3</code>, <code>tou&lt;5</code></li>
+    <li>Cross‑field: <code>pow&gt;tou</code>. Sum: <code>pt&gt;=10</code></li>
+  </ul>
+  <div><b>Sets / Rarity / Numbers</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+    <li><code>e:khm</code>, <code>r:rare</code> (supports comparisons by rarity order), <code>cn&gt;=123</code></li>
+    <li>Date/year: <code>date&gt;=2014-07-18</code>, <code>year:2015</code></li>
+  </ul>
+  <div><b>Formats / Prices</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+    <li><code>f:modern</code>, <code>banned:legacy</code>, <code>restricted:vintage</code></li>
+    <li><code>usd&gt;1</code>, <code>eur&lt;5</code>, <code>tix=0</code></li>
+  </ul>
+  <div><b>Flags</b></div>
+  <ul style="margin:6px 0 8px 18px;">
+    <li><code>is:</code> <em>spell</em>, <em>permanent</em>, <em>dfc</em>, <em>modal</em>, <em>vanilla</em>, <em>frenchvanilla</em>, <em>bear</em>, <em>hybrid</em>, <em>phyrexian</em>, <em>foil</em>, <em>etched</em>, <em>hires</em>, <em>promo</em>, <em>spotlight</em>, <em>digital</em>, <em>reserved</em>, <em>commander</em>…</li>
+    <li><code>has:</code> <em>indicator</em>, <em>watermark</em>, <em>flavor</em>, <em>security_stamp</em></li>
+  </ul>
+  <div style="opacity:.8">Tip: plain text without fields matches names and dedupes by name; use <code>o:</code> for oracle‑only text.</div>
+</details>`;
     wrap.appendChild(hint);
     document.body.appendChild(wrap);
     // Global escape handler so palette closes even if focus moved to buttons
@@ -218,7 +267,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     if (typeof window !== 'undefined') { const evt = (window as any).requestAnimationFrame ? (window as any).requestAnimationFrame : (fn:Function)=> setTimeout(fn,0); evt(()=> { const total = currentMatches.length; if (counterEl) counterEl.textContent = total? `${cursor+1} / ${total}`:'0 / 0'; if (prevBtn) prevBtn.disabled = cursor<=0; if (nextBtn) nextBtn.disabled = cursor>=total-1; if (navEl) navEl.style.display = total? 'flex':'none'; }); }
     if (commit) {
       if (!matched.length) { infoEl.textContent = 'No matches.'; return; }
-  const name = `Search: ${q}`;
+  const name = q;
       createGroupForSprites(matched, name);
       hide();
     }

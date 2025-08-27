@@ -1,27 +1,24 @@
 import * as PIXI from 'pixi.js';
 import { SelectionStore } from '../state/selectionStore';
 import { getCachedImage } from '../services/imageCache';
+import { textureSettings as settings } from '../config/rendering';
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry { tex: PIXI.Texture; level: number; refs: number; bytes: number; lastUsed: number; url: string; }
 const textureCache = new Map<string, TexCacheEntry>(); // url -> texture entry
 let totalTextureBytes = 0;
-const GPU_BUDGET_MB = Number(localStorage.getItem('gpuTexBudgetMB') || '1024'); // adjustable
-// Hi-res disable now only blocks PNG tier (level 2). Medium (normal) tier still loads.
-const DISABLE_PNG_TIER = true;
-const NO_EVICT = localStorage.getItem('noEvictTextures') === '1'; // if set, skip LRU eviction (honor user's persistent cache preference)
-const GPU_BUDGET_BYTES = GPU_BUDGET_MB * 1024 * 1024;
 const inflightTex = new Map<string, Promise<PIXI.Texture>>();
 
 // Central decode queue to throttle createImageBitmap to avoid main thread jank during large zoom transitions.
 // We allow a small number of parallel decodes; others queue FIFO.
-const MAX_PARALLEL_DECODES = 32; // use 32 since I have a decent gaming pc
 let activeDecodes = 0;
-const decodeQueue: { blob: Blob; url: string; resolve: (t:PIXI.Texture)=>void; reject:(e:any)=>void; }[] = [];
+const decodeQueue: { blob: Blob; url: string; resolve: (t:PIXI.Texture)=>void; reject:(e:any)=>void; priority?: number; }[] = [];
+// Small helper to get current limit (adaptive or UI-defined)
+function currentDecodeLimit(){ return settings.decodeParallelLimit; }
 
-function scheduleDecode(blob:Blob, url:string): Promise<PIXI.Texture> {
+function scheduleDecode(blob:Blob, url:string, priority=0): Promise<PIXI.Texture> {
   return new Promise((resolve,reject)=> {
-    decodeQueue.push({ blob, url, resolve, reject });
+  decodeQueue.push({ blob, url, resolve, reject, priority });
     pumpDecodeQueue();
   });
 }
@@ -43,8 +40,10 @@ async function runDecodeTask(task:{blob:Blob; url:string; resolve:(t:PIXI.Textur
   finally { activeDecodes--; pumpDecodeQueue(); }
 }
 function pumpDecodeQueue(){
-  while (activeDecodes < MAX_PARALLEL_DECODES && decodeQueue.length){
-    // Simple FIFO; could prioritize by visibility or desired quality in future.
+  if (!decodeQueue.length) return;
+  // Pick highest priority first (lower number = higher priority)
+  decodeQueue.sort((a,b)=> (a.priority??0) - (b.priority??0));
+  while (activeDecodes < currentDecodeLimit() && decodeQueue.length){
     const task = decodeQueue.shift()!;
     runDecodeTask(task);
   }
@@ -62,7 +61,7 @@ export async function loadTextureFromCachedURL(url:string): Promise<PIXI.Texture
       const resp = await fetch(ci.objectURL);
       blob = await resp.blob();
     }
-  const tex = await scheduleDecode(blob, url);
+  const tex = await scheduleDecode(blob, url, 0);
   const bytes = estimateTextureBytes(tex);
   textureCache.set(url, { tex, level: 0, refs: 0, bytes, lastUsed: performance.now(), url });
   totalTextureBytes += bytes;
@@ -118,14 +117,15 @@ function estimateTextureBytes(tex: PIXI.Texture): number {
 }
 
 function enforceTextureBudget(){
-  if (NO_EVICT) return; // user opted out of texture eviction
-  if (!isFinite(GPU_BUDGET_BYTES) || totalTextureBytes <= GPU_BUDGET_BYTES) return;
+  if (!settings.allowEvict) return; // user opted out of texture eviction
+  const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
+  if (!isFinite(budgetBytes) || totalTextureBytes <= budgetBytes) return;
   const candidates: TexCacheEntry[] = [];
   textureCache.forEach(ent=> { if (ent.refs===0) candidates.push(ent); });
   if (!candidates.length) return;
   candidates.sort((a,b)=> a.lastUsed - b.lastUsed);
   for (const ent of candidates){
-    if (totalTextureBytes <= GPU_BUDGET_BYTES) break;
+    if (totalTextureBytes <= budgetBytes) break;
     try { ent.tex.destroy(true); } catch {}
     textureCache.delete(ent.url);
     totalTextureBytes -= ent.bytes;
@@ -136,6 +136,40 @@ function markTextureUsed(url:string){ const ent = textureCache.get(url); if (ent
 
 export function registerVisibleSpriteTexture(sprite: CardSprite){ const url:any = (sprite as any).__currentTexUrl; if (url) markTextureUsed(url); }
 export function enforceTextureBudgetNow(){ enforceTextureBudget(); }
+
+function demoteSpriteTextureToPlaceholder(s: CardSprite){
+  const prevUrl: string | undefined = (s as any).__currentTexUrl;
+  if (prevUrl){
+    const pe = textureCache.get(prevUrl);
+    if (pe){ pe.refs = Math.max(0, pe.refs-1); if (pe.refs===0){ try { pe.tex.destroy(true); totalTextureBytes -= pe.bytes; } catch{}; textureCache.delete(prevUrl); } }
+    (s as any).__currentTexUrl = undefined;
+  }
+  s.__imgLoaded = false; s.__imgLoading = false; s.__qualityLevel = 0;
+  // Switch to placeholder visuals based on selection/grouping
+  try { updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id)); } catch {}
+}
+
+// Public: reduce GPU usage by demoting offscreen sprites until under budget.
+export function enforceGpuBudgetForSprites(sprites: CardSprite[]){
+  const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
+  if (!isFinite(budgetBytes) || totalTextureBytes <= budgetBytes) return;
+  // Build candidate list: offscreen sprites holding a texture, prefer highest quality and least-recently-used textures
+  const candidates = sprites.filter(s=> !s.visible && (s as any).__currentTexUrl);
+  // Sort by quality desc, then by texture lastUsed ascending (older first)
+  candidates.sort((a,b)=> {
+    const qa = a.__qualityLevel ?? 0; const qb = b.__qualityLevel ?? 0;
+    if (qa !== qb) return qb - qa;
+    const ua = textureCache.get((a as any).__currentTexUrl || '')?.lastUsed ?? 0;
+    const ub = textureCache.get((b as any).__currentTexUrl || '')?.lastUsed ?? 0;
+    return ua - ub;
+  });
+  for (const s of candidates){
+    if (totalTextureBytes <= budgetBytes) break;
+    demoteSpriteTextureToPlaceholder(s);
+  }
+  // Final sweep of unreferenced textures (LRU) if still over
+  enforceTextureBudget();
+}
 
 export function ensureCardImage(sprite: CardSprite) {
   if (sprite.__imgLoaded || sprite.__imgLoading) return;
@@ -160,11 +194,13 @@ export function ensureCardImage(sprite: CardSprite) {
 // ---- High Resolution Upgrade Logic ----
 // Relaxed hi-res cache: allow more upgraded textures to stay resident before eviction.
 // (Adjustable if memory pressure observed; tuned upward per user request.)
-const HI_RES_LIMIT = 800; // previous: 250
+// Hi-res retention limit now reads from centralized settings dynamically
 const hiResQueue: CardSprite[] = []; // oldest at index 0
 
 function evictHiResIfNeeded() {
-  while (hiResQueue.length > HI_RES_LIMIT) {
+  const limit = settings.hiResLimit;
+  if (!isFinite(limit)) return; // unlimited; rely on GPU budget eviction only
+  while (hiResQueue.length > limit) {
     const victim = hiResQueue.shift();
     if (victim && victim.__hiResLoaded) {
       // Downgrade: keep small texture? We don't re-store it; assume still cached.
@@ -185,8 +221,7 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   if (pxHeight > 140) desired = 2; // promote to png at lower on-screen size
   else if (pxHeight > 90) desired = 1; // switch to normal sooner
   // Avoid downgrade churn
-  // If highest tier disabled, cap desired at 1 (normal)
-  if (DISABLE_PNG_TIER && desired === 2) desired = 1;
+  if (settings.disablePngTier && desired === 2) desired = 1; // cap at normal when PNG disabled
   if (sprite.__qualityLevel !== undefined && desired <= sprite.__qualityLevel) return;
   // Already loading something higher
   if (sprite.__hiResLoading) return;
@@ -346,7 +381,7 @@ function flipCardFace(sprite: CardSprite){
   const faces = card.card_faces; if (!Array.isArray(faces) || faces.length < 2) return;
   sprite.__faceIndex = sprite.__faceIndex ? 0 : 1;
   // Reset state so fresh load occurs (ephemeral; no persistence)
-  sprite.__hiResLoaded=false; sprite.__hiResUrl=undefined; sprite.__qualityLevel=0; sprite.__imgLoaded=false; sprite.__imgUrl=undefined;
+  sprite.__hiResLoaded=false; sprite.__hiResUrl=undefined; sprite.__hiResLoading=false; sprite.__qualityLevel=0; sprite.__imgLoaded=false; sprite.__imgUrl=undefined;
   ensureCardImage(sprite);
   // After initial small loads, attempt hi-res for current zoom next frame
   requestAnimationFrame(()=> { try { const scale = (sprite.parent?.parent as any)?.scale?.x || 1; updateCardTextureForScale(sprite, scale); } catch {} });

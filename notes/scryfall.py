@@ -61,7 +61,7 @@ def stream_cards(query: str, unique: str = "cards"):
 
 def main():
     ap = argparse.ArgumentParser(description="Write raw Scryfall cards as JSONL.")
-    ap.add_argument("-q", "--query", default="oracletag:typal id:simic -t:emblem legal:commander",
+    ap.add_argument("-q", "--query", default="oracletag:typal id:simic -t:emblem legal:commander -is:unset",
                     help="Scryfall search string (same as you'd type on the website).")
     ap.add_argument("-o", "--out", default="scryfall_results.jsonl",
                     help="Output jsonl filename.")

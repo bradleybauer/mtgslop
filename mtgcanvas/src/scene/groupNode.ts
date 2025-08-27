@@ -33,6 +33,10 @@ export interface GroupVisual {
   _zoomLabel?: PIXI.Text;        // large centered label when zoomed far out
   _lastZoomPhase?: number;       // memo of last applied phase (0..1)
   _overlayDrag?: PIXI.Graphics;  // transparent drag surface when overlay visible
+  // Faceted layout support
+  layoutMode?: 'grid' | 'faceted';
+  facet?: FacetKind;
+  _facetLayer?: PIXI.Container;  // holds section labels for faceted layout
 }
 
 // Styling constants (tuned to approximate ComfyUI aesthetic while remaining generic)
@@ -81,9 +85,10 @@ const CARD_W = 100, CARD_H = 140;
 const PAD_X = 16;      // inner left/right
 const PAD_Y = 12;      // inner top below header
 const PAD_BOTTOM_EXTRA = 8; // extra bottom padding so cards don't touch frame
-// Target: at zoom 2.69 screen gap ~8px -> world gap ≈ 8 / 2.69 ≈ 2.97 -> use 3
-const GAP_X = 3;       // ultra-tight horizontal space (≈8px at scale 2.69)
-const GAP_Y = 3;       // ultra-tight vertical space (≈8px at scale 2.69)
+// Choose gaps that keep (CARD + GAP) divisible by GRID_SIZE so snap() preserves spacing.
+// 100 + 4 = 104, 140 + 4 = 144, both divisible by 8. Visually ≈8px at common zooms.
+const GAP_X = 4;
+const GAP_Y = 4;
 function snap(v:number){ return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 
 // Muted header palette; can be recolored later via context menu.
@@ -100,14 +105,16 @@ export function createGroupVisual(id:number, x:number, y:number, w=320, h=280): 
   const price = new PIXI.Text({ text:'$0.00', style:{ fill: PRICE_TEXT_COLOR, fontSize: 12, fontFamily: FONT_FAMILY, fontWeight:'500', lineHeight: 12 } });
   const resize = new PIXI.Graphics(); resize.eventMode='static'; resize.cursor='nwse-resize';
   const color = PALETTE[id % PALETTE.length];
-  const gv: GroupVisual = { id, gfx, frame, header, label, count, price, resize, name:`Group ${id}`, color, w, h, collapsed:false, _expandedH:h, items:new Set(), order:[], totalPrice:0 };
+  const gv: GroupVisual = { id, gfx, frame, header, label, count, price, resize, name:`Group ${id}`, color, w, h, collapsed:false, _expandedH:h, items:new Set(), order:[], totalPrice:0, layoutMode:'grid' };
   // Zoom-out overlay label (initially hidden)
   const zoomLabel = new PIXI.Text({ text: gv.name, style:{ fill: HEADER_TEXT_COLOR, fontSize: 96, fontFamily: FONT_FAMILY, fontWeight: '600', align:'center', lineHeight: 100 } });
   zoomLabel.visible = false; zoomLabel.alpha = 0; gv._zoomLabel = zoomLabel;
   // Dedicated transparent drag surface placed below text
   const overlayDrag = new PIXI.Graphics();
   overlayDrag.visible = false; overlayDrag.alpha = 0; (overlayDrag as any).eventMode = 'none'; gv._overlayDrag = overlayDrag;
-  gfx.addChild(frame, header, label, count, price, resize, overlayDrag, zoomLabel);
+  // Facet layer for section labels
+  const facetLayer = new PIXI.Container(); facetLayer.zIndex = 50; facetLayer.eventMode = 'none'; gv._facetLayer = facetLayer;
+  gfx.addChild(frame, header, label, count, price, facetLayer, resize, overlayDrag, zoomLabel);
   drawGroup(gv, false);
   return gv;
 }
@@ -180,8 +187,12 @@ function positionHeaderText(t: PIXI.Text){
 }
 
 // Layout cards into a grid inside group body.
+// Note: For freeform-in-group behavior, prefer ensureGroupEncapsulates() + placeCardInGroup().
+// Regardless of strategy, card positions are always snapped to the global grid.
 export function layoutGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: (s:CardSprite)=>void) {
   if (gv.collapsed) return;
+  // Clear any previous facet labels if switching back to plain grid
+  if (gv._facetLayer) { try { gv._facetLayer.removeChildren().forEach(c=> (c as any).destroy?.()); } catch {} }
   const items = gv.order.map(id=> sprites.find(s=> s.__id===id)).filter(Boolean) as CardSprite[];
   if (!items.length) return;
   const usableW = Math.max(1, gv.w - PAD_X*2);
@@ -190,9 +201,8 @@ export function layoutGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: (s
     const col = i % cols; const row = Math.floor(i / cols);
     const tx = gv.gfx.x + PAD_X + col * (CARD_W + GAP_X);
     const ty = gv.gfx.y + HEADER_HEIGHT + PAD_Y + row * (CARD_H + GAP_Y);
-  // Do NOT snap internal card placements to the global 20px grid; we need sub-grid precision
-  // so that tiny world gaps (e.g. 3) remain intact and scale predictably (≈8px at zoom 2.69).
-  const nx = tx; const ny = ty;
+  // Always snap to global grid so cards align inside and outside groups.
+  const nx = snap(tx); const ny = snap(ty);
   if (s.x!==nx || s.y!==ny) { s.x = nx; s.y = ny; onMoved && onMoved(s); }
     // Ensure grouped cards render above group frame/background.
   const desiredZ = gv.gfx.zIndex + 1;
@@ -204,6 +214,238 @@ export function layoutGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: (s
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
   positionZoomOverlay(gv); // maintain overlay position after layout growth
 }
+
+// ------------- Faceted Grid Layout -------------
+export type FacetKind = 'color' | 'type' | 'set' | 'mv';
+
+function getFacetKey(card:any, kind:FacetKind): string {
+  if (!card) return 'Unknown';
+  switch(kind){
+    case 'color': {
+      const ci = Array.isArray(card.color_identity) ? card.color_identity : (card.color_identity? String(card.color_identity).split('') : []);
+      const up = (ci||[]).map((c:string)=> String(c).toUpperCase()).filter(Boolean);
+      if (!up.length) return 'Colorless';
+      if (up.length===1) return up[0];
+      // Two or more -> e.g. "WU"; treat as Multicolor, but include exact combo label
+      return up.sort().join('');
+    }
+    case 'type': {
+      const t = String(card.type_line||'');
+      const order = ['Creature','Instant','Sorcery','Artifact','Enchantment','Planeswalker','Battle','Land'];
+      for (const k of order) { if (new RegExp(`\\b${k}\\b`,'i').test(t)) return k; }
+      return 'Other';
+    }
+    case 'set': return (card.set || '—').toString().toUpperCase();
+    case 'mv': {
+      const cmc = card.cmc; const v = (typeof cmc==='number' && isFinite(cmc))? Math.floor(cmc) : -1; return v>=0? String(v) : '—';
+    }
+  }
+}
+
+function sectionSortOrder(kind:FacetKind, a:string, b:string): number {
+  if (kind==='color') {
+    const order = new Map<string,number>([
+      ['W',0],['U',1],['B',2],['R',3],['G',4],['C',5]
+    ]);
+    const ra = order.has(a)? order.get(a)! : (a.length>1? 6: 7);
+    const rb = order.has(b)? order.get(b)! : (b.length>1? 6: 7);
+    if (ra!==rb) return ra-rb; return a.localeCompare(b);
+  }
+  if (kind==='type'){
+    const order = new Map<string,number>([
+      ['Creature',0],['Instant',1],['Sorcery',2],['Artifact',3],['Enchantment',4],['Planeswalker',5],['Battle',6],['Land',7],['Other',8]
+    ]);
+    return (order.get(a)??99) - (order.get(b)??99);
+  }
+  if (kind==='mv'){
+    const na = parseInt(a,10), nb = parseInt(b,10);
+    const ia = isFinite(na)? na : 1e9; const ib = isFinite(nb)? nb : 1e9;
+    return ia - ib;
+  }
+  // set code
+  return a.localeCompare(b);
+}
+
+export function layoutFaceted(
+  gv: GroupVisual,
+  sprites: CardSprite[],
+  facet: FacetKind,
+  onMoved?: (s:CardSprite)=>void
+){
+  if (gv.collapsed) return;
+  const items = gv.order.map(id=> sprites.find(s=> s.__id===id)).filter(Boolean) as CardSprite[];
+  // Clear previous labels
+  if (gv._facetLayer) { try { gv._facetLayer.removeChildren().forEach(c=> (c as any).destroy?.()); } catch {} }
+  if (!items.length) { drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); positionZoomOverlay(gv); return; }
+  // Partition by facet
+  const buckets = new Map<string, CardSprite[]>();
+  for (const s of items) {
+    const key = getFacetKey((s as any).__card, facet);
+    const list = buckets.get(key) || []; list.push(s); buckets.set(key, list);
+  }
+  const keys = [...buckets.keys()].sort((a,b)=> sectionSortOrder(facet, a, b));
+  const usableW = Math.max(1, gv.w - PAD_X*2);
+  const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
+  const SECTION_GAP = 10;
+  const LABEL_H = 18;
+  const LABEL_STYLE = { fill: HEADER_TEXT_COLOR, fontSize: 12, fontFamily: FONT_FAMILY, lineHeight: 12 } as any;
+  let cursorY = gv.gfx.y + HEADER_HEIGHT + PAD_Y;
+  for (const key of keys){
+    const arr = buckets.get(key)!;
+    // Draw section label
+    if (gv._facetLayer) {
+      const t = new PIXI.Text({ text: key, style: LABEL_STYLE });
+      // facetLayer is a child of gv.gfx, so use local coordinates.
+      t.x = PAD_X; 
+      t.y = cursorY - gv.gfx.y; // convert world Y to local
+      gv._facetLayer.addChild(t);
+    }
+    const gridTop = cursorY + LABEL_H + 4;
+    arr.forEach((s,i)=> {
+      const col = i % cols; const row = Math.floor(i / cols);
+      const tx = gv.gfx.x + PAD_X + col*(CARD_W+GAP_X);
+      const ty = gridTop + row*(CARD_H+GAP_Y);
+      const nx = snap(tx), ny = snap(ty);
+      if (s.x!==nx || s.y!==ny) { s.x = nx; s.y = ny; onMoved && onMoved(s); }
+      const desiredZ = gv.gfx.zIndex + 1; if ((s as any).zIndex < desiredZ) { (s as any).zIndex = desiredZ; (s as any).__baseZ = desiredZ; }
+    });
+    const rows = Math.ceil(arr.length / cols);
+    const sectionH = LABEL_H + 4 + (rows? (rows*CARD_H + Math.max(0,rows-1)*GAP_Y) : 0);
+    cursorY = gridTop + (rows? (rows*CARD_H + Math.max(0,rows-1)*GAP_Y) : 0) + SECTION_GAP;
+  }
+  const innerTop = gv.gfx.y + HEADER_HEIGHT + PAD_Y;
+  const neededInner = Math.max(0, cursorY - innerTop) + PAD_Y + PAD_BOTTOM_EXTRA - SECTION_GAP; // remove last gap
+  const neededH = HEADER_HEIGHT + neededInner;
+  if (neededH > gv.h) { gv.h = snap(neededH); gv._expandedH = gv.h; }
+  drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+  positionZoomOverlay(gv);
+}
+
+// ---- Freeform helpers (no grid) ----
+function rectsOverlap(ax:number, ay:number, aw:number, ah:number, bx:number, by:number, bw:number, bh:number, gapX:number, gapY:number){
+  return !(ax + aw + gapX <= bx || bx + bw + gapX <= ax || ay + ah + gapY <= by || by + bh + gapY <= ay);
+}
+
+function overlapArea(ax:number, ay:number, aw:number, ah:number, bx:number, by:number, bw:number, bh:number): number {
+  const x1 = Math.max(ax, bx);
+  const y1 = Math.max(ay, by);
+  const x2 = Math.min(ax + aw, bx + bw);
+  const y2 = Math.min(ay + ah, by + bh);
+  if (x2 <= x1 || y2 <= y1) return 0;
+  return (x2 - x1) * (y2 - y1);
+}
+
+function memberSprites(gv: GroupVisual, sprites: CardSprite[], excludeId?: number): CardSprite[] {
+  return gv.order
+    .map(id=> sprites.find(s=> s.__id===id))
+    .filter((s): s is CardSprite => !!s && s.__id !== excludeId);
+}
+
+// Expand/shift the group to encapsulate all its member cards with padding, without moving cards.
+export function ensureGroupEncapsulates(gv: GroupVisual, sprites: CardSprite[]) {
+  if (!(GROUP_AUTO_RESIZE)) return; // respect global toggle (no auto-resize)
+  const items = memberSprites(gv, sprites);
+  if (!items.length) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of items) {
+    if (s.x < minX) minX = s.x;
+    if (s.y < minY) minY = s.y;
+    if (s.x + CARD_W > maxX) maxX = s.x + CARD_W;
+    if (s.y + CARD_H > maxY) maxY = s.y + CARD_H;
+  }
+  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return;
+  const desiredX = Math.floor(minX - PAD_X);
+  const desiredY = Math.floor(minY - HEADER_HEIGHT - PAD_Y);
+  const desiredW = Math.max(160, Math.ceil((maxX - minX) + PAD_X*2));
+  const desiredH = Math.max(HEADER_HEIGHT + 80, Math.ceil(HEADER_HEIGHT + PAD_Y + (maxY - minY) + PAD_BOTTOM_EXTRA));
+  // Snap size to grid; position can remain freeform for smoother feel.
+  gv.w = snap(desiredW);
+  gv.h = snap(desiredH);
+  gv._expandedH = gv.h;
+  gv.gfx.x = desiredX;
+  gv.gfx.y = desiredY;
+  drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+  positionZoomOverlay(gv);
+}
+
+// Place a specific card inside the group at the first available slot near a preferred point.
+// If no space is available, grow the group's height to make room and place at the new bottom row.
+export function placeCardInGroup(
+  gv: GroupVisual,
+  sprite: CardSprite,
+  sprites: CardSprite[],
+  onMoved?: (s:CardSprite)=>void,
+  preferredWorldX?: number,
+  preferredWorldY?: number
+) {
+  const others = memberSprites(gv, sprites, sprite.__id);
+  // Compute inner bounds
+  const left = snap(gv.gfx.x + PAD_X);
+  const top = snap(gv.gfx.y + HEADER_HEIGHT + PAD_Y);
+  const right = gv.gfx.x + gv.w - PAD_X;
+  const bottom = gv.gfx.y + gv.h - PAD_BOTTOM_EXTRA;
+  const step = GRID_SIZE; // search on grid-aligned steps
+  // Start search near preferred point if provided, else top-left
+  const startX = snap(Math.min(Math.max((preferredWorldX ?? left), left), Math.max(left, right - CARD_W)));
+  const startY = snap(Math.min(Math.max((preferredWorldY ?? top), top), Math.max(top, bottom - CARD_H)));
+
+  function fitsAt(x:number, y:number){
+    for (const o of others){
+      if (rectsOverlap(x, y, CARD_W, CARD_H, o.x, o.y, CARD_W, CARD_H, GAP_X, GAP_Y)) return false;
+    }
+    return true;
+  }
+
+  // Spiral-ish expanding search from preferred point
+  const maxRadius = Math.max(gv.w, gv.h);
+  let placed = false; let px = startX, py = startY;
+  outer: for (let radius = 0; radius <= maxRadius; radius += CARD_W/2) {
+    for (let dy = -radius; dy <= radius; dy += step) {
+      for (let dx = -radius; dx <= radius; dx += step) {
+        const tx = snap(Math.min(Math.max(startX + dx, left), right - CARD_W));
+        const ty = snap(Math.min(Math.max(startY + dy, top), bottom - CARD_H));
+        if (fitsAt(tx, ty)) { px = tx; py = ty; placed = true; break outer; }
+      }
+    }
+  }
+  if (!placed && GROUP_AUTO_RESIZE) {
+    // Make room: extend height by one row and place at first slot in new bottom row
+    const added = CARD_H + GAP_Y;
+    gv.h = snap(gv.h + added);
+    gv._expandedH = gv.h;
+    // New inner bottom
+    const newTop = gv.gfx.y + HEADER_HEIGHT + PAD_Y;
+    const newBottom = snap(gv.gfx.y + gv.h - PAD_BOTTOM_EXTRA - CARD_H);
+    // Scan left->right for first fit in new bottom row
+    for (let x = snap(left); x <= right - CARD_W; x += step) {
+      if (fitsAt(x, newBottom)) { px = x; py = newBottom; placed = true; break; }
+    }
+    if (!placed) { px = snap(left); py = newBottom; placed = true; }
+    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+    positionZoomOverlay(gv);
+  } else if (!placed) {
+    // No resize allowed: choose the least-overlapping grid slot within bounds
+    let bestX = snap(left), bestY = snap(top);
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let y = snap(top); y <= bottom - CARD_H; y += step) {
+      for (let x = snap(left); x <= right - CARD_W; x += step) {
+        let score = 0;
+        for (const o of others) score += overlapArea(x, y, CARD_W, CARD_H, o.x, o.y, CARD_W, CARD_H);
+        if (score < bestScore) { bestScore = score; bestX = x; bestY = y; if (score===0) break; }
+      }
+      if (bestScore===0) break;
+    }
+    px = bestX; py = bestY; placed = true;
+  }
+  const nx = snap(px), ny = snap(py);
+  if (sprite.x !== nx || sprite.y !== ny) { sprite.x = nx; sprite.y = ny; onMoved && onMoved(sprite); }
+  const desiredZ = gv.gfx.zIndex + 1;
+  if (sprite.zIndex < desiredZ) { sprite.zIndex = desiredZ; (sprite as any).__baseZ = desiredZ; }
+}
+
+// ---- Global behavior toggles ----
+export let GROUP_AUTO_RESIZE = false; // default off per user preference
+export function setGroupAutoResize(v:boolean){ GROUP_AUTO_RESIZE = !!v; }
 
 export function setGroupCollapsed(gv: GroupVisual, collapsed:boolean, sprites: CardSprite[]) {
   if (gv.collapsed === collapsed) return;
@@ -288,6 +530,22 @@ export function updateGroupTextQuality(gv: GroupVisual, worldScale:number, dpr: 
       }
     } catch {}
   });
+  // Apply same dynamic resolution to faceted section labels, if present
+  if (gv._facetLayer && gv._facetLayer.children && gv._facetLayer.children.length) {
+    gv._facetLayer.children.forEach((c:any)=> {
+      if (!c || typeof c !== 'object') return;
+      // Treat any PIXI.Text-like child
+      if (c.resolution !== undefined) { c.resolution = target; c.dirty = true; c.updateText && c.updateText(); }
+      else if (c.texture?.baseTexture?.setResolution) c.texture.baseTexture.setResolution(target);
+      try {
+        const bt:any = c.texture?.baseTexture; if (bt?.style) {
+          bt.style.mipmap = 'on';
+          bt.style.scaleMode = 'linear';
+          if (bt.style.anisotropicLevel !== undefined) bt.style.anisotropicLevel = 4;
+        }
+      } catch {}
+    });
+  }
   // After rebake widths may shift; re-truncate label if necessary.
   truncateLabelIfNeeded(gv);
 }

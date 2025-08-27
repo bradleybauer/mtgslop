@@ -117,4 +117,16 @@ export const GroupsRepo = {
     if (db) { db.prepare('UPDATE groups SET name=? WHERE id=?').run(name, id); return; }
     const g = mem.groups.find(g=> g.id===id); if (g) g.name = name;
   }
+  ,
+  /**
+   * Memory-only: ensure the next generated group id is at least `min`.
+   * No-op when a real DB is present.
+   */
+  ensureNextId(min:number){
+    const db = getDbSafe(); if (db) return;
+    if (typeof min === 'number' && isFinite(min)) {
+      // Bump the counter to avoid collisions with externally restored ids
+      if (min > memGroupId) memGroupId = min;
+    }
+  }
 };

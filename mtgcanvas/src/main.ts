@@ -1,9 +1,10 @@
 import * as PIXI from 'pixi.js';
 import { SelectionStore } from './state/selectionStore';
 import { Camera } from './scene/camera';
-import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale, preloadCardQuality, getHiResQueueLength, getInflightTextureCount } from './scene/cardNode';
+import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale, preloadCardQuality, getHiResQueueLength, getInflightTextureCount, enforceGpuBudgetForSprites } from './scene/cardNode';
+import { configureTextureSettings } from './config/rendering';
 import { getImageCacheStats, hasCachedURL, getCacheUsage } from './services/imageCache';
-import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics, updateGroupZoomPresentation } from './scene/groupNode';
+import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics, updateGroupZoomPresentation, ensureGroupEncapsulates, placeCardInGroup, layoutFaceted, type FacetKind } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
 import { initHelp } from './ui/helpPanel';
@@ -29,6 +30,8 @@ const SPACING_Y = CARD_H_GLOBAL + GAP_Y_GLOBAL;
 function snap(v:number) { return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 
 const app = new PIXI.Application();
+// Splash management: keep canvas hidden until persisted layout + groups are restored
+const splashEl = document.getElementById('splash');
 (async () => {
   await app.init({ background: '#1e1e1e', resizeTo: window, antialias: true, resolution: window.devicePixelRatio || 1 });
   function applyCanvasBg(){
@@ -41,6 +44,8 @@ const app = new PIXI.Application();
   registerThemeListener(()=> applyCanvasBg());
   // Will run once theme styles ensured below; calling here just in case dark default already present.
   applyCanvasBg();
+  // Keep canvas hidden until ready (avoid pre-restore flicker)
+  app.canvas.style.visibility = 'hidden';
   document.body.appendChild(app.canvas);
 
   const world = new PIXI.Container();
@@ -57,8 +62,8 @@ const app = new PIXI.Application();
   function createSpriteForInstance(inst:{id:number,x:number,y:number,z:number, group_id?:number|null, card?:any}) {
     const s = createCardSprite({ id: inst.id, x: inst.x, y: inst.y, z: inst.z ?? zCounter++, renderer: app.renderer, card: inst.card });
     if (inst.group_id) (s as any).__groupId = inst.group_id;
-  // Flag for context / pan logic
-  (s as any).__cardSprite = true;
+    // Flag for context / pan logic
+    (s as any).__cardSprite = true;
     world.addChild(s); sprites.push(s);
     spatial.insert({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 });
   attachCardInteractions(s, ()=>sprites, world, app.stage, moved=> moved.forEach(ms=> {
@@ -111,6 +116,14 @@ const app = new PIXI.Application();
       }
     } catch {}
   }
+  let startupComplete = false;
+  function finishStartup(){
+    if (startupComplete) return; startupComplete = true;
+    // Show canvas, remove splash
+    app.canvas.style.visibility = 'visible';
+    try { splashEl?.parentElement?.removeChild(splashEl); } catch {}
+  }
+
   if (!loaded.instances.length) {
     (async ()=> {
       const universe = await fetchCardUniverse();
@@ -120,18 +133,27 @@ const app = new PIXI.Application();
   await spawnLargeSet(universe, inst=> {
     if (storedLayoutByIndex && storedLayoutByIndex[inst.z]) { const p = storedLayoutByIndex[inst.z]; inst.x = p.x; inst.y = p.y; }
     createSpriteForInstance(inst);
-  }, { count: TARGET, batchSize: 800, onProgress:(done,total)=> { if (done===total) { console.log('[startup] full spawn complete'); if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups(); fitAll(); } } });
+  }, { count: TARGET, batchSize: 800, onProgress:(done,total)=> { if (done===total) { console.log('[startup] full spawn complete'); if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups(); fitAll(); finishStartup(); } } });
       } else {
   console.warn(`[startup] dataset (${DATASET_PREFERRED}/${DATASET_FALLBACK}) not found or empty; falling back to 200 dummy cards`);
   for (let i=0;i<200;i++) { const x=(i%20)*SPACING_X, y=Math.floor(i/20)*SPACING_Y; const id = InstancesRepo.create(1, x, y); const pos = storedLayoutByIndex && storedLayoutByIndex[i]; createSpriteForInstance({ id, x: pos?pos.x:x, y: pos?pos.y:y, z:zCounter++ }); }
   if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups();
-  fitAll();
+  fitAll(); finishStartup();
       }
     })();
   } else { loaded.instances.forEach((inst:any)=> createSpriteForInstance(inst)); applyStoredPositionsMemory(); }
 
   // Groups container + visuals
   const groups = new Map<number, GroupVisual>();
+  function relayoutGroup(gv: GroupVisual){
+    if ((gv as any).layoutMode === 'faceted' && (gv as any).facet) {
+      layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+    } else {
+      layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+    }
+    updateGroupMetrics(gv, sprites);
+    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+  }
   // Unified group deletion: reset member cards and remove the group
   function deleteGroupById(id: number){
     const gv = groups.get(id); if (!gv) return;
@@ -155,27 +177,54 @@ const app = new PIXI.Application();
   }
   // Memory mode group persistence helpers
   let lsGroupsTimer:any=null; function scheduleGroupSave(){ if (PERSIST_MODE!=='memory') return; if (lsGroupsTimer) return; lsGroupsTimer = setTimeout(persistLocalGroups, 400); }
-  function persistLocalGroups(){ lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
-  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; if (gr.collapsed) gv.collapsed=!!gr.collapsed; if (gr.color) gv.color=gr.color; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); }); groups.forEach(gv=> { layoutGroup(gv, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, false); }); scheduleGroupSave(); }
+  function persistLocalGroups(){ lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, layoutMode: (gv as any).layoutMode || 'grid', facet: (gv as any).facet || null, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
+  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; /* collapse retired: always load expanded */ gv.collapsed=false; if (gr.color) gv.color=gr.color; if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode; if (gr.facet) (gv as any).facet = gr.facet; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); }); groups.forEach(gv=> { ensureGroupEncapsulates(gv, sprites); if ((gv as any).layoutMode==='faceted' && (gv as any).facet) { layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } else { updateGroupMetrics(gv, sprites); drawGroup(gv, false); } });
+    // Ensure new group creations won't collide with restored ids (memory only)
+    try {
+      const maxId = Math.max(...[...groups.keys(), 0]);
+      (GroupsRepo as any).ensureNextId && (GroupsRepo as any).ensureNextId(maxId + 1);
+    } catch {}
+    scheduleGroupSave(); }
   // Rehydrate persisted groups
   if (loaded.groups && (loaded as any).groups.length) {
-    (loaded as any).groups.forEach((gr:any)=> {
+  (loaded as any).groups.forEach((gr:any)=> {
       const t = gr.transform;
       if (!t) return; const gv = createGroupVisual(gr.id, t.x ?? 0, t.y ?? 0, t.w ?? 300, t.h ?? 300);
       gv.name = gr.name || gv.name;
-      if (gr.collapsed) gv.collapsed = !!gr.collapsed;
+      // Collapse feature retired: ignore persisted collapsed flag so zoom overlay can function
+      gv.collapsed = false;
       groups.set(gr.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); drawGroup(gv, false);
     });
     // After groups exist, attach any sprites with stored group_id
     sprites.forEach(s=> { const gid = (s as any).__groupId; if (gid && groups.has(gid)) { const gv = groups.get(gid)!; gv.items.add(s.__id); gv.order.push(s.__id); } });
     // Layout groups with their members
-    groups.forEach(gv=> { layoutGroup(gv, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, false); });
+  groups.forEach(gv=> { ensureGroupEncapsulates(gv, sprites); updateGroupMetrics(gv, sprites); drawGroup(gv, false); });
+    // For safety, also bump the next id in memory fallback when DB is absent
+    try {
+      if (!hasRealDb()) { const maxId = Math.max(...[...groups.keys(), 0]); (GroupsRepo as any).ensureNextId && (GroupsRepo as any).ensureNextId(maxId + 1); }
+    } catch {}
+    finishStartup();
   } else if (PERSIST_MODE==='memory') {
-    if (loaded.instances.length) restoreMemoryGroups();
+    if (loaded.instances.length) { restoreMemoryGroups(); finishStartup(); }
+    else {
+      // If there are no instances yet, the async spawn path above will call finishStartup
+    }
+  } else {
+    // No groups in DB, but instances already placed: we're ready
+    finishStartup();
   }
   world.sortableChildren = true;
+  
+  // Runtime texture/gpu settings (no localStorage). Tune here as needed.
+  configureTextureSettings({
+    gpuBudgetMB: 4900,       // ~60% of 8GB
+    allowEvict: true,        // reclaim unreferenced textures
+    disablePngTier: true,    // keep medium-tier only for big boards; toggle off for small projects
+    decodeParallelLimit: 32  // balance between speed and FPS
+  });
+  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); enforceGpuBudgetForSprites(sprites as unknown as CardSprite[]); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
 
-  const help = initHelp(); help.ensureFab(); (window as any).__helpAPI = help; // debug access
+  const help = initHelp(); (window as any).__helpAPI = help; // debug access
   function toggleHelp() { help.toggle(); }
 
   // Inline group renaming (kept local for now)
@@ -333,24 +382,166 @@ const app = new PIXI.Application();
     const content = panel.querySelector('#cip-content') as HTMLElement|null;
     if (empty) empty.style.display='none'; if (content) content.style.display='flex';
     const nameEl = panel.querySelector('#cip-name') as HTMLElement|null; if (nameEl) nameEl.textContent = card.name || '(Unnamed)';
-    const typeEl = panel.querySelector('#cip-type') as HTMLElement|null; if (typeEl) typeEl.textContent = card.type_line || '';
-    const oracleEl = panel.querySelector('#cip-oracle') as HTMLElement|null; if (oracleEl) oracleEl.textContent = card.oracle_text || '';
+  const typeEl = panel.querySelector('#cip-type') as HTMLElement|null; if (typeEl) typeEl.textContent = card.type_line || '';
+  const oracleEl = panel.querySelector('#cip-oracle') as HTMLElement|null; if (oracleEl) oracleEl.innerHTML = renderTextWithManaIcons(card.oracle_text || '');
     const metaEl = panel.querySelector('#cip-meta') as HTMLElement|null;
     if (metaEl){
-      const parts: string[] = [];
-      if (card.mana_cost) parts.push(`<span style="font-weight:600;">Cost:</span> ${escapeHtml(card.mana_cost)}`);
-      if (card.cmc!==undefined) parts.push(`<span style="font-weight:600;">CMC:</span> ${card.cmc}`);
-      if (card.power!==undefined && card.toughness!==undefined) parts.push(`<span style="font-weight:600;">P/T:</span> ${card.power}/${card.toughness}`);
-      if (Array.isArray(card.color_identity) && card.color_identity.length) parts.push(`<span style="font-weight:600;">CI:</span> ${card.color_identity.join('')}`);
-      if (card.rarity) parts.push(`<span style="font-weight:600;">Rarity:</span> ${escapeHtml(card.rarity)}`);
-      if (card.set) parts.push(`<span style="font-weight:600;">Set:</span> ${escapeHtml(card.set.toUpperCase())}`);
-      if (card.lang && card.lang!=='en') parts.push(`<span style="font-weight:600;">Lang:</span> ${escapeHtml(card.lang)}`);
-      metaEl.innerHTML = parts.map(p=> `<div>${p}</div>`).join('');
+      const rows: string[] = [];
+      // Cost with real mana icons
+      if (card.mana_cost) {
+        rows.push(`<div><span style="font-weight:600;">Cost:</span> ${renderManaCostHTML(card.mana_cost)}</div>`);
+      }
+      // Price (USD or USD Foil fallback)
+      const price = getCardPriceUSD(card);
+      if (price) rows.push(`<div><span style="font-weight:600;">Price:</span> $${price}</div>`);
+      // CMC
+      if (card.cmc!==undefined) rows.push(`<div><span style="font-weight:600;">CMC:</span> ${card.cmc}</div>`);
+      // P/T
+      if (card.power!==undefined && card.toughness!==undefined) rows.push(`<div><span style="font-weight:600;">P/T:</span> ${card.power}/${card.toughness}</div>`);
+  // Color identity as icons
+  if (Array.isArray(card.color_identity) && card.color_identity.length) rows.push(`<div><span style="font-weight:600;">CI:</span> ${renderColorIdentityIcons(card.color_identity)}</div>`);
+      // Rarity
+      if (card.rarity) rows.push(`<div><span style="font-weight:600;">Rarity:</span> ${escapeHtml(card.rarity)}</div>`);
+      // Set icon + full name + abbrev
+      if (card.set) {
+        const setCode = String(card.set).toLowerCase();
+        const setName = escapeHtml(card.set_name || '');
+        const setImg = `<img src="https://svgs.scryfall.io/sets/${setCode}.svg" alt="${setCode.toUpperCase()}" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px;filter:drop-shadow(0 0 0 rgba(0,0,0,0.15));"/>`;
+        const label = setName ? `${setName} (${setCode.toUpperCase()})` : setCode.toUpperCase();
+        rows.push(`<div><span style="font-weight:600;">Set:</span> ${setImg}${label}</div>`);
+      }
+      // Language
+      if (card.lang && card.lang!=='en') rows.push(`<div><span style="font-weight:600;">Lang:</span> ${escapeHtml(card.lang)}</div>`);
+  metaEl.innerHTML = rows.join('');
+  try {
+        attachManaIconFallbacks(metaEl);
+        const oracle = panel.querySelector('#cip-oracle') as HTMLElement | null;
+        if (oracle) attachManaIconFallbacks(oracle);
+      } catch {}
     }
     // Image: use existing sprite texture (copy into a canvas for crispness) if loaded; else trigger ensureCardImage then copy later
   // Image removed per user request.
   }
   function escapeHtml(s:string){ return s.replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'} as any)[c] || c); }
+
+  // --- Scryfall Symbology mapping (optional, to guarantee exact URIs) ---
+  let __symbologyMap: Record<string, { svg_uri: string; english?: string }> = {};
+  let __symbologyLoaded = false; let __symbologyLoading = false;
+  async function ensureSymbologyLoaded(){
+    if (__symbologyLoaded || __symbologyLoading) return;
+    __symbologyLoading = true;
+    try {
+      const res = await fetch('https://api.scryfall.com/symbology');
+      if (res.ok) {
+        const json = await res.json();
+        if (json && Array.isArray(json.data)) {
+          const m: Record<string, { svg_uri: string; english?: string }> = {};
+          json.data.forEach((cs: any)=>{
+            const key = typeof cs.symbol === 'string' ? String(cs.symbol).toUpperCase() : '';
+            if (key && cs.svg_uri) m[key] = { svg_uri: String(cs.svg_uri), english: cs.english };
+          });
+          __symbologyMap = m; __symbologyLoaded = true;
+          // Repaint info panels to replace any text fallbacks once symbols are known
+          try { updateCardInfoPanel(); } catch {}
+        }
+      }
+    } catch {}
+    finally { __symbologyLoading = false; }
+  }
+  function symbolSvgFromMap(rawToken: string): string | null {
+    const upper = rawToken.trim().toUpperCase();
+    const key = upper.startsWith('{') ? upper : `{${upper}}`;
+    return __symbologyMap[key]?.svg_uri || null;
+  }
+  function filenameCodeFromRaw(rawToken: string): string {
+    // Return the Scryfall filename code (uppercase, order preserved, slashes removed)
+    let t = rawToken.trim().toUpperCase();
+    if (t.startsWith('{') && t.endsWith('}')) t = t.slice(1, -1);
+    // Common direct forms
+    if (/^[0-9]+$/.test(t)) return t; // numeric
+    if (['X','Y','Z','W','U','B','R','G','C','S','L','E','D','P','T','Q','PW','CHAOS','TK','A','HALF','INFINITY'].includes(t)) return t;
+    if (t.includes('/')) return t.replaceAll('/', ''); // e.g., W/U -> WU, 2/W -> 2W, G/U/P -> GUP
+    return t; // default
+  }
+  function chooseSymbolUrl(rawToken: string): { src: string; code: string } {
+    // Prefer exact URI from symbology when available; otherwise derive filename code.
+    const fromMap = symbolSvgFromMap(rawToken);
+    if (fromMap) {
+      // Derive a plausible code for fallback host by stripping path
+      const m = fromMap.match(/\/card-symbols\/([^./]+)\.svg/i);
+      const code = m ? m[1] : filenameCodeFromRaw(rawToken);
+      return { src: fromMap, code };
+    }
+    const code = filenameCodeFromRaw(rawToken);
+    return { src: `https://svgs.scryfall.io/card-symbols/${encodeURIComponent(code)}.svg`, code };
+  }
+  // Render mana cost like "{1}{U}{U}" into inline SVG icons from Scryfall.
+  function renderManaCostHTML(cost:string): string {
+    // Begin background load of symbology in case we need exact mappings
+    try { ensureSymbologyLoaded(); } catch {}
+    const out: string[] = [];
+    const re = /\{([^}]+)\}/g; let m: RegExpExecArray | null;
+    while ((m = re.exec(cost))) {
+    const raw = m[1];
+    const { src, code } = chooseSymbolUrl(raw);
+    out.push(`<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(raw)}}" title="{${escapeHtml(raw)}}" style="width:22px;height:22px;vertical-align:-5px;margin:0 2px;" loading="lazy" decoding="async"/>`);
+    }
+    if (!out.length) return escapeHtml(cost);
+    return out.join('');
+  }
+  // Render any text with embedded mana symbols like "Tap: {T}: Add {G}{G}" into HTML with icons, preserving newlines as <br>.
+  function renderTextWithManaIcons(text: string): string {
+    try { ensureSymbologyLoaded(); } catch {}
+    if (!text) return '';
+    const re = /\{([^}]+)\}/g;
+    let last = 0; let m: RegExpExecArray | null; const out: string[] = [];
+    while ((m = re.exec(text))) {
+      const before = text.slice(last, m.index);
+      if (before) out.push(escapeHtml(before).replace(/\n/g, '<br/>'));
+      const raw = m[1];
+      const { src, code } = chooseSymbolUrl(raw);
+    out.push(`<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(raw)}}" title="{${escapeHtml(raw)}}" style="width:22px;height:22px;vertical-align:-5px;margin:0 2px;" loading="lazy" decoding="async"/>`);
+      last = re.lastIndex;
+    }
+    const tail = text.slice(last);
+    if (tail) out.push(escapeHtml(tail).replace(/\n/g, '<br/>'));
+    return out.join('');
+  }
+  function attachManaIconFallbacks(scope: HTMLElement){
+    const imgs = scope.querySelectorAll('img.mana-icon');
+    imgs.forEach((img)=>{
+      const el = img as HTMLImageElement;
+      // happy path: do nothing if it loads
+      el.onerror = ()=>{
+        const code = el.getAttribute('data-code') || '';
+        const fallback = `https://c2.scryfall.com/file/scryfall-symbols/card-symbols/${code}.svg`;
+        if (el.src !== fallback) {
+          el.src = fallback;
+          el.onerror = ()=>{
+            // final fallback: readable text token (no custom icons)
+            try { el.outerHTML = `<span style="display:inline-block;min-width:22px;text-align:center;font-weight:700;">{${code}}</span>`; } catch {}
+          };
+        }
+      };
+    });
+  }
+  function renderColorIdentityIcons(ci: string[]): string {
+    const order = ['W','U','B','R','G'];
+    const sorted = ci.slice().sort((a,b)=> order.indexOf(a) - order.indexOf(b));
+    return sorted.map(sym=>{
+      const raw = sym.toUpperCase();
+      const { src, code } = chooseSymbolUrl(raw);
+  return `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(sym)}}" title="${escapeHtml(sym)}" style="width:22px;height:22px;vertical-align:-5px;margin:0 2px;opacity:.95;" loading="lazy" decoding="async"/>`;
+    }).join('');
+  }
+  // canonicalManaCode replaced with filenameCodeFromRaw + chooseSymbolUrl
+  function getCardPriceUSD(card:any): string | null {
+    const p = card?.prices || {};
+    const usd = p.usd && !isNaN(parseFloat(p.usd)) ? parseFloat(p.usd) : null;
+    const usdFoil = p.usd_foil && !isNaN(parseFloat(p.usd_foil)) ? parseFloat(p.usd_foil) : null;
+    const val = usd ?? usdFoil;
+    return val!=null ? val.toFixed(2) : null;
+  }
   SelectionStore.on(()=> { updateGroupInfoPanel(); updateCardInfoPanel(); });
 
   function attachResizeHandle(gv: GroupVisual) {
@@ -459,8 +650,8 @@ const app = new PIXI.Application();
     if (resizeMode.includes('n')) { newH = Math.max(MIN_H, newH); newH = snap(newH); newY = bottomEdge - newH; }
     else if (resizeMode.includes('s')) { newH = Math.max(MIN_H, newH); newH = snap(newH); }
     // Apply
-    gv.w = newW; gv.h = newH; gv.gfx.x = newX; gv.gfx.y = newY; gv._expandedH = gv.h;
-    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+  gv.w = newW; gv.h = newH; gv.gfx.x = newX; gv.gfx.y = newY; gv._expandedH = gv.h;
+  drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); updateGroupMetrics(gv, sprites);
     updateResizeDebug();
   });
   const endResize=()=>{ if (resizing) { resizing=false; resizeMode=''; gv.frame.cursor='default'; } };
@@ -516,8 +707,35 @@ const app = new PIXI.Application();
       showGroupContextMenu(gv, e.global);
     });
   // Group body interactions handled globally like canvas now.
-  app.stage.on('pointermove', e=> { if (!drag) return; const local = world.toLocal(e.global); g.x = local.x - dx; g.y = local.y - dy; memberOffsets.forEach(m=> { m.sprite.x = g.x + m.ox; m.sprite.y = g.y + m.oy; }); });
-  app.stage.on('pointerup', ()=> { if (!drag) return; drag=false; g.x = snap(g.x); g.y = snap(g.y); memberOffsets.forEach(m=> { m.sprite.x = snap(m.sprite.x); m.sprite.y = snap(m.sprite.y); spatial.update({ id:m.sprite.__id, minX:m.sprite.x, minY:m.sprite.y, maxX:m.sprite.x+100, maxY:m.sprite.y+140 }); }); persistGroupTransform(gv.id,{x:g.x,y:g.y,w:gv.w,h:gv.h}); scheduleGroupSave(); });
+  app.stage.on('pointermove', e=> {
+    if (!drag) return; const local = world.toLocal(e.global); const nx = local.x - dx; const ny = local.y - dy; const ddx = nx - g.x; const ddy = ny - g.y; g.x = nx; g.y = ny;
+    memberOffsets.forEach(m=> { m.sprite.x = g.x + m.ox; m.sprite.y = g.y + m.oy; });
+    // If multiple groups are selected, move them in lockstep
+    const selected = new Set(SelectionStore.getGroups()); selected.delete(gv.id);
+    if (selected.size){ selected.forEach(id=> { const og = groups.get(id); if (!og) return; og.gfx.x += ddx; og.gfx.y += ddy; // shift member cards
+      [...og.items].forEach(cid=> { const s = sprites.find(sp=> sp.__id===cid); if (s){ s.x += ddx; s.y += ddy; } }); }); }
+  });
+  const endGroupDrag = ()=> {
+    if (!drag) return; drag=false;
+    // Snap and persist the primary group
+    g.x = snap(g.x); g.y = snap(g.y);
+    memberOffsets.forEach(m=> { m.sprite.x = snap(m.sprite.x); m.sprite.y = snap(m.sprite.y); spatial.update({ id:m.sprite.__id, minX:m.sprite.x, minY:m.sprite.y, maxX:m.sprite.x+100, maxY:m.sprite.y+140 }); });
+    persistGroupTransform(gv.id,{x:g.x,y:g.y,w:gv.w,h:gv.h});
+
+    // Snap and persist any other selected groups moved in lockstep
+    const selected = new Set(SelectionStore.getGroups()); selected.delete(gv.id);
+    if (selected.size){
+      selected.forEach(id=> {
+        const og = groups.get(id); if (!og) return;
+        og.gfx.x = snap(og.gfx.x); og.gfx.y = snap(og.gfx.y);
+        [...og.items].forEach(cid=> { const s = sprites.find(sp=> sp.__id===cid); if (s){ s.x = snap(s.x); s.y = snap(s.y); spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }); } });
+        persistGroupTransform(og.id, { x: og.gfx.x, y: og.gfx.y, w: og.w, h: og.h });
+      });
+    }
+    scheduleGroupSave();
+  };
+  app.stage.on('pointerup', endGroupDrag);
+  app.stage.on('pointerupoutside', endGroupDrag);
   }
 
   // ---- Group context menu (Groups V2) ----
@@ -542,6 +760,21 @@ const app = new PIXI.Application();
   function addItem(label:string, action:()=>void){ const it=document.createElement('div'); it.textContent=label; it.className='ui-menu-item'; it.onclick=()=> { action(); hideGroupMenu(); }; el.appendChild(it); }
   // Collapse feature removed
   addItem('Auto-pack', ()=> { autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
+  // Layout submenu
+  const layoutHeader = document.createElement('div'); layoutHeader.textContent='Layout'; layoutHeader.style.cssText='padding:6px 6px 2px;opacity:.7;font-weight:600;'; el.appendChild(layoutHeader);
+  function setFacet(kind:FacetKind|null){
+    if (kind){ (gv as any).layoutMode='faceted'; (gv as any).facet=kind; }
+    else { (gv as any).layoutMode='grid'; (gv as any).facet=undefined; }
+    relayoutGroup(gv); scheduleGroupSave();
+  }
+  addItem('Grid (default)', ()=> setFacet(null));
+  const gridBy = document.createElement('div'); gridBy.style.cssText='display:flex;gap:6px;padding:2px 6px 6px;flex-wrap:wrap;';
+  function facetBtn(label:string, kind:FacetKind){ const b=document.createElement('button'); b.type='button'; b.textContent=label; b.className='ui-btn'; b.style.fontSize='13px'; b.style.padding='4px 8px'; b.onclick=()=> { setFacet(kind); hideGroupMenu(); }; return b; }
+  gridBy.appendChild(facetBtn('Grid by: Color','color'));
+  gridBy.appendChild(facetBtn('Type','type'));
+  gridBy.appendChild(facetBtn('Set','set'));
+  gridBy.appendChild(facetBtn('Mana Value','mv'));
+  el.appendChild(gridBy);
     addItem('Rename', ()=> startGroupRename(gv));
   addItem('Recolor', ()=> { gv.color = PALETTE[Math.floor(Math.random()*PALETTE.length)]; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
   addItem('Delete', ()=> { deleteGroupById(gv.id); SelectionStore.clear(); scheduleGroupSave(); });
@@ -577,23 +810,11 @@ const app = new PIXI.Application();
       openGroups.sort((a,b)=> a.id - b.id).forEach(gv=> { const already = !!card.__groupId && card.__groupId===gv.id; const it = addItem(gv.name || `Group ${gv.id}`, ()=> {
         if (already) return; // no-op
         // Remove from previous group if any
-        if (card.__groupId){ const old = groups.get(card.__groupId); if (old){ removeCardFromGroup(old, card.__id); layoutGroup(old, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); } }
+  if (card.__groupId){ const old = groups.get(card.__groupId); if (old){ removeCardFromGroup(old, card.__id); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); } }
   console.log('[cardMenu] add card', card.__id, 'to group', gv.id);
   addCardToGroupOrdered(gv, card.__id, gv.order.length); card.__groupId = gv.id; try { InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]); } catch {}
-        const prevX = card.x, prevY = card.y;
-        layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave();
-        // Fallback: if card stayed in same place (layout maybe bailed), manually place at end position inside group.
-        if (card.x===prevX && card.y===prevY){
-          const idx = gv.order.indexOf(card.__id);
-          if (idx>=0){
-            const usableW = Math.max(1, gv.w - 16*2);
-            const cols = Math.max(1, Math.floor((usableW + 3) / (100 + 3)));
-            const col = idx % cols; const row = Math.floor(idx / cols);
-            card.x = gv.gfx.x + 16 + col * (100 + 3);
-            card.y = gv.gfx.y + HEADER_HEIGHT + 12 + row * (140 + 3);
-            spatial.update({ id:card.__id, minX:card.x, minY:card.y, maxX:card.x+100, maxY:card.y+140 });
-          }
-        }
+  placeCardInGroup(gv, card, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+  updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave();
         // Update appearance for membership (non-image placeholder style) & selection outline
         updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id));
   }); if (already){ it.style.opacity='0.8'; const badge=document.createElement('span'); badge.textContent='✓'; badge.style.cssText='margin-left:auto;color:#5fcba4;font-size:24px;'; it.appendChild(badge); } });
@@ -602,7 +823,7 @@ const app = new PIXI.Application();
       const divider=document.createElement('div'); divider.style.cssText='height:1px;background:#1e323d;margin:6px 4px;'; el.appendChild(divider);
       addItem('Remove from current group', ()=> {
         const old = card.__groupId? groups.get(card.__groupId): null;
-  if (old){ console.log('[cardMenu] remove card', card.__id, 'from group', old.id); removeCardFromGroup(old, card.__id); card.__groupId=undefined; try { InstancesRepo.updateMany([{ id: card.__id, group_id: null }]); } catch {} layoutGroup(old, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id)); }
+  if (old){ console.log('[cardMenu] remove card', card.__id, 'from group', old.id); removeCardFromGroup(old, card.__id); card.__groupId=undefined; try { InstancesRepo.updateMany([{ id: card.__id, group_id: null }]); } catch {} updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id)); }
       });
     }
     const bounds = app.renderer.canvas.getBoundingClientRect();
@@ -685,9 +906,22 @@ const app = new PIXI.Application();
   const gv = createGroupVisual(id, gx, gy, w, h);
   const ids = SelectionStore.getCards();
   const membershipBatch: {id:number,group_id:number}[] = [];
-  ids.forEach(cid=> { addCardToGroupOrdered(gv, cid, gv.order.length); const s = sprites.find(sp=> sp.__id===cid); if (s) { s.__groupId = gv.id; membershipBatch.push({id: cid, group_id: gv.id}); } });
+  const touchedOld = new Set<number>();
+  ids.forEach(cid=> {
+    const s = sprites.find(sp=> sp.__id===cid);
+    if (!s) return;
+    // Remove from previous group if any
+    if (s.__groupId && s.__groupId !== gv.id) {
+      const old = groups.get(s.__groupId);
+      if (old) { removeCardFromGroup(old, s.__id); touchedOld.add(old.id); }
+    }
+    addCardToGroupOrdered(gv, cid, gv.order.length);
+    s.__groupId = gv.id; membershipBatch.push({id: cid, group_id: gv.id});
+  });
   if (membershipBatch.length) { try { InstancesRepo.updateMany(membershipBatch); } catch {} }
   groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
+  // Update any old groups affected
+  touchedOld.forEach(gid=> { const og = groups.get(gid); if (!og) return; updateGroupMetrics(og, sprites); drawGroup(og, SelectionStore.state.groupIds.has(og.id)); });
   layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true); scheduleGroupSave();
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       } else {
@@ -781,7 +1015,7 @@ const app = new PIXI.Application();
       if (cardIds.length) {
         const touchedGroups = new Set<number>();
     cardIds.forEach(id=> { const idx = sprites.findIndex(s=> s.__id===id); if (idx>=0) { const s = sprites[idx]; const gid = s.__groupId; if (gid) { const gv = groups.get(gid); gv && gv.items.delete(s.__id); touchedGroups.add(gid); } s.destroy(); sprites.splice(idx,1); } });
-  touchedGroups.forEach(gid=> { const gv = groups.get(gid); if (gv) layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); }); if (touchedGroups.size) scheduleGroupSave();
+  touchedGroups.forEach(gid=> { const gv = groups.get(gid); if (gv) { ensureGroupEncapsulates(gv, sprites); } }); if (touchedGroups.size) scheduleGroupSave();
       }
   if (groupIds.length) { groupIds.forEach(id=> deleteGroupById(id)); scheduleGroupSave(); }
       SelectionStore.clear();
@@ -804,21 +1038,24 @@ const app = new PIXI.Application();
     if (target) {
       // If moving between groups remove from old
       let layoutOld: GroupVisual | undefined;
-      if (s.__groupId && s.__groupId !== target.id) { const old = groups.get(s.__groupId); if (old) { removeCardFromGroup(old, s.__id); layoutOld = old; } }
+  if (s.__groupId && s.__groupId !== target.id) { const old = groups.get(s.__groupId); if (old) { removeCardFromGroup(old, s.__id); layoutOld = old; } }
       if (!s.__groupId || s.__groupId !== target.id) {
-        const insertIdx = insertionIndexForPoint(target, cx, cy);
-        addCardToGroupOrdered(target, s.__id, insertIdx);
+        // Keep simple order: append at end; place near current drag position
+        addCardToGroupOrdered(target, s.__id, target.order.length);
         s.__groupId = target.id;
     // Persist membership change
     try { InstancesRepo.updateMany([{ id: s.__id, group_id: target.id }]); } catch {}
     scheduleGroupSave();
+    // Place at first available spot inside group (no forced resize; logic will respect global toggle)
+        placeCardInGroup(target, s, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 }), s.x, s.y);
       } else {
-        // Reposition within same group if significant horizontal move
-        const gv = groups.get(s.__groupId); if (gv){ const desired = insertionIndexForPoint(gv, cx, cy); const curIdx = gv.order.indexOf(s.__id); if (desired!==curIdx && desired>=0){ gv.order.splice(curIdx,1); gv.order.splice(Math.min(desired, gv.order.length),0,s.__id); } }
+    // Already a member: keep freeform position
       }
-  layoutGroup(target, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(target, sprites); if (layoutOld) { layoutGroup(layoutOld, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(layoutOld, sprites); drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id)); } drawGroup(target, SelectionStore.state.groupIds.has(target.id));
+  updateGroupMetrics(target, sprites);
+  if (layoutOld) { updateGroupMetrics(layoutOld, sprites); drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id)); }
+  drawGroup(target, SelectionStore.state.groupIds.has(target.id));
     } else if (s.__groupId) {
-  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) { layoutGroup(old, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); }
+  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) { updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); }
   // Persist removal
   try { InstancesRepo.updateMany([{ id: s.__id, group_id: null }]); } catch {}
     }
@@ -828,14 +1065,38 @@ const app = new PIXI.Application();
 
   // Unified marquee + drag/resize state handlers
   const marquee = new MarqueeSystem(world, app.stage, ()=>sprites, rect=> {
-    const found = spatial.search(rect.x, rect.y, rect.x+rect.w, rect.y+rect.h);
-    const idSet = new Set(found.map(f=> f.id));
     const x1 = rect.x, y1 = rect.y, x2 = rect.x + rect.w, y2 = rect.y + rect.h;
-    return sprites.filter(s=> {
-      if (!idSet.has(s.__id)) return false;
-      const cx = s.x + 50; const cy = s.y + 70; // center point
-      return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+    // Determine if any group with active overlay intersects selection rect
+    const activeGroups: number[] = [];
+    groups.forEach(gv=> {
+      if ((gv._lastZoomPhase || 0) > 0.05) {
+        const gx1 = gv.gfx.x, gy1 = gv.gfx.y, gx2 = gv.gfx.x + gv.w, gy2 = gv.gfx.y + gv.h;
+        const intersects = !(x2 < gx1 || x1 > gx2 || y2 < gy1 || y1 > gy2);
+        if (intersects) activeGroups.push(gv.id);
+      }
     });
+    if (activeGroups.length) {
+      // In overlay mode: select groups, but also include ungrouped cards in rect
+      const found = spatial.search(rect.x, rect.y, rect.x+rect.w, rect.y+rect.h);
+      const idSet = new Set(found.map(f=> f.id));
+      const cardIds = sprites.filter(s=> {
+        if (!idSet.has(s.__id)) return false;
+        if ((s as any).__groupId) return false;
+        const cx = s.x + 50; const cy = s.y + 70;
+        return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+      }).map(s=> s.__id);
+      return { groupIds: activeGroups, cardIds };
+    } else {
+      // Normal mode: select cards only
+      const found = spatial.search(rect.x, rect.y, rect.x+rect.w, rect.y+rect.h);
+      const idSet = new Set(found.map(f=> f.id));
+      const cardIds = sprites.filter(s=> {
+        if (!idSet.has(s.__id)) return false;
+        const cx = s.x + 50; const cy = s.y + 70;
+        return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+      }).map(s=> s.__id);
+      return { cardIds, groupIds: [] };
+    }
   });
 
   app.stage.on('pointerdown', e => {
@@ -1033,7 +1294,17 @@ const app = new PIXI.Application();
     function clearGroupsOnly(){
       // Remove membership on sprites
       const updates: {id:number,group_id:null}[] = [];
-      sprites.forEach(s=> { if ((s as any).__groupId){ (s as any).__groupId = undefined; updates.push({id:s.__id, group_id:null}); } });
+      sprites.forEach(s=> {
+        const anyS:any = s as any;
+        if (anyS.__groupId){ anyS.__groupId = undefined; updates.push({id:s.__id, group_id:null}); }
+        // Important: if zoom overlay was active, cards may be hidden/non-interactive -> restore defaults
+        if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
+        if (anyS.eventMode !== 'static') anyS.eventMode = 'static';
+        if (s.cursor !== 'pointer') s.cursor = 'pointer';
+        s.alpha = 1; s.visible = true; s.renderable = true;
+        // Refresh placeholder appearance & selection outline
+        try { updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id)); } catch {}
+      });
       if (updates.length) { try { InstancesRepo.updateMany(updates); } catch {} }
       // Destroy visuals
       const ids = [...groups.keys()]; ids.forEach(id=> { const gv = groups.get(id); if (gv){ gv.gfx.destroy(); } });
@@ -1044,6 +1315,8 @@ const app = new PIXI.Application();
     }
     function resetLayout(alreadyCleared:boolean){
       // Assign default grid positions based on current sprite order
+  // Ensure all sprites are interactive/visible (in case reset called while overlays active)
+  sprites.forEach(s=> { const anyS:any = s as any; if (anyS.__groupOverlayActive) anyS.__groupOverlayActive=false; if (anyS.eventMode!=='static') anyS.eventMode='static'; s.cursor='pointer'; s.alpha=1; s.visible=true; s.renderable=true; try { updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id)); } catch {} });
       const cols = Math.ceil(Math.sqrt(sprites.length || 1));
       const batch: {id:number,x:number,y:number}[] = [];
       sprites.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
@@ -1133,10 +1406,22 @@ const app = new PIXI.Application();
       const gv = createGroupVisual(id, 0, 0, 300, 300);
       gv.name = name;
       groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
-      ids.forEach(cid=> { addCardToGroupOrdered(gv, cid, gv.order.length); const s = sprites.find(sp=> sp.__id===cid); if (s) { (s as any).__groupId = gv.id; } });
+      const touchedOld = new Set<number>();
+      ids.forEach(cid=> {
+        const s = sprites.find(sp=> sp.__id===cid);
+        if (!s) return;
+        if (s.__groupId && s.__groupId !== gv.id) {
+          const old = groups.get(s.__groupId);
+          if (old) { removeCardFromGroup(old, s.__id); touchedOld.add(old.id); }
+        }
+        addCardToGroupOrdered(gv, cid, gv.order.length);
+        (s as any).__groupId = gv.id;
+      });
       try { InstancesRepo.updateMany(ids.map(cid=> ({id: cid, group_id: gv.id}))); } catch {}
       // Auto-pack to minimize height (balanced grid close to square)
       autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+      // Update any old groups that lost members
+  touchedOld.forEach(gid=> { const og = groups.get(gid); if (!og) return; ensureGroupEncapsulates(og, sprites); updateGroupMetrics(og, sprites); drawGroup(og, SelectionStore.state.groupIds.has(og.id)); });
       updateGroupMetrics(gv, sprites); drawGroup(gv, false);
       // --- Non-overlapping placement ---
       (function placeGroup(){

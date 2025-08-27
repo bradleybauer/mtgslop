@@ -179,8 +179,8 @@ const FIELD_ALIASES: Record<string,string> = {
   kw:'keywords', keyword:'keywords',
   t:'type_line', type:'type_line',
   layout:'layout',
-  // Colors / identity
-  c:'colors', color:'colors', id:'color_identity', identity:'color_identity', ci:'color_identity',
+  // Colors / identity (Scryfall semantics: c -> color identity; printed colors via 'color')
+  c:'color_identity', ci:'color_identity', id:'color_identity', identity:'color_identity', color:'colors',
   // Mana & values
   mana:'mana_cost', m:'mana_cost', cmc:'cmc', mv:'cmc', manavalue:'cmc',
   // Power/toughness/loyalty
@@ -211,12 +211,7 @@ export function parseScryfallQuery(input: string): Predicate | null {
   const src = (input||'').trim(); if (!src) return null;
   try {
     const tokens = lexical(src);
-    // Heuristic: if the query has no field operators/OR/parentheses/negation, treat it as a name phrase
-    if (!/[A-Za-z_][A-Za-z0-9_]*:/.test(src) && !/\bOR\b/i.test(src) && !/[()]/.test(src) && !/^\-/.test(src)) {
-      // Prefer exact name-like matching like Scryfall behavior for plain names
-      const pred = textFieldPredicate('name', src, false);
-      return card => pred(card);
-    }
+  // No special-casing of plain queries: default free text will search name + type + oracle (Scryfall-like)
     const node = parse(tokens);
     return card => evalNode(node, card);
   } catch (e) {
@@ -351,9 +346,9 @@ function buildTokenPredicate(raw:string, neg:boolean, exact:boolean): Predicate 
   // Bare color identity forms: c=uw, c>=uw, c<=wub, c!=g, cwu (contains at least w,u)
   const ciBare = raw.match(/^(c|ci)(<=|>=|=|!=)?([wubrg]+)$/i);
   if (ciBare) {
-  const which = ciBare[1].toLowerCase();
   const spec = (ciBare[2]||'') + ciBare[3];
-  return which==='c' ? colorsPredicate(spec, neg) : colorIdentityPredicate(spec, neg);
+  // Scryfall semantics: 'c' refers to color identity, not printed colors
+  return colorIdentityPredicate(spec, neg);
   }
   // Cross-field numeric comparisons: pow>tou, power<=toughness, etc.
   const cross = raw.match(/^(pow|power|tou|toughness|loy|loyalty)\s*(<=|>=|!=|=|<|>)\s*(pow|power|tou|toughness|loy|loyalty)$/i);
@@ -375,7 +370,8 @@ function freeTextPredicate(txt:string, neg:boolean): Predicate {
   }
   const pattern = textToRegex(needle);
   return card => {
-    const hay = (aggregateNameAndOracle(card)).toLowerCase();
+  // Scryfall free-text searches name + type_line + oracle
+  const hay = ((card.name||'') + '\n' + (card.type_line||'') + '\n' + (oracleAggregate(card)||'')).toLowerCase();
     const hit = pattern.test(hay);
     return neg ? !hit : hit;
   };
@@ -403,18 +399,19 @@ function numericFieldPredicate(field:string, raw:string, neg:boolean): Predicate
   // Accept forms: >=3, <=2, >4, <5, =3, 3, !=4
   const m = raw.match(/^(<=|>=|!=|=|<|>)?\s*(\d+(?:\.\d+)?)$/);
   if (!m) return ()=> true; // malformed -> no-op
-  const op = m[1]||'='; const num = parseFloat(m[2]);
+  const op = m[1]||'='; const rhs = parseFloat(m[2]);
   return card => {
-    const v = (card as any)[field];
-    if (typeof v !== 'number') return false;
+  const vRaw = (card as any)[field];
+  const v = num(vRaw); // parse numbers stored as strings (e.g., power="2"); NaN for "*" etc.
+    if (!isFinite(v)) return false;
     let pass=false;
     switch(op){
-      case '=': pass = v===num; break;
-      case '!=': pass = v!==num; break;
-      case '>': pass = v>num; break;
-      case '>=': pass = v>=num; break;
-      case '<': pass = v<num; break;
-      case '<=': pass = v<=num; break;
+      case '=': pass = v===rhs; break;
+      case '!=': pass = v!==rhs; break;
+      case '>': pass = v>rhs; break;
+      case '>=': pass = v>=rhs; break;
+      case '<': pass = v<rhs; break;
+      case '<=': pass = v<=rhs; break;
     }
     return neg ? !pass : pass;
   };
@@ -497,8 +494,16 @@ function facesConcat(card: CardLike, field: 'oracle_text'|'watermark'): string |
   return parts.length ? parts.join('\n') : undefined;
 }
 
+function oracleAggregate(card: CardLike): string {
+  return (card.oracle_text || facesConcat(card, 'oracle_text') || '').trim();
+}
+
 function exactNamePredicate(value:string, neg:boolean): Predicate {
-  const name = value.toLowerCase();
+  let v = value;
+  if (v.length>1 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    v = v.slice(1,-1).replace(/\\"/g,'"');
+  }
+  const name = v.toLowerCase();
   return card => {
     const hit = (card.name||'').toLowerCase() === name;
     return neg ? !hit : hit;
@@ -509,8 +514,8 @@ function isPredicate(valueRaw:string, neg:boolean): Predicate {
   const v = valueRaw.toLowerCase();
   const fn: Predicate = (card: CardLike) => {
     const type = (card.type_line||'').toLowerCase();
-    const layout = (card.layout||'').toLowerCase();
-    const oracle = (aggregateNameAndOracle(card)).toLowerCase();
+  const layout = (card.layout||'').toLowerCase();
+  const oracle = oracleAggregate(card).toLowerCase();
     const keywords = (card.keywords||[]).map(k=> k.toLowerCase());
     switch (v) {
       case 'split': return layout.includes('split');
@@ -525,11 +530,11 @@ function isPredicate(valueRaw:string, neg:boolean): Predicate {
       case 'historic': return /legendary\b/.test(type) || /artifact\b/.test(type) || /saga\b/.test(type);
       case 'party': return /creature\b/.test(type) && /(cleric|rogue|warrior|wizard)\b/.test(type);
       case 'modal': return /choose (one|two)/.test(oracle);
-      case 'vanilla': return /creature\b/.test(type) && !card.oracle_text;
+      case 'vanilla': return /creature\b/.test(type) && oracle.length===0;
       case 'frenchvanilla': {
-        if (!/creature\b/.test(type) || !card.oracle_text) return false;
+        if (!/creature\b/.test(type)) return false;
         const allowed = ['flying','vigilance','lifelink','trample','haste','first strike','double strike','menace','deathtouch','reach','indestructible','hexproof','prowess','ward','flash'];
-        const text = (card.oracle_text||'').toLowerCase().split(/\n+/).join(' ');
+        const text = oracle; // already aggregated and lowercased
         // Heuristic: only contains allowed keywords and punctuation
         const stripped = text.replace(/[,:.;()\-—\u2014\u2212\s]+/g,' ').trim();
         return stripped.length>0 && stripped.split(' ').every(tok=> allowed.includes(tok) || tok==='+1/+1' || tok==='flying,' );
@@ -553,8 +558,8 @@ function isPredicate(valueRaw:string, neg:boolean): Predicate {
       case 'scryfallpreview': return Array.isArray((card as any).promo_types) && ((card as any).promo_types as string[]).some(x=> String(x).toLowerCase().includes('scryfall'));
       case 'digital': return !!card.digital;
       case 'reserved': return !!card.reserved;
-      case 'commander': return /legendary\s+creature\b/.test(type) || /can be your commander/.test(oracle);
-      case 'brawler': return /legendary\s+creature\b/.test(type) || /can be your commander/.test(oracle);
+  case 'commander': return /legendary\s+creature\b/.test(type) || /can be your commander/.test(oracle);
+  case 'brawler': return /legendary\s+creature\b/.test(type) || /can be your commander/.test(oracle);
       case 'companion': return keywords.includes('companion');
       case 'duelcommander': return /legendary\s+creature\b/.test(type) || /can be your commander/.test(oracle);
       case 'universesbeyond': return (card.set_type||'').toLowerCase().includes('universes');

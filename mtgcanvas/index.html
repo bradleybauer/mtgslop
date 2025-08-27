@@ -6,9 +6,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <style>
 html,body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#1e1e1e; font-family: system-ui, sans-serif; }
+/* Simple full-screen splash */
+#splash { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: #111827; color: #d1d5db; z-index: 99999; }
+#splash .title { font-size: 18px; font-weight: 600; color: #e5e7eb; }
+#splash .sub { opacity: 0.8; font-size: 14px; }
 </style>
 </head>
 <body>
+<div id="splash">
+	<div class="title">Loading MTG Canvas…</div>
+	<div class="sub">Restoring your board and groups</div>
+</div>
 <script type="module" src="./src/main.ts"></script>
 </body>
 </html>

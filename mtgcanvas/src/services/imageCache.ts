@@ -80,9 +80,11 @@ async function putEntry(meta:CacheEntryMeta) {
 async function computeTotalAndMaybeEvict(_log=false) { /* no-op in unlimited mode */ }
 export async function enforceCacheBudget(){ /* no-op */ }
 
-// Canonicalization: strip query string (Scryfall image URLs often append a version query we don't need for uniqueness)
+// Canonicalization: preserve the full URL including query string.
+// Important: Scryfall encodes front/back face and size via query params for non-PNG URLs.
+// Stripping the query conflates distinct images (e.g., face=front vs face=back) and breaks DFC loading.
 function canonicalize(url:string){
-  try { const q = url.indexOf('?'); return q>=0 ? url.slice(0,q) : url; } catch { return url; }
+  try { return url; } catch { return url; }
 }
 
 // In-memory de-duplication maps
