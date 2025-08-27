@@ -3,17 +3,18 @@ import { SelectionStore } from './state/selectionStore';
 import { Camera } from './scene/camera';
 import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale, preloadCardQuality, getHiResQueueLength, getInflightTextureCount } from './scene/cardNode';
 import { getImageCacheStats, hasCachedURL, getCacheUsage } from './services/imageCache';
-import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, setGroupCollapsed, autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics } from './scene/groupNode';
+import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
 import { initHelp } from './ui/helpPanel';
 import { installModeToggle } from './ui/modeToggle';
 import { UIState } from './state/uiState';
-import { loadAll, queuePosition } from './services/persistenceService';
-import { InstancesRepo } from './data/repositories';
+import { loadAll, queuePosition, persistGroupTransform, /* persistGroupCollapsed removed */ persistGroupRename } from './services/persistenceService';
+import { InstancesRepo, GroupsRepo, hasRealDb } from './data/repositories';
 import { fetchCardUniverse, spawnLargeSet } from './services/largeDataset';
 import { DATASET_PREFERRED, DATASET_FALLBACK } from './config/dataset';
 import { ensureThemeToggleButton, ensureThemeStyles } from './ui/theme';
+import { installSearchPalette } from './ui/searchPalette';
 
 // Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
 
@@ -43,35 +44,104 @@ const app = new PIXI.Application();
 
   // Card layer & data (persisted instances)
   const sprites: CardSprite[] = []; let zCounter=1;
-  function createSpriteForInstance(inst:{id:number,x:number,y:number,z:number, card?:any}) {
+  function createSpriteForInstance(inst:{id:number,x:number,y:number,z:number, group_id?:number|null, card?:any}) {
     const s = createCardSprite({ id: inst.id, x: inst.x, y: inst.y, z: inst.z ?? zCounter++, renderer: app.renderer, card: inst.card });
+    if (inst.group_id) (s as any).__groupId = inst.group_id;
+  // Flag for context / pan logic
+  (s as any).__cardSprite = true;
     world.addChild(s); sprites.push(s);
     spatial.insert({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 });
   attachCardInteractions(s, ()=>sprites, world, app.stage, moved=> moved.forEach(ms=> {
       spatial.update({ id: ms.__id, minX:ms.x, minY:ms.y, maxX:ms.x+100, maxY:ms.y+140 });
       assignCardToGroupByPosition(ms);
-      queuePosition(ms);
+  queuePosition(ms);
+  if (PERSIST_MODE==='memory') scheduleLocalSave();
   }), ()=>panning, (global, additive)=> marquee.start(global, additive));
+  // Ensure context menu listener
+  try { (ensureCardContextListeners as any)(); } catch {}
     return s;
   }
   const loaded = loadAll();
+  const PERSIST_MODE = hasRealDb()? 'sqlite' : 'memory';
+  const LS_KEY = 'mtgcanvas_positions_v1';
+  const LS_GROUPS_KEY = 'mtgcanvas_groups_v1';
+  let memoryGroupsData:any=null; let groupsRestored=false;
+  if (PERSIST_MODE==='memory') { try { const raw = localStorage.getItem(LS_GROUPS_KEY); if (raw) memoryGroupsData = JSON.parse(raw); } catch {} }
+  // Pre-parse stored layout (memory mode) so we can spawn at correct positions without flicker
+  let storedLayoutByIndex: {x:number,y:number}[] | null = null;
+  if (PERSIST_MODE==='memory') {
+    try { const raw = localStorage.getItem(LS_KEY); if (raw){ const obj = JSON.parse(raw); if (obj && Array.isArray(obj.byIndex)) storedLayoutByIndex = obj.byIndex; } } catch {}
+  }
+  function applyStoredPositionsMemory(){
+    if (PERSIST_MODE!=='memory') return; try {
+      const raw = localStorage.getItem(LS_KEY); if (!raw) return; const obj = JSON.parse(raw);
+      if (!obj) return;
+      // Primary: id-based
+      if (Array.isArray(obj.instances)) {
+        const map = new Map<number,{x:number,y:number}>(); obj.instances.forEach((r:any)=> { if (typeof r.id==='number') map.set(r.id,{x:r.x,y:r.y}); });
+        let matched = 0;
+  sprites.forEach(s=> { const p = map.get(s.__id); if (p){ s.x = p.x; s.y = p.y; matched++; } });
+        // Fallback: index-based if few matched (likely ephemeral ids changed)
+        if (matched < sprites.length * 0.5 && Array.isArray(obj.byIndex)) {
+          obj.byIndex.forEach((p:any, idx:number)=> { const s = sprites[idx]; if (s && p && typeof p.x==='number' && typeof p.y==='number'){ s.x = p.x; s.y = p.y; } });
+        }
+        // Refresh spatial index bounds after applying new positions
+        sprites.forEach(s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+      }
+    } catch {}
+  }
+  if (PERSIST_MODE==='memory') {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const obj = JSON.parse(raw);
+        if (obj && Array.isArray(obj.instances)) {
+          obj.instances.forEach((r:any)=> { const inst = loaded.instances.find(i=> i.id===r.id); if (inst){ inst.x = r.x; inst.y = r.y; } });
+        }
+      }
+    } catch {}
+  }
   if (!loaded.instances.length) {
     (async ()=> {
       const universe = await fetchCardUniverse();
       if (universe.length) {
   const TARGET = universe.length; // load entire provided dataset
   console.log(`[startup] spawning FULL dataset (${DATASET_PREFERRED} | fallback ${DATASET_FALLBACK}) count=`, TARGET);
-  await spawnLargeSet(universe, inst=> { createSpriteForInstance(inst); }, { count: TARGET, batchSize: 800, onProgress:(done,total)=> { if (done===total) { console.log('[startup] full spawn complete'); fitAll(); } } });
+  await spawnLargeSet(universe, inst=> {
+    if (storedLayoutByIndex && storedLayoutByIndex[inst.z]) { const p = storedLayoutByIndex[inst.z]; inst.x = p.x; inst.y = p.y; }
+    createSpriteForInstance(inst);
+  }, { count: TARGET, batchSize: 800, onProgress:(done,total)=> { if (done===total) { console.log('[startup] full spawn complete'); if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups(); fitAll(); } } });
       } else {
   console.warn(`[startup] dataset (${DATASET_PREFERRED}/${DATASET_FALLBACK}) not found or empty; falling back to 200 dummy cards`);
-        for (let i=0;i<200;i++) { const x=(i%20)*SPACING_X, y=Math.floor(i/20)*SPACING_Y; const id = InstancesRepo.create(1, x, y); createSpriteForInstance({ id, x, y, z:zCounter++ }); }
-        fitAll();
+  for (let i=0;i<200;i++) { const x=(i%20)*SPACING_X, y=Math.floor(i/20)*SPACING_Y; const id = InstancesRepo.create(1, x, y); const pos = storedLayoutByIndex && storedLayoutByIndex[i]; createSpriteForInstance({ id, x: pos?pos.x:x, y: pos?pos.y:y, z:zCounter++ }); }
+  if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups();
+  fitAll();
       }
     })();
-  } else { loaded.instances.forEach((inst:any)=> createSpriteForInstance(inst)); }
+  } else { loaded.instances.forEach((inst:any)=> createSpriteForInstance(inst)); applyStoredPositionsMemory(); }
 
   // Groups container + visuals
   const groups = new Map<number, GroupVisual>();
+  // Memory mode group persistence helpers
+  let lsGroupsTimer:any=null; function scheduleGroupSave(){ if (PERSIST_MODE!=='memory') return; if (lsGroupsTimer) return; lsGroupsTimer = setTimeout(persistLocalGroups, 400); }
+  function persistLocalGroups(){ lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
+  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; if (gr.collapsed) gv.collapsed=!!gr.collapsed; if (gr.color) gv.color=gr.color; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); }); groups.forEach(gv=> { layoutGroup(gv, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, false); }); scheduleGroupSave(); }
+  // Rehydrate persisted groups
+  if (loaded.groups && (loaded as any).groups.length) {
+    (loaded as any).groups.forEach((gr:any)=> {
+      const t = gr.transform;
+      if (!t) return; const gv = createGroupVisual(gr.id, t.x ?? 0, t.y ?? 0, t.w ?? 300, t.h ?? 300);
+      gv.name = gr.name || gv.name;
+      if (gr.collapsed) gv.collapsed = !!gr.collapsed;
+      groups.set(gr.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); drawGroup(gv, false);
+    });
+    // After groups exist, attach any sprites with stored group_id
+    sprites.forEach(s=> { const gid = (s as any).__groupId; if (gid && groups.has(gid)) { const gv = groups.get(gid)!; gv.items.add(s.__id); gv.order.push(s.__id); } });
+    // Layout groups with their members
+    groups.forEach(gv=> { layoutGroup(gv, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, false); });
+  } else if (PERSIST_MODE==='memory') {
+    if (loaded.instances.length) restoreMemoryGroups();
+  }
   world.sortableChildren = true;
 
   const help = initHelp(); help.ensureFab(); (window as any).__helpAPI = help; // debug access
@@ -108,7 +178,7 @@ const app = new PIXI.Application();
     document.body.appendChild(input);
     input.select();
     function commit(save:boolean) {
-      if (save) { const val = input.value.trim(); if (val) { gv.name = val; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); } }
+  if (save) { const val = input.value.trim(); if (val) { gv.name = val; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); persistGroupRename(gv.id, val); scheduleGroupSave(); } }
       input.remove();
     }
     input.addEventListener('keydown', ev=> {
@@ -117,6 +187,136 @@ const app = new PIXI.Application();
     });
     input.addEventListener('blur', ()=> commit(true));
   }
+
+  // ---- Inline rename affordance (non-modal design) ----
+  const renameButtons = new Map<number, HTMLButtonElement>();
+  function ensureRenameButton(gv: GroupVisual){
+    let btn = renameButtons.get(gv.id);
+    if (!btn){
+      btn = document.createElement('button');
+      btn.type='button';
+      btn.textContent='✎';
+      btn.title='Rename group (R)';
+      btn.style.cssText='position:fixed;z-index:10000;padding:0 4px;min-width:20px;height:18px;font:11px "Inter",system-ui,sans-serif;cursor:pointer;background:#20333d;color:#cbe8f5;border:1px solid #2d5366;border-radius:4px;display:flex;align-items:center;justify-content:center;opacity:0.85;';
+      btn.onmouseenter=()=> btn!.style.opacity='1';
+      btn.onmouseleave=()=> btn!.style.opacity='0.85';
+      btn.onclick=(e)=> { e.stopPropagation(); startGroupRename(gv); };
+      document.body.appendChild(btn);
+      renameButtons.set(gv.id, btn);
+    }
+    return btn;
+  }
+  function removeRenameButton(id:number){ const btn = renameButtons.get(id); if (btn){ btn.remove(); renameButtons.delete(id); } }
+  function updateRenameButtonsVisibility(){
+    const selected = new Set(SelectionStore.getGroups());
+    // Remove buttons for unselected
+    [...renameButtons.keys()].forEach(id=> { if (!selected.has(id)) removeRenameButton(id); });
+    selected.forEach(id=> { const gv = groups.get(id); if (gv) ensureRenameButton(gv); });
+  }
+  function repositionRenameButtons(){ if (!renameButtons.size) return; const bounds = app.renderer.canvas.getBoundingClientRect(); renameButtons.forEach((btn, id)=> { const gv = groups.get(id); if (!gv) { btn.remove(); renameButtons.delete(id); return; } const px = gv.gfx.x + gv.w - 24; const py = gv.gfx.y + 4; const global = world.toGlobal(new PIXI.Point(px, py)); btn.style.left = `${bounds.left + global.x}px`; btn.style.top = `${bounds.top + global.y}px`; }); }
+
+  // ---- Side Group Info Panel (replaces floating rename buttons) ----
+  let groupInfoPanel: HTMLDivElement | null = null;
+  let groupInfoNameInput: HTMLInputElement | null = null;
+  function ensureGroupInfoPanel(){
+    if (groupInfoPanel) return groupInfoPanel;
+    const el = document.createElement('div');
+    el.id = 'group-info-panel';
+  // Bottom anchored slim bar replacing side panel
+  el.style.cssText='position:fixed;left:0;right:0;bottom:0;height:120px;background:#0f161b;border-top:1px solid #24353e;z-index:10020;font:12px/1.5 "Inter",system-ui,sans-serif;color:#d5e9f3;display:flex;flex-direction:row;align-items:flex-start;box-shadow:0 0 18px -4px #000a;padding:10px 14px;gap:16px;';
+  el.innerHTML = '<div style="font-size:26px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#88b4c8;">Group</div>';
+    // Name editor
+    const nameWrap = document.createElement('div'); nameWrap.style.display='flex'; nameWrap.style.flexDirection='column'; nameWrap.style.gap='4px';
+    const nameLabel = document.createElement('label'); nameLabel.textContent='Name'; nameLabel.style.fontSize='11px'; nameLabel.style.opacity='0.75'; nameWrap.appendChild(nameLabel);
+    const nameInput = document.createElement('input'); groupInfoNameInput = nameInput; nameInput.type='text'; nameInput.maxLength=64; nameInput.style.cssText='background:#18252c;border:1px solid #2d4652;border-radius:4px;padding:5px 6px;color:#e6f7ff;font:12px "Inter",system-ui,sans-serif;'; nameWrap.appendChild(nameInput);
+    el.appendChild(nameWrap);
+    // Metrics
+  const metrics = document.createElement('div'); metrics.id='group-info-metrics'; metrics.style.cssText='display:grid;grid-template-columns:auto 1fr;column-gap:12px;row-gap:4px;font-size:22px;min-width:140px;'; el.appendChild(metrics);
+    // Actions
+  const actions = document.createElement('div'); actions.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;';
+    function makeBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.type='button'; b.style.cssText='background:#20333d;border:1px solid #2d5366;color:#cbe8f5;padding:4px 8px;font:11px "Inter",system-ui;border-radius:4px;cursor:pointer;'; b.onmouseenter=()=> b.style.background='#2c4b59'; b.onmouseleave=()=> b.style.background='#20333d'; b.onclick=handler; return b; }
+  const autoBtn = makeBtn('Auto-pack', ()=> { const gv = currentPanelGroup(); if (!gv) return; autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id,minX:s.x,minY:s.y,maxX:s.x+100,maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); });
+    const recolorBtn = makeBtn('Recolor', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.color = (Math.random()*0xffffff)|0; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); });
+    const deleteBtn = makeBtn('Delete', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.gfx.destroy(); groups.delete(gv.id); SelectionStore.clear(); scheduleGroupSave(); updateGroupInfoPanel(); }); deleteBtn.style.background='#402529'; deleteBtn.style.borderColor='#5a3137';
+  actions.append(autoBtn, recolorBtn, deleteBtn); el.appendChild(actions);
+    // Color palette strip
+    const paletteStrip = document.createElement('div'); paletteStrip.style.cssText='display:flex;flex-wrap:wrap;gap:4px;';
+    for (let i=0;i<10;i++){ const sq=document.createElement('div'); const col = (i*0x222222 + 0x334455) & 0xffffff; sq.style.cssText=`width:18px;height:18px;border-radius:4px;background:#${col.toString(16).padStart(6,'0')};cursor:pointer;border:1px solid #182830;`; sq.onclick=()=> { const gv = currentPanelGroup(); if (!gv) return; gv.color = col; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); }; paletteStrip.appendChild(sq); }
+    el.appendChild(paletteStrip);
+  // Member list removed per requirements
+    // Close button (optional)
+  const closeBtn = document.createElement('button'); closeBtn.textContent='×'; closeBtn.title='Clear selection'; closeBtn.style.cssText='position:absolute;top:6px;right:6px;background:#253842;border:1px solid #345562;color:#b4d6e5;width:36px;height:36px;border-radius:6px;cursor:pointer;font-size:28px;line-height:28px;padding:0;'; closeBtn.onclick=()=> { SelectionStore.clear(); updateGroupInfoPanel(); }; el.appendChild(closeBtn);
+    // Name input commit
+    nameInput.addEventListener('keydown', ev=> { if (ev.key==='Enter'){ commitName(); nameInput.blur(); } });
+    nameInput.addEventListener('blur', ()=> commitName());
+    function commitName(){ const gv = currentPanelGroup(); if (!gv) return; const v = nameInput.value.trim(); if (v && v!==gv.name){ gv.name = v; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); persistGroupRename(gv.id, v); scheduleGroupSave(); updateGroupInfoPanel(); } }
+    document.body.appendChild(el);
+    groupInfoPanel = el; return el;
+  }
+  function currentPanelGroup(): GroupVisual | null { const gids = SelectionStore.getGroups(); if (gids.length!==1) return null; const gv = groups.get(gids[0]) || null; return gv; }
+  function updateGroupInfoPanel(){
+    const panel = ensureGroupInfoPanel();
+    const gv = currentPanelGroup();
+  if (!gv){ panel.style.display='none'; return; }
+    panel.style.display='flex';
+    if (groupInfoNameInput) groupInfoNameInput.value = gv.name;
+    // Update metrics grid
+  const metrics = panel.querySelector('#group-info-metrics') as HTMLDivElement | null; if (metrics){ metrics.innerHTML=''; const addRow=(k:string,v:string)=> { const kEl=document.createElement('div'); kEl.textContent=k; kEl.style.opacity='0.65'; const vEl=document.createElement('div'); vEl.textContent=v; metrics.append(kEl,vEl); }; updateGroupMetrics(gv, sprites); addRow('Cards', gv.items.size.toString()); addRow('Price', `$${gv.totalPrice.toFixed(2)}`); }
+  }
+
+  // ---- Card Info Side Pane ----
+  let cardInfoPanel: HTMLDivElement | null = null;
+  function ensureCardInfoPanel(){
+    if (cardInfoPanel) return cardInfoPanel;
+    const el = document.createElement('div'); cardInfoPanel = el;
+    el.id='card-info-panel';
+  el.style.cssText='position:fixed;top:0;right:0;bottom:0;width:420px;max-width:45vw;background:#0f161b;border-left:1px solid #24353e;z-index:10015;display:flex;flex-direction:column;font:26px/1.6 "Inter",system-ui,sans-serif;color:#d5e9f3;box-shadow:0 0 22px -6px #000a;pointer-events:auto;';
+    el.innerHTML = '<div id="cip-header" style="padding:10px 14px 6px;font-size:12px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#88b4c8;display:flex;align-items:center;gap:8px;">Card</div>'+
+      '<div id="cip-scroll" style="overflow:auto;padding:0 14px 18px;display:flex;flex-direction:column;gap:12px;">'+
+        '<div id="cip-empty" style="opacity:.55;padding:12px 4px;font-size:12px;">No card selected</div>'+
+        '<div id="cip-content" style="display:none;flex-direction:column;gap:24px;">'+
+          '<div id="cip-name" style="font-size:32px;font-weight:600;line-height:1.25;color:#fff;"></div>'+
+          '<div id="cip-meta" style="display:flex;flex-direction:column;gap:10px;font-size:24px;line-height:1.5;"></div>'+
+          '<div id="cip-type" style="font-size:24px;color:#b9d2dc;"></div>'+
+          '<div id="cip-oracle" style="white-space:pre-wrap;font-size:24px;background:#132026;border:1px solid #21353f;padding:18px 20px;border-radius:10px;color:#cfe8f4;line-height:1.6;"></div>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(el);
+    return el;
+  }
+  function hideCardInfoPanel(){ if (cardInfoPanel) cardInfoPanel.style.display='none'; }
+  function showCardInfoPanel(){ const el=ensureCardInfoPanel(); el.style.display='flex'; }
+  function updateCardInfoPanel(){
+    const ids = SelectionStore.getCards();
+    // Only show when exactly 1 card is selected (ignore when groups selected or multi-selection)
+    if (ids.length!==1){ hideCardInfoPanel(); return; }
+    const sprite = sprites.find(s=> s.__id===ids[0]); if (!sprite || !sprite.__card){ hideCardInfoPanel(); return; }
+    const card = sprite.__card;
+    showCardInfoPanel();
+    const panel = ensureCardInfoPanel();
+    const empty = panel.querySelector('#cip-empty') as HTMLElement|null;
+    const content = panel.querySelector('#cip-content') as HTMLElement|null;
+    if (empty) empty.style.display='none'; if (content) content.style.display='flex';
+    const nameEl = panel.querySelector('#cip-name') as HTMLElement|null; if (nameEl) nameEl.textContent = card.name || '(Unnamed)';
+    const typeEl = panel.querySelector('#cip-type') as HTMLElement|null; if (typeEl) typeEl.textContent = card.type_line || '';
+    const oracleEl = panel.querySelector('#cip-oracle') as HTMLElement|null; if (oracleEl) oracleEl.textContent = card.oracle_text || '';
+    const metaEl = panel.querySelector('#cip-meta') as HTMLElement|null;
+    if (metaEl){
+      const parts: string[] = [];
+      if (card.mana_cost) parts.push(`<span style="font-weight:600;">Cost:</span> ${escapeHtml(card.mana_cost)}`);
+      if (card.cmc!==undefined) parts.push(`<span style="font-weight:600;">CMC:</span> ${card.cmc}`);
+      if (card.power!==undefined && card.toughness!==undefined) parts.push(`<span style="font-weight:600;">P/T:</span> ${card.power}/${card.toughness}`);
+      if (Array.isArray(card.color_identity) && card.color_identity.length) parts.push(`<span style="font-weight:600;">CI:</span> ${card.color_identity.join('')}`);
+      if (card.rarity) parts.push(`<span style="font-weight:600;">Rarity:</span> ${escapeHtml(card.rarity)}`);
+      if (card.set) parts.push(`<span style="font-weight:600;">Set:</span> ${escapeHtml(card.set.toUpperCase())}`);
+      if (card.lang && card.lang!=='en') parts.push(`<span style="font-weight:600;">Lang:</span> ${escapeHtml(card.lang)}`);
+      metaEl.innerHTML = parts.map(p=> `<div>${p}</div>`).join('');
+    }
+    // Image: use existing sprite texture (copy into a canvas for crispness) if loaded; else trigger ensureCardImage then copy later
+  // Image removed per user request.
+  }
+  function escapeHtml(s:string){ return s.replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'} as any)[c] || c); }
+  SelectionStore.on(()=> { updateGroupInfoPanel(); updateCardInfoPanel(); });
 
   function attachResizeHandle(gv: GroupVisual) {
   const r = gv.resize; let resizing=false; let startW=0; let startH=0; let anchorX=0; let anchorY=0;
@@ -141,7 +341,7 @@ const app = new PIXI.Application();
     });
   // Group body interactions handled globally like canvas now.
   app.stage.on('pointermove', e=> { if (!drag) return; const local = world.toLocal(e.global); g.x = local.x - dx; g.y = local.y - dy; memberOffsets.forEach(m=> { m.sprite.x = g.x + m.ox; m.sprite.y = g.y + m.oy; }); });
-  app.stage.on('pointerup', ()=> { if (!drag) return; drag=false; g.x = snap(g.x); g.y = snap(g.y); memberOffsets.forEach(m=> { m.sprite.x = snap(m.sprite.x); m.sprite.y = snap(m.sprite.y); spatial.update({ id:m.sprite.__id, minX:m.sprite.x, minY:m.sprite.y, maxX:m.sprite.x+100, maxY:m.sprite.y+140 }); }); });
+  app.stage.on('pointerup', ()=> { if (!drag) return; drag=false; g.x = snap(g.x); g.y = snap(g.y); memberOffsets.forEach(m=> { m.sprite.x = snap(m.sprite.x); m.sprite.y = snap(m.sprite.y); spatial.update({ id:m.sprite.__id, minX:m.sprite.x, minY:m.sprite.y, maxX:m.sprite.x+100, maxY:m.sprite.y+140 }); }); persistGroupTransform(gv.id,{x:g.x,y:g.y,w:gv.w,h:gv.h}); scheduleGroupSave(); });
   }
 
   // ---- Group context menu (Groups V2) ----
@@ -150,27 +350,130 @@ const app = new PIXI.Application();
   function ensureGroupMenu(){
     if (groupMenu) return groupMenu; const el = document.createElement('div'); groupMenu = el;
   el.style.cssText='position:fixed;z-index:10001;background:#101820;border:1px solid #2d4652;border-radius:6px;min-width:200px;font:14px/1.5 "Inter",system-ui,sans-serif;color:#d0e7f1;box-shadow:0 4px 18px -4px #000c;padding:6px 6px 4px;';
-    el.addEventListener('mousedown', ev=> ev.stopPropagation());
+  // Prevent both mouse and pointer events from bubbling (so global pointerdown doesn't instantly hide menu)
+  el.addEventListener('mousedown', ev=> ev.stopPropagation());
+  el.addEventListener('pointerdown', ev=> ev.stopPropagation());
     document.body.appendChild(el); return el;
   }
   function hideGroupMenu(){ if (groupMenu){ groupMenu.style.display='none'; menuTarget=null; } }
-  window.addEventListener('pointerdown', ()=> hideGroupMenu());
+  window.addEventListener('pointerdown', (e)=> {
+    const tgt = e.target as Node | null;
+    if (groupMenu && tgt && groupMenu.contains(tgt)) return; // inside menu
+    hideGroupMenu();
+  });
   function showGroupContextMenu(gv: GroupVisual, globalPt: PIXI.Point){
     const el = ensureGroupMenu(); menuTarget = gv; el.innerHTML='';
   function addItem(label:string, action:()=>void){ const it=document.createElement('div'); it.textContent=label; it.style.cssText='padding:6px 10px;cursor:pointer;border-radius:4px;'; it.onmouseenter=()=> it.style.background='#1d3440'; it.onmouseleave=()=> it.style.background='transparent'; it.onclick=()=> { action(); hideGroupMenu(); }; el.appendChild(it); }
-  addItem(gv.collapsed? 'Expand':'Collapse', ()=> { if (gv.collapsed){ setGroupCollapsed(gv,false,sprites); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); } else { setGroupCollapsed(gv,true,sprites); } });
-  addItem('Auto-pack', ()=> { autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); });
+  // Collapse feature removed
+  addItem('Auto-pack', ()=> { autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
     addItem('Rename', ()=> startGroupRename(gv));
-  addItem('Recolor', ()=> { gv.color = PALETTE[Math.floor(Math.random()*PALETTE.length)]; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); });
-    addItem('Delete', ()=> { const row = groups.get(gv.id); if (row){ row.gfx.destroy(); groups.delete(gv.id);} SelectionStore.clear(); });
+  addItem('Recolor', ()=> { gv.color = PALETTE[Math.floor(Math.random()*PALETTE.length)]; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
+    addItem('Delete', ()=> { const row = groups.get(gv.id); if (row){ row.gfx.destroy(); groups.delete(gv.id);} SelectionStore.clear(); scheduleGroupSave(); });
     const sw=document.createElement('div'); sw.style.cssText='display:flex;gap:4px;padding:4px 6px 2px;flex-wrap:wrap;';
-    PALETTE.forEach(c=> { const sq=document.createElement('div'); sq.style.cssText=`width:16px;height:16px;border-radius:4px;background:#${c.toString(16).padStart(6,'0')};cursor:pointer;border:1px solid #182830;`; sq.onclick=()=> { gv.color=c; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); hideGroupMenu(); }; sw.appendChild(sq); });
+  PALETTE.forEach(c=> { const sq=document.createElement('div'); sq.style.cssText=`width:16px;height:16px;border-radius:4px;background:#${c.toString(16).padStart(6,'0')};cursor:pointer;border:1px solid #182830;`; sq.onclick=()=> { gv.color=c; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); hideGroupMenu(); }; sw.appendChild(sq); });
     el.appendChild(sw);
     const bounds = app.renderer.canvas.getBoundingClientRect();
     el.style.left = `${bounds.left + globalPt.x + 4}px`;
     el.style.top = `${bounds.top + globalPt.y + 4}px`;
     el.style.display='block';
   }
+
+  // ---- Card context menu (Add to open group) ----
+  let cardMenu: HTMLDivElement | null = null; let cardMenuTarget: CardSprite | null = null;
+  function ensureCardMenu(){
+    if (cardMenu) return cardMenu; const el = document.createElement('div'); cardMenu = el;
+    el.style.cssText='position:fixed;z-index:10001;background:#101820;border:1px solid #2d4652;border-radius:6px;min-width:220px;font:13px/1.45 "Inter",system-ui,sans-serif;color:#d0e7f1;box-shadow:0 4px 18px -4px #000c;padding:6px 6px 4px;';
+  el.addEventListener('mousedown', ev=> ev.stopPropagation());
+  el.addEventListener('pointerdown', ev=> ev.stopPropagation());
+    document.body.appendChild(el); return el;
+  }
+  function hideCardMenu(){ if (cardMenu){ cardMenu.style.display='none'; cardMenuTarget=null; } }
+  window.addEventListener('pointerdown', (e)=> { const tgt = e.target as Node | null; if (cardMenu && tgt && cardMenu.contains(tgt)) return; hideCardMenu(); });
+  function showCardContextMenu(card: CardSprite, globalPt: PIXI.Point){
+    const el = ensureCardMenu(); cardMenuTarget = card; el.innerHTML='';
+    const header = document.createElement('div'); header.textContent = 'Add to Group'; header.style.cssText='font-size:22px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;opacity:.7;padding:4px 6px 10px;'; el.appendChild(header);
+  // All groups considered open (collapse removed)
+  const openGroups = [...groups.values()];
+    function addItem(label:string, action:()=>void, disabled=false){ const it=document.createElement('div'); it.textContent=label; it.style.cssText='padding:6px 10px;cursor:'+ (disabled?'default':'pointer') +';border-radius:4px;display:flex;align-items:center;gap:6px;'; if (!disabled){ it.onmouseenter=()=> it.style.background='#1d3440'; it.onmouseleave=()=> it.style.background='transparent'; it.onclick=()=> { action(); hideCardMenu(); }; } else { it.style.opacity='0.5'; }
+      el.appendChild(it); return it; }
+    if (!openGroups.length){ addItem('(No open groups)', ()=>{}, true); }
+    else {
+      openGroups.sort((a,b)=> a.id - b.id).forEach(gv=> { const already = !!card.__groupId && card.__groupId===gv.id; const it = addItem(gv.name || `Group ${gv.id}`, ()=> {
+        if (already) return; // no-op
+        // Remove from previous group if any
+        if (card.__groupId){ const old = groups.get(card.__groupId); if (old){ removeCardFromGroup(old, card.__id); layoutGroup(old, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); } }
+  console.log('[cardMenu] add card', card.__id, 'to group', gv.id);
+  addCardToGroupOrdered(gv, card.__id, gv.order.length); card.__groupId = gv.id; try { InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]); } catch {}
+        const prevX = card.x, prevY = card.y;
+        layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave();
+        // Fallback: if card stayed in same place (layout maybe bailed), manually place at end position inside group.
+        if (card.x===prevX && card.y===prevY){
+          const idx = gv.order.indexOf(card.__id);
+          if (idx>=0){
+            const usableW = Math.max(1, gv.w - 16*2);
+            const cols = Math.max(1, Math.floor((usableW + 3) / (100 + 3)));
+            const col = idx % cols; const row = Math.floor(idx / cols);
+            card.x = gv.gfx.x + 16 + col * (100 + 3);
+            card.y = gv.gfx.y + HEADER_HEIGHT + 12 + row * (140 + 3);
+            spatial.update({ id:card.__id, minX:card.x, minY:card.y, maxX:card.x+100, maxY:card.y+140 });
+          }
+        }
+        // Update appearance for membership (non-image placeholder style) & selection outline
+        updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id));
+  }); if (already){ it.style.opacity='0.8'; const badge=document.createElement('span'); badge.textContent='✓'; badge.style.cssText='margin-left:auto;color:#5fcba4;font-size:24px;'; it.appendChild(badge); } });
+    }
+    if (card.__groupId){
+      const divider=document.createElement('div'); divider.style.cssText='height:1px;background:#1e323d;margin:6px 4px;'; el.appendChild(divider);
+      addItem('Remove from current group', ()=> {
+        const old = card.__groupId? groups.get(card.__groupId): null;
+  if (old){ console.log('[cardMenu] remove card', card.__id, 'from group', old.id); removeCardFromGroup(old, card.__id); card.__groupId=undefined; try { InstancesRepo.updateMany([{ id: card.__id, group_id: null }]); } catch {} layoutGroup(old, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id)); }
+      });
+    }
+    const bounds = app.renderer.canvas.getBoundingClientRect();
+    el.style.left = `${bounds.left + globalPt.x + 4}px`;
+    el.style.top = `${bounds.top + globalPt.y + 4}px`;
+    el.style.display='block';
+  }
+  // Attach right-click listeners to existing cards once (after menu helpers defined)
+  // Right-click gesture logic: open on button release if not dragged beyond threshold.
+  const RIGHT_THRESHOLD_PX = 6; // screen-space threshold
+  const rightPresses = new Map<number,{x:number,y:number,sprite:CardSprite,moved:boolean}>();
+  function ensureCardContextListeners(){
+    sprites.forEach(s=> {
+      const anyS:any = s as any; if (anyS.__ctxAttached) return; anyS.__ctxAttached = true;
+      s.on('pointerdown', (e:any)=> {
+        if (e.button===2) {
+          rightPresses.set(e.pointerId, { x: e.global.x, y: e.global.y, sprite: s, moved:false });
+        }
+      });
+    });
+  }
+  // Global move/up handling
+  app.stage.on('pointermove', (e:any)=> {
+    const rp = rightPresses.get(e.pointerId); if (!rp) return;
+    if (!rp.moved) {
+      const dx = e.global.x - rp.x; const dy = e.global.y - rp.y;
+      if (dx*dx + dy*dy > RIGHT_THRESHOLD_PX*RIGHT_THRESHOLD_PX) {
+        rp.moved = true;
+        // Start a right-button pan if not already panning
+        if (!rightPanning) {
+          rightPanning = true;
+          beginPan(e.global.x, e.global.y);
+        }
+      }
+    }
+  });
+  function handleRightPointerUp(e:any){
+    if (e.button!==2) return; const rp = rightPresses.get(e.pointerId); if (!rp) return;
+    const sprite = rp.sprite; const moved = rp.moved; rightPresses.delete(e.pointerId);
+    if (!moved) {
+      // Open menu at release point
+      showCardContextMenu(sprite, e.global);
+    }
+  }
+  app.stage.on('pointerup', handleRightPointerUp);
+  app.stage.on('pointerupoutside', handleRightPointerUp);
+  // We'll call ensureCardContextListeners after sprite creation.
 
   // Simple button: press G to create group around selection bounds
   function computeSelectionBounds() {
@@ -185,23 +488,40 @@ const app = new PIXI.Application();
   }
 
   window.addEventListener('keydown', e=> {
+  // If focus is in a text-editing element, don't run canvas shortcuts (allows Ctrl+A, arrows, etc.)
+  const ae = document.activeElement as HTMLElement | null;
+  if (ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.isContentEditable)) {
+    // Allow Ctrl+F to reopen search, Esc handled elsewhere; block canvas fits (F / Shift+F) and others.
+    if ((e.key==='f' || e.key==='F') && (e.ctrlKey||e.metaKey)) {
+      // handled later by global search palette section
+    } else {
+      return; // swallow other canvas shortcuts while editing text
+    }
+  }
   // (Alt previously disabled snapping; feature removed)
   if (e.key==='g' || e.key==='G') {
-      const id = groups.size ? Math.max(...groups.keys())+1 : 1;
+      let id = groups.size ? Math.max(...groups.keys())+1 : 1;
       const b = computeSelectionBounds();
       if (b) {
-        const gv = createGroupVisual(id, b.minX-20, b.minY-20, (b.maxX-b.minX)+40, (b.maxY-b.minY)+40);
-        const ids = SelectionStore.getCards();
-        ids.forEach(cid=> { addCardToGroupOrdered(gv, cid, gv.order.length); const s = sprites.find(sp=> sp.__id===cid); if (s) s.__groupId = gv.id; });
+  const w = (b.maxX-b.minX)+40; const h = (b.maxY-b.minY)+40;
+  const gx = b.minX-20; const gy = b.minY-20;
+  try { id = (GroupsRepo as any).create ? (GroupsRepo as any).create(null, null, gx, gy, w, h) : id; } catch {}
+  const gv = createGroupVisual(id, gx, gy, w, h);
+  const ids = SelectionStore.getCards();
+  const membershipBatch: {id:number,group_id:number}[] = [];
+  ids.forEach(cid=> { addCardToGroupOrdered(gv, cid, gv.order.length); const s = sprites.find(sp=> sp.__id===cid); if (s) { s.__groupId = gv.id; membershipBatch.push({id: cid, group_id: gv.id}); } });
+  if (membershipBatch.length) { try { InstancesRepo.updateMany(membershipBatch); } catch {} }
   groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
-  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true);
+  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true); scheduleGroupSave();
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       } else {
         const center = new PIXI.Point(window.innerWidth/2, window.innerHeight/2);
         const worldCenter = world.toLocal(center);
-        const gv = createGroupVisual(id, snap(worldCenter.x - 150), snap(worldCenter.y - 150), 300, 300);
+  const gx = snap(worldCenter.x - 150); const gy = snap(worldCenter.y - 150);
+  try { id = (GroupsRepo as any).create ? (GroupsRepo as any).create(null, null, gx, gy, 300, 300) : id; } catch {}
+  const gv = createGroupVisual(id, gx, gy, 300, 300);
   groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
-  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true);
+  layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, true); scheduleGroupSave();
         SelectionStore.clear(); SelectionStore.toggleGroup(id);
       }
     }
@@ -229,6 +549,15 @@ const app = new PIXI.Application();
     if (e.key==='F2') {
       const gids = SelectionStore.getGroups(); if (gids.length===1) { const gv = groups.get(gids[0]); if (gv) startGroupRename(gv); }
     }
+    // Quick rename (R) if exactly one group selected and not typing in an input
+    if ((e.key==='r' || e.key==='R') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName==='INPUT' || active.tagName==='TEXTAREA' || active.isContentEditable)) {
+        // ignore while typing
+      } else {
+        const gids = SelectionStore.getGroups(); if (gids.length===1) { const gv = groups.get(gids[0]); if (gv) { e.preventDefault(); startGroupRename(gv); } }
+      }
+    }
     // Nudge selected cards by arrow keys (Shift = larger step)
     const ARROW_KEYS = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
   if (ARROW_KEYS.includes(e.key)) {
@@ -240,12 +569,13 @@ const app = new PIXI.Application();
   SelectionStore.getCards().forEach(id=> { const s = sprites.find(sp=> sp.__id===id); if (!s) return; s.x += dx; s.y += dy; spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }); assignCardToGroupByPosition(s); });
       }
     }
-    // Zoom shortcuts (+ / - / 0 reset, F fit all, Shift+F fit selection, Z fit selection)
-    if ((e.key==='+' || e.key==='=' ) && (e.ctrlKey||e.metaKey)) { e.preventDefault(); keyboardZoom(1.1); }
-    if (e.key==='-' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); keyboardZoom(0.9); }
-    if (e.key==='0' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); resetZoom(); }
-    if (e.key==='f' || e.key==='F') { if (e.shiftKey) fitSelection(); else fitAll(); }
-    if (e.key==='z' || e.key==='Z') { fitSelection(); }
+  // Zoom / fit shortcuts (+ / - / 0 reset, F fit all (no modifier), Shift+F fit selection, Z fit selection)
+  if ((e.key==='+' || e.key==='=' ) && (e.ctrlKey||e.metaKey)) { e.preventDefault(); keyboardZoom(1.1); }
+  if (e.key==='-' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); keyboardZoom(0.9); }
+  if (e.key==='0' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); resetZoom(); }
+  // Guard: don't treat Ctrl+F / Cmd+F as fitAll so browser / custom search palette can use it
+  if (!e.ctrlKey && !e.metaKey && (e.key==='f' || e.key==='F')) { if (e.shiftKey) fitSelection(); else fitAll(); }
+  if (e.key==='z' || e.key==='Z') { fitSelection(); }
   // Large dataset load (Ctrl+Shift+L): progressive spawn using legal.json/all.json
     if ((e.key==='l' || e.key==='L') && e.ctrlKey && e.shiftKey) {
       e.preventDefault();
@@ -261,13 +591,7 @@ const app = new PIXI.Application();
       });
     }
     // Collapse / expand selected groups (C)
-    if (e.key==='c' || e.key==='C') {
-      const gids = SelectionStore.getGroups();
-      if (gids.length){
-        e.preventDefault();
-  gids.forEach(id=> { const gv = groups.get(id); if (!gv) return; const next = !gv.collapsed; if (next) { setGroupCollapsed(gv, true, sprites); } else { setGroupCollapsed(gv, false, sprites); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } });
-      }
-    }
+  // (Collapse hotkey removed)
     // Help overlay toggle (H or ?)
     if (e.key==='h' || e.key==='H' || e.key==='?') {
       if (e.repeat) return; // ignore auto-repeat
@@ -280,11 +604,11 @@ const app = new PIXI.Application();
       const groupIds = SelectionStore.getGroups();
       if (cardIds.length) {
         const touchedGroups = new Set<number>();
-        cardIds.forEach(id=> { const idx = sprites.findIndex(s=> s.__id===id); if (idx>=0) { const s = sprites[idx]; const gid = s.__groupId; if (gid) { const gv = groups.get(gid); gv && gv.items.delete(s.__id); touchedGroups.add(gid); } s.destroy(); sprites.splice(idx,1); } });
-  touchedGroups.forEach(gid=> { const gv = groups.get(gid); if (gv) layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); });
+    cardIds.forEach(id=> { const idx = sprites.findIndex(s=> s.__id===id); if (idx>=0) { const s = sprites[idx]; const gid = s.__groupId; if (gid) { const gv = groups.get(gid); gv && gv.items.delete(s.__id); touchedGroups.add(gid); } s.destroy(); sprites.splice(idx,1); } });
+  touchedGroups.forEach(gid=> { const gv = groups.get(gid); if (gv) layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); }); if (touchedGroups.size) scheduleGroupSave();
       }
       if (groupIds.length) {
-        groupIds.forEach(id=> { const gv = groups.get(id); if (gv) { gv.gfx.destroy(); groups.delete(id);} });
+    groupIds.forEach(id=> { const gv = groups.get(id); if (gv) { gv.gfx.destroy(); groups.delete(id);} }); scheduleGroupSave();
       }
       SelectionStore.clear();
     }
@@ -295,7 +619,7 @@ const app = new PIXI.Application();
   // Card drag handled in cardNode module (local state per card set)
 
   // Selection visualization (simple outline)
-  SelectionStore.on(()=> { const ids = SelectionStore.getCards(); const gsel = SelectionStore.getGroups(); groups.forEach(gv=> drawGroup(gv, gsel.includes(gv.id))); sprites.forEach(s=> updateCardSpriteAppearance(s, ids.includes(s.__id))); });
+  SelectionStore.on(()=> { const ids = SelectionStore.getCards(); const gsel = SelectionStore.getGroups(); groups.forEach(gv=> drawGroup(gv, gsel.includes(gv.id))); sprites.forEach(s=> updateCardSpriteAppearance(s, ids.includes(s.__id))); updateGroupInfoPanel(); });
 
   function assignCardToGroupByPosition(s:CardSprite) {
     const cx = s.x + 50; const cy = s.y + 70; // card center
@@ -311,13 +635,18 @@ const app = new PIXI.Application();
         const insertIdx = insertionIndexForPoint(target, cx, cy);
         addCardToGroupOrdered(target, s.__id, insertIdx);
         s.__groupId = target.id;
+    // Persist membership change
+    try { InstancesRepo.updateMany([{ id: s.__id, group_id: target.id }]); } catch {}
+    scheduleGroupSave();
       } else {
         // Reposition within same group if significant horizontal move
         const gv = groups.get(s.__groupId); if (gv){ const desired = insertionIndexForPoint(gv, cx, cy); const curIdx = gv.order.indexOf(s.__id); if (desired!==curIdx && desired>=0){ gv.order.splice(curIdx,1); gv.order.splice(Math.min(desired, gv.order.length),0,s.__id); } }
       }
   layoutGroup(target, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(target, sprites); if (layoutOld) { layoutGroup(layoutOld, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(layoutOld, sprites); drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id)); } drawGroup(target, SelectionStore.state.groupIds.has(target.id));
     } else if (s.__groupId) {
-  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) { layoutGroup(old, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); }
+  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) { layoutGroup(old, sprites, sc=> spatial.update({ id:sc.__id, minX:sc.x, minY:sc.y, maxX:sc.x+100, maxY:sc.y+140 })); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); }
+  // Persist removal
+  try { InstancesRepo.updateMany([{ id: s.__id, group_id: null }]); } catch {}
     }
   }
 
@@ -397,9 +726,17 @@ const app = new PIXI.Application();
   function beginPan(x:number,y:number){ lastX=x; lastY=y; document.body.style.cursor='grabbing'; }
   function applyPan(e:PIXI.FederatedPointerEvent){ const dx = e.global.x - lastX; const dy = e.global.y - lastY; world.position.x += dx; world.position.y += dy; lastX = e.global.x; lastY = e.global.y; }
   app.stage.on('pointerdown', e => {
+    const tgt: any = e.target;
     if (panning && e.button===0) beginPan(e.global.x, e.global.y);
-    // Right button: allow panning start anywhere (cards, empty space); context menus still fire on rightclick if no movement
-    if (e.button===2) { rightPanning = true; beginPan(e.global.x, e.global.y); }
+    if (e.button===2) {
+      // If right-clicked directly on a card sprite, DON'T start a pan so we can show context menu.
+      if (tgt && tgt.__cardSprite) {
+        // Stop propagation so stage-level pan suppression doesn't interfere
+        // (We still rely on sprite's own rightclick handler.)
+        return; // skip initiating rightPanning
+      }
+      rightPanning = true; beginPan(e.global.x, e.global.y);
+    }
   });
   app.stage.on('pointermove', e => {
     if ((panning && (e.buttons & 1)) || (rightPanning && (e.buttons & 2)) || (midPanning && (e.buttons & 4))) applyPan(e);
@@ -433,11 +770,14 @@ const app = new PIXI.Application();
   perfEl.style.top='6px';
   perfEl.style.zIndex='10002';
   perfEl.style.minWidth='260px';
-  perfEl.style.padding='10px 12px';
+  perfEl.style.padding='12px 14px';
+  perfEl.style.fontSize='13px';
   perfEl.style.pointerEvents='none';
   document.body.appendChild(perfEl);
   (window as any).__perfOverlay = perfEl;
   let frameCount=0; let lastFpsTime=performance.now(); let fps=0;
+  let lsTimer:any=null; function scheduleLocalSave(){ if (PERSIST_MODE!=='memory') return; if (lsTimer) return; lsTimer = setTimeout(persistLocalPositions, 350); }
+  function persistLocalPositions(){ lsTimer=null; try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
   let lastMemSample = 0; let jsHeapLine='JS ?'; let texLine='Tex ?';
   let texResLine='Res ?'; let hiResPendingLine='GlobalPending ?'; let qualLine='Qual ?'; let queueLine='Q ?';
   function sampleMemory(){
@@ -467,7 +807,8 @@ const app = new PIXI.Application();
   perfEl.textContent = 
     `Status / Performance\n`+
     ` FPS: ${fps}\n`+
-    ` Zoom: ${world.scale.x.toFixed(2)}x\n`+
+  ` Zoom: ${world.scale.x.toFixed(2)}x\n`+
+  ` Persist: ${PERSIST_MODE}\n`+
     ` JS Heap: ${jsHeapLine.replace('JS ','')}\n`+
     `\nCards\n`+
     ` Total Cards: ${sprites.length}\n`+
@@ -487,6 +828,69 @@ const app = new PIXI.Application();
     ` Last Fetch Duration: ${stats.lastNetMs.toFixed(1)} ms\n`+
     `\nStorage\n`+
     (usage? ` IDB Usage: ${(usage.bytes/1048576).toFixed(1)} / ${(usage.budget/1048576).toFixed(0)} MB (${usage.count} objects)${usage.over? '  OVER BUDGET (evicting on new writes)':''}` : ' IDB Usage: pending...'); }
+
+    // ---- Debug Panel (layout & grouping resets) ----
+    function ensureDebugPanel(){
+      let el = document.getElementById('debug-panel'); if (el) return el as HTMLDivElement;
+  el = document.createElement('div'); el.id='debug-panel';
+  // Base styling; precise position continuously synced below perf overlay each frame
+  el.style.cssText='position:fixed;left:6px;top:300px;z-index:10005;background:#101b22;border:1px solid #2d4652;padding:8px 10px 10px;font:12px/1.45 system-ui,sans-serif;color:#b9d7e3;border-radius:6px;display:flex;flex-direction:column;gap:6px;min-width:220px;transition:top .08s linear;';
+  el.innerHTML = '<div style="font-weight:600;font-size:24px;margin-bottom:4px;">Debug</div>';
+  function addBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.style.cssText='all:unset;background:#20333d;color:#d7f3ff;padding:10px 16px;border-radius:6px;cursor:pointer;font-size:24px;text-align:center;'; b.onmouseenter=()=> b.style.background='#2c4b59'; b.onmouseleave=()=> b.style.background='#20333d'; b.onclick=handler; el!.appendChild(b); }
+  addBtn('Grid Ungrouped Cards', ()=> { gridUngroupedCards(); });
+  addBtn('Full Reset (Clear + Grid All)', ()=> { clearGroupsOnly(); resetLayout(true); });
+      document.body.appendChild(el);
+      // Continuous sync each frame so it's always directly below perf overlay regardless of dynamic height changes
+      const syncDebugPosition = ()=> {
+        const perf = document.getElementById('perf-overlay');
+        if (!perf) return;
+        const r = perf.getBoundingClientRect();
+        const desiredLeft = r.left;
+        const desiredTop = r.bottom + 10; // margin
+        if (el!.style.left !== desiredLeft + 'px') el!.style.left = desiredLeft + 'px';
+        if (el!.style.top !== desiredTop + 'px') el!.style.top = desiredTop + 'px';
+      };
+      // Hook into PIXI ticker (defined earlier). If unavailable, fallback to rAF.
+      try { (app.ticker as any).add(syncDebugPosition); } catch { requestAnimationFrame(function loop(){ syncDebugPosition(); requestAnimationFrame(loop); }); }
+      syncDebugPosition();
+      return el;
+    }
+    function clearGroupsOnly(){
+      // Remove membership on sprites
+      const updates: {id:number,group_id:null}[] = [];
+      sprites.forEach(s=> { if ((s as any).__groupId){ (s as any).__groupId = undefined; updates.push({id:s.__id, group_id:null}); } });
+      if (updates.length) { try { InstancesRepo.updateMany(updates); } catch {} }
+      // Destroy visuals
+      const ids = [...groups.keys()]; ids.forEach(id=> { const gv = groups.get(id); if (gv){ gv.gfx.destroy(); } });
+      if (ids.length) { try { GroupsRepo.deleteMany(ids); } catch {} }
+      groups.clear();
+  // Clear persisted group transforms (memory mode) so they don't rehydrate
+  if (PERSIST_MODE==='memory') { try { localStorage.removeItem(LS_GROUPS_KEY); } catch {} }
+    }
+    function resetLayout(alreadyCleared:boolean){
+      // Assign default grid positions based on current sprite order
+      const cols = Math.ceil(Math.sqrt(sprites.length || 1));
+      const batch: {id:number,x:number,y:number}[] = [];
+      sprites.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
+      if (batch.length) { try { InstancesRepo.updatePositions(batch); } catch {} }
+      if (PERSIST_MODE==='memory') { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+      if (!alreadyCleared) clearGroupsOnly();
+    }
+    function gridUngroupedCards(){
+      const ungrouped = sprites.filter(s=> !(s as any).__groupId);
+      if (!ungrouped.length) return;
+      // Compute vertical placement just below all existing groups
+      let maxBottom = 0; let hasGroup=false;
+      groups.forEach(gv=> { hasGroup=true; const b = gv.gfx.y + gv.h; if (b>maxBottom) maxBottom = b; });
+      const startY = hasGroup ? snap(maxBottom + 80) : 0;
+      // Simple grid width heuristic
+      const cols = Math.ceil(Math.sqrt(ungrouped.length));
+      const batch: {id:number,x:number,y:number}[] = [];
+      ungrouped.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = startY + row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
+      if (batch.length) { try { InstancesRepo.updatePositions(batch); } catch {} }
+      if (PERSIST_MODE==='memory') { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+    }
+    ensureDebugPanel();
 
   // Explicit hi-res upgrade pass: ensure visible cards promote quickly (not limited by LOAD_PER_FRAME small image loader)
   let hiResCursor = 0;
@@ -508,6 +912,36 @@ const app = new PIXI.Application();
 
   // Hotkey: press 'U' to force immediate hi-res request for all visible cards
   window.addEventListener('keydown', e=> {
+    // If typing in an input/textarea/contentEditable, allow native editing keys (arrows, Ctrl+A, etc.)
+    const active = document.activeElement as HTMLElement | null;
+    const editing = active && (active.tagName==='INPUT' || active.tagName==='TEXTAREA' || active.isContentEditable);
+    // Skip global handlers that would conflict with text editing
+    if (editing) {
+      // Allow palette-specific Esc (handled elsewhere) and Enter (handled in palette) to bubble.
+      // Prevent canvas-wide shortcuts below from firing while editing.
+      // Exceptions: Ctrl+F still opens new search (avoid recursion) so if already in search input ignore.
+      if ((e.key==='a' || e.key==='A') && (e.ctrlKey||e.metaKey)) return; // let browser select-all
+      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) return; // let caret move
+      if ((e.key==='g' || e.key==='G') && !e.ctrlKey && !e.metaKey && !e.altKey) return; // prevent accidental group creation
+      if ((e.key==='f' || e.key==='F') && (e.ctrlKey||e.metaKey)) return; // rely on browser find when inside other inputs (search palette already overrides inside itself)
+    }
+    // Search palette open shortcuts
+    // Ctrl/Cmd+F: open search (override default find) when not in another input
+    if ((e.key==='f' || e.key==='F') && (e.ctrlKey||e.metaKey) && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      searchUI.show('');
+      return; // prevent falling through to fit logic below
+    }
+    // '/' quick open (common in web apps). Ignore if typing inside an editable element.
+    if (e.key==='/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const target = e.target as HTMLElement | null;
+      const editingTarget = target && (target.tagName==='INPUT' || target.tagName==='TEXTAREA' || target.isContentEditable);
+      if (!editingTarget) {
+        e.preventDefault();
+        searchUI.show('');
+        return;
+      }
+    }
     if (e.key==='u' || e.key==='U') {
       const scale = world.scale.x;
       sprites.forEach(s=> { if (s.visible && s.__imgLoaded) updateCardTextureForScale(s, scale); });
@@ -515,12 +949,86 @@ const app = new PIXI.Application();
   });
 
   installModeToggle();
+  // Search palette setup
+  const searchUI = installSearchPalette({
+    getSprites: ()=> sprites,
+    createGroupForSprites: (ids:number[], name:string)=> {
+      let id = groups.size ? Math.max(...groups.keys())+1 : 1;
+      try { id = (GroupsRepo as any).create ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300) : id; } catch {}
+      const gv = createGroupVisual(id, 0, 0, 300, 300);
+      gv.name = name;
+      groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
+      ids.forEach(cid=> { addCardToGroupOrdered(gv, cid, gv.order.length); const s = sprites.find(sp=> sp.__id===cid); if (s) { (s as any).__groupId = gv.id; } });
+      try { InstancesRepo.updateMany(ids.map(cid=> ({id: cid, group_id: gv.id}))); } catch {}
+      // Auto-pack to minimize height (balanced grid close to square)
+      autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+      updateGroupMetrics(gv, sprites); drawGroup(gv, false);
+      // --- Non-overlapping placement ---
+      (function placeGroup(){
+        const pad = 16; // extra spacing from other objects
+        const searchCols = 40; const searchRows = 40; // safety bounds
+        const invScale = 1 / world.scale.x;
+        const viewLeft = (-world.position.x) * invScale;
+        const viewTop = (-world.position.y) * invScale;
+        const startX = snap(viewLeft + 40);
+        const startY = snap(viewTop + 40);
+        function collides(x:number,y:number): boolean {
+          const gx1 = x - pad, gy1 = y - pad, gx2 = x + gv.w + pad, gy2 = y + gv.h + pad;
+          // Existing groups
+            for (const eg of groups.values()) {
+              if (eg.id===gv.id) continue; // skip self
+              const x1 = eg.gfx.x - pad, y1 = eg.gfx.y - pad, x2 = eg.gfx.x + eg.w + pad, y2 = eg.gfx.y + eg.h + pad;
+              if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+            }
+          // Existing cards (ignore cards in this new group since they will move with it)
+          for (const s of sprites){
+            if ((s as any).__groupId === gv.id) continue;
+            const x1 = s.x - 4, y1 = s.y - 4, x2 = s.x + 100 + 4, y2 = s.y + 140 + 4;
+            if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+          }
+          return false;
+        }
+        let found=false; let bestX=gv.gfx.x, bestY=gv.gfx.y;
+        outer: for (let row=0; row<searchRows; row++) {
+          for (let col=0; col<searchCols; col++) {
+            const x = snap(startX + col * (gv.w + 60));
+            const y = snap(startY + row * (gv.h + 60));
+            if (!collides(x,y)) { bestX=x; bestY=y; found=true; break outer; }
+          }
+        }
+        if (!found) {
+          // Fallback: place to the far right of current max extent
+          let maxX=0, minY=0; let initialized=false;
+          sprites.forEach(s=> { if (!initialized){ maxX=s.x+100; minY=s.y; initialized=true; } else { if (s.x+100>maxX) maxX=s.x+100; if (s.y<minY) minY=s.y; } });
+          groups.forEach(eg=> { if (eg.id===gv.id) return; if (eg.gfx.x+eg.w>maxX) maxX=eg.gfx.x+eg.w; if (eg.gfx.y<minY) minY=eg.gfx.y; });
+          bestX = snap(maxX + 120); bestY = snap(minY);
+        }
+        const dx = bestX - gv.gfx.x; const dy = bestY - gv.gfx.y;
+        if (dx || dy) {
+          gv.gfx.x = bestX; gv.gfx.y = bestY;
+          // Shift member cards
+          for (const cid of gv.order){ const s = sprites.find(sp=> sp.__id===cid); if (s){ s.x += dx; s.y += dy; spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }); } }
+        }
+      })();
+      scheduleGroupSave();
+      // Fit new group into view
+      const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
+      camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
+      try { persistGroupTransform(gv.id,{x:gv.gfx.x,y:gv.gfx.y,w:gv.w,h:gv.h}); } catch {}
+    },
+    focusSprite: (id:number)=> {
+      const s = sprites.find(sp=> sp.__id===id); if (!s) return;
+      // Center camera on sprite without changing zoom drastically.
+      const target = { x: s.x, y: s.y, w: 100, h: 140 };
+  camera.fitBounds(target, { w: window.innerWidth, h: window.innerHeight });
+    }
+  });
 
   // Table mode stub container
   const tableEl = document.createElement('div');
   tableEl.id='table-mode';
   tableEl.style.cssText='position:fixed;inset:0;display:none;background:#0d1419;color:#d5d5d5;font:12px/1.4 "Inter",system-ui,monospace;padding:10px;z-index:60;overflow:auto;';
-  tableEl.innerHTML = '<h2 style="margin:4px 0 12px;font-size:14px;">Table Mode (Phase 1 Stub)</h2><p>Press Tab to return to canvas.</p>';
+  tableEl.innerHTML = '<h2 style="margin:8px 0 18px;font-size:28px;">Table Mode (Phase 1 Stub)</h2><p style="font-size:24px;">Press Tab to return to canvas.</p>';
   document.body.appendChild(tableEl);
   UIState.on(()=> { const canvasMode = UIState.state.mode==='canvas'; app.canvas.style.display = canvasMode? 'block':'none'; tableEl.style.display = canvasMode? 'none':'block'; });
 
@@ -566,6 +1074,18 @@ const app = new PIXI.Application();
   }
 
   app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
+  // Periodically ensure any new sprites have context listeners
+  setInterval(()=> { try { ensureCardContextListeners(); } catch {} }, 2000);
+  if (PERSIST_MODE==='memory') {
+    window.addEventListener('beforeunload', ()=> {
+      try { persistLocalPositions(); } catch {}
+      try { // flush any pending group save immediately
+        const anyWin:any = window; if (anyWin.lsGroupsTimer) { clearTimeout(anyWin.lsGroupsTimer); }
+        // direct call ensures groups saved even if debounce pending
+        (function(){ try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} })();
+      } catch {}
+    });
+  }
 
   // Fallback global hotkey listener (capture) to ensure Help toggles even if earlier handler failed.
   window.addEventListener('keydown', (e)=> {

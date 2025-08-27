@@ -61,7 +61,9 @@ function snap(v:number){ return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 const PALETTE = [0x2d3e53,0x444444,0x224433,0x333355,0x553355,0x335555,0x4a284a,0x3c4a28];
 
 export function createGroupVisual(id:number, x:number, y:number, w=320, h=280): GroupVisual {
-  const gfx = new PIXI.Container(); gfx.x = x; gfx.y = y; gfx.eventMode='static'; gfx.cursor='default'; gfx.zIndex = 1;
+  const gfx = new PIXI.Container(); gfx.x = x; gfx.y = y; gfx.eventMode='static'; gfx.cursor='default';
+  // Render groups beneath their member cards; cards will be assigned zIndex >= (group zIndex + 1)
+  gfx.zIndex = 40; // elevated but still below dynamically raised dragging cards
   const frame = new PIXI.Graphics(); frame.eventMode='static'; frame.cursor='default'; (frame as any).__groupBody = true;
   const header = new PIXI.Graphics(); header.eventMode='static'; header.cursor='move'; (header as any).__groupHeader = true;
   const label = new PIXI.Text({ text:`Group ${id}`, style:{ fill: HEADER_TEXT_COLOR, fontSize: 13, fontFamily: FONT_FAMILY, fontWeight: '500', lineHeight: 13 } });
@@ -170,6 +172,9 @@ export function layoutGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: (s
   // so that tiny world gaps (e.g. 3) remain intact and scale predictably (≈8px at zoom 2.69).
   const nx = tx; const ny = ty;
   if (s.x!==nx || s.y!==ny) { s.x = nx; s.y = ny; onMoved && onMoved(s); }
+    // Ensure grouped cards render above group frame/background.
+  const desiredZ = gv.gfx.zIndex + 1;
+  if (s.zIndex < desiredZ) { s.zIndex = desiredZ; (s as any).__baseZ = desiredZ; }
   });
   const rows = Math.ceil(items.length / cols);
   const neededH = HEADER_HEIGHT + PAD_Y + rows * CARD_H + (rows-1) * GAP_Y + PAD_Y + PAD_BOTTOM_EXTRA;

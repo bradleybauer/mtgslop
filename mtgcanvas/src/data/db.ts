@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 let db: any | null = null;
+const SCHEMA_VERSION = 1;
 
 export function getDb() {
   if (!db) {
@@ -16,6 +17,18 @@ export function getDb() {
   const __dirname = dirname(__filename);
   const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf-8');
     db.exec(schema);
+    // Basic schema versioning (single number in meta table)
+    try {
+      const row = db.prepare('SELECT value FROM meta WHERE key="schema_version"').get();
+      if (!row) {
+        db.prepare('INSERT INTO meta (key,value) VALUES ("schema_version", ?)').run(String(SCHEMA_VERSION));
+      } else if (parseInt(row.value,10) < SCHEMA_VERSION) {
+        // Future migrations would run here based on row.value -> SCHEMA_VERSION
+        db.prepare('UPDATE meta SET value=? WHERE key="schema_version"').run(String(SCHEMA_VERSION));
+      }
+    } catch (e) {
+      console.warn('[db] meta table not ready or version check failed', e);
+    }
   }
   return db;
 }

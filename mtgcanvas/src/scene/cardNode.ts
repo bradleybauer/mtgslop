@@ -40,7 +40,7 @@ export async function loadTextureFromCachedURL(url:string): Promise<PIXI.Texture
 }
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
-export interface CardSprite extends PIXI.Sprite { __id:number; __baseZ:number; __groupId?:number; __card?:any; __imgUrl?:string; __imgLoaded?:boolean; __imgLoading?:boolean; __outline?: PIXI.Graphics; __hiResUrl?:string; __hiResLoaded?:boolean; __hiResLoading?:boolean; __hiResAt?:number; __qualityLevel?: number; }
+export interface CardSprite extends PIXI.Sprite { __id:number; __baseZ:number; __groupId?:number; __card?:any; __imgUrl?:string; __imgLoaded?:boolean; __imgLoading?:boolean; __outline?: PIXI.Graphics; __hiResUrl?:string; __hiResLoaded?:boolean; __hiResLoading?:boolean; __hiResAt?:number; __qualityLevel?: number; __doubleBadge?: PIXI.Container; __faceIndex?: number; }
 
 export interface CardVisualOptions { id:number; x:number; y:number; z:number; renderer: PIXI.Renderer; card?: any; }
 
@@ -73,6 +73,8 @@ export function createCardSprite(opts: CardVisualOptions) {
   sp.__id = opts.id; sp.__baseZ = opts.z; sp.__card = opts.card || null;
   sp.x = opts.x; sp.y = opts.y; sp.zIndex = sp.__baseZ;
   sp.eventMode='static'; sp.cursor='pointer';
+  // If card already provided and double sided, initialize face index + badge
+  if (sp.__card && isDoubleSided(sp.__card)) { sp.__faceIndex = 0; ensureDoubleSidedBadge(sp); }
   // Use default (linear) scaling for image clarity; we will supply higher-res textures when zoomed.
   return sp;
 }
@@ -80,14 +82,19 @@ export function createCardSprite(opts: CardVisualOptions) {
 export function ensureCardImage(sprite: CardSprite) {
   if (sprite.__imgLoaded || sprite.__imgLoading) return;
   const card = sprite.__card; if (!card) return;
-  // Support single or multi-faced cards
-  // Always start with "small" if available for fast initial load.
-  const url = card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal;
+  const faceIdx = sprite.__faceIndex || 0;
+  const face = (card.card_faces && card.card_faces[faceIdx]) || null;
+  const url = face?.image_uris?.small || card.image_uris?.small || face?.image_uris?.normal || card.image_uris?.normal;
   if (!url) return;
   sprite.__imgUrl = url; sprite.__imgLoading = true;
-  loadTextureFromCachedURL(url)
-    .then(tex=> { if (!tex) { sprite.__imgLoading=false; return; } sprite.texture = tex; sprite.width = 100; sprite.height = 140; sprite.__imgLoaded = true; sprite.__imgLoading=false; if (sprite.__qualityLevel===undefined) sprite.__qualityLevel = 0; if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); })
-    .catch(()=> { sprite.__imgLoading=false; });
+  loadTextureFromCachedURL(url).then(tex=> {
+    if (!tex) { sprite.__imgLoading=false; return; }
+    sprite.texture = tex; sprite.width = 100; sprite.height = 140;
+    sprite.__imgLoaded = true; sprite.__imgLoading=false;
+    if (sprite.__qualityLevel===undefined) sprite.__qualityLevel = 0;
+    if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true);
+    if (isDoubleSided(card)) ensureDoubleSidedBadge(sprite, true);
+  }).catch(()=> { sprite.__imgLoading=false; });
 }
 
 // ---- High Resolution Upgrade Logic ----
@@ -122,19 +129,20 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   // Already loading something higher
   if (sprite.__hiResLoading) return;
   const card = sprite.__card;
+  const faceIdx = sprite.__faceIndex || 0;
+  const face = (card.card_faces && card.card_faces[faceIdx]) || null;
   let url: string | undefined;
   if (desired === 2) {
-    // Collapse intermediate: if jumping to highest tier and we never loaded 1, go straight to png
-    url = card.image_uris?.png || card.card_faces?.[0]?.image_uris?.png || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+    url = face?.image_uris?.png || card.image_uris?.png || face?.image_uris?.large || card.image_uris?.large;
   } else if (desired === 1) {
-    url = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || card.image_uris?.large || card.card_faces?.[0]?.image_uris?.large;
+    url = face?.image_uris?.normal || card.image_uris?.normal || face?.image_uris?.large || card.image_uris?.large;
   }
   if (!url) return;
   // If already at this URL skip
   if (sprite.texture?.baseTexture?.resource?.url === url || sprite.__hiResUrl === url) { sprite.__qualityLevel = desired; return; }
   sprite.__hiResLoading = true; sprite.__hiResUrl = url;
   loadTextureFromCachedURL(url)
-    .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; sprite.texture=tex; sprite.width=100; sprite.height=140; sprite.__qualityLevel=desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); } if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); })
+  .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; sprite.texture=tex; sprite.width=100; sprite.height=140; sprite.__qualityLevel=desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); } if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); if (sprite.__card && isDoubleSided(sprite.__card)) ensureDoubleSidedBadge(sprite, true); else if (sprite.__doubleBadge) { sprite.__doubleBadge.destroy(); sprite.__doubleBadge = undefined; } })
     .catch(()=> { sprite.__hiResLoading=false; });
 }
 
@@ -192,6 +200,76 @@ export function updateCardSpriteAppearance(s: CardSprite, selected:boolean) {
   }
   const inGroup = !!s.__groupId;
   s.texture = inGroup ? (selected? cachedTextures.inGroupSelected : cachedTextures.inGroup) : (selected? cachedTextures.selected : cachedTextures.base);
+}
+
+// --- Double-sided (Reversible) Badge ---
+// Only treat true double-faced transform style cards as reversible for UI badge.
+// Exclude adventure, split, aftermath, flip etc. which have multiple faces in data but not a reversible back face.
+const TRUE_DFC_LAYOUTS = new Set(['transform','modal_dfc','double_faced_token','battle','meld']);
+function isDoubleSided(card:any): boolean {
+  if (!card) return false;
+  const layout = (card.layout || '').toLowerCase();
+  if (TRUE_DFC_LAYOUTS.has(layout)) return true;
+  // Fallback: exactly two fully imaged faces, and not in excluded layouts
+  if (Array.isArray(card.card_faces) && card.card_faces.length === 2 && card.card_faces.every((f:any)=>f.image_uris)) {
+    if (/^(adventure|split|aftermath|flip|prototype)$/.test(layout)) return false;
+    return true;
+  }
+  return false;
+}
+
+function ensureDoubleSidedBadge(sprite: CardSprite, repositionOnly=false){
+  if (!isDoubleSided(sprite.__card)) {
+    if (sprite.__doubleBadge) { sprite.__doubleBadge.destroy(); sprite.__doubleBadge = undefined; }
+    return;
+  }
+  const displayW = 100;
+  // Quarter the previous linear size: radius 18 -> ~4.5 (round to 5)
+  const targetRadius = 5;
+  const margin = 4;
+  const verticalOffset = 12; // push badge lower from top edge
+  if (!sprite.__doubleBadge){
+    const wrap = new PIXI.Container();
+    const g = new PIXI.Graphics();
+    g.circle(0,0,targetRadius).fill({color:0x0a1a22, alpha:0.9}).stroke({color:0x48cfff,width:2});
+    // Smaller arrows scaled to new radius
+    g.moveTo(-2,-1).lineTo(0,-5).lineTo(2,-1).stroke({color:0x8ae9ff,width:2});
+    g.moveTo(2,1).lineTo(0,5).lineTo(-2,1).stroke({color:0x8ae9ff,width:2});
+    wrap.addChild(g);
+    wrap.eventMode='static'; wrap.cursor='pointer'; wrap.alpha=0.4;
+    wrap.on('pointerdown', (e:any)=> { e.stopPropagation(); flipCardFace(sprite); });
+    wrap.on('mouseenter', ()=> { wrap.alpha=0.9; });
+    wrap.on('mouseleave', ()=> { wrap.alpha=0.4; });
+    sprite.__doubleBadge = wrap;
+    sprite.addChild(wrap);
+  }
+  const badge = sprite.__doubleBadge!;
+  // Neutralize parent scaling so badge appears fixed relative to card's 100x140 logical size.
+  const sx = sprite.scale.x || 1; const sy = sprite.scale.y || 1;
+  badge.scale.set(1/sx, 1/sy);
+  // Desired displayed position (top-right)
+  const desiredX = displayW - (targetRadius + margin);
+  const desiredY = targetRadius + margin + verticalOffset;
+  badge.x = desiredX / sx;
+  badge.y = desiredY / sy;
+  badge.zIndex = 1000000;
+  if (sprite.__outline) sprite.__outline.zIndex = 999999;
+  (sprite as any).sortableChildren = true;
+}
+
+// Maintain roughly screen-constant badge size: call every frame with world scale
+// (Badge now scales with card; no inverse scaling function needed.)
+
+function flipCardFace(sprite: CardSprite){
+  const card = sprite.__card; if (!card || !isDoubleSided(card)) return;
+  const faces = card.card_faces; if (!Array.isArray(faces) || faces.length < 2) return;
+  sprite.__faceIndex = sprite.__faceIndex ? 0 : 1;
+  // Reset state so fresh load occurs (ephemeral; no persistence)
+  sprite.__hiResLoaded=false; sprite.__hiResUrl=undefined; sprite.__qualityLevel=0; sprite.__imgLoaded=false; sprite.__imgUrl=undefined;
+  ensureCardImage(sprite);
+  // After initial small loads, attempt hi-res for current zoom next frame
+  requestAnimationFrame(()=> { try { const scale = (sprite.parent?.parent as any)?.scale?.x || 1; updateCardTextureForScale(sprite, scale); } catch {} });
+  ensureDoubleSidedBadge(sprite, true); // reposition after flip
 }
 
 export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], world: PIXI.Container, stage: PIXI.Container, onCommit?: (moved: CardSprite[])=>void, isPanning?: ()=>boolean, startMarquee?: (global: PIXI.Point, additive:boolean)=>void) {

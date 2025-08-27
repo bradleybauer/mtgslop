@@ -7,27 +7,27 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-  "import:scryfall": "tsx src/data/importer.ts --input ../all.json",
-  "import:legal": "tsx src/data/importer.ts --input ../notes/legal.json",
-  "lint": "eslint . --ext .ts,.tsx",
-  "tauri:dev": "tauri dev",
-  "tauri:build": "tauri build"
+    "import:scryfall": "tsx src/data/importer.ts --input ../all.json",
+    "import:legal": "tsx src/data/importer.ts --input ../notes/legal.json",
+    "lint": "eslint . --ext .ts,.tsx",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
     "better-sqlite3": "^9.4.0",
     "pixi.js": "^8.1.1",
-  "rbush": "^3.0.1",
-    "stream-json": "^1.8.0",
+    "rbush": "^3.0.1",
     "stream-chain": "^2.2.5",
-  "@tauri-apps/api": "^2.8.0"
+    "stream-json": "^1.8.0"
   },
   "devDependencies": {
-  "@tauri-apps/cli": "^2.8.0",
+    "@tauri-apps/cli": "^2.8.0",
     "@types/node": "^20.11.30",
     "@types/rbush": "^3.0.3",
     "eslint": "^8.57.0",
-    "typescript": "^5.4.0",
-    "vite": "^5.2.0",
-    "tsx": "^4.7.0"
+    "tsx": "^4.7.0",
+    "typescript": "^5.9.2",
+    "vite": "^5.2.0"
   }
 }

@@ -54,3 +54,17 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_card_name ON cards(name);
 CREATE INDEX IF NOT EXISTS idx_instance_group ON card_instances(group_id);
 CREATE INDEX IF NOT EXISTS idx_groups_parent ON groups(parent_id);
+
+-- Full text search (FTS5) virtual table & triggers
+CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(name, oracle_text, content='cards', content_rowid='id');
+
+CREATE TRIGGER IF NOT EXISTS cards_ai AFTER INSERT ON cards BEGIN
+  INSERT INTO cards_fts(rowid, name, oracle_text) VALUES (new.id, new.name, new.oracle_text);
+END;
+CREATE TRIGGER IF NOT EXISTS cards_ad AFTER DELETE ON cards BEGIN
+  INSERT INTO cards_fts(cards_fts, rowid, name, oracle_text) VALUES('delete', old.id, old.name, old.oracle_text);
+END;
+CREATE TRIGGER IF NOT EXISTS cards_au AFTER UPDATE ON cards BEGIN
+  INSERT INTO cards_fts(cards_fts, rowid, name, oracle_text) VALUES('delete', old.id, old.name, old.oracle_text);
+  INSERT INTO cards_fts(rowid, name, oracle_text) VALUES (new.id, new.name, new.oracle_text);
+END;

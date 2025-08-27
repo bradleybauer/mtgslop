@@ -24,9 +24,11 @@ function getDbSafe() {
   return _getDb ? _getDb() : null;
 }
 
+export function hasRealDb(){ return !!_getDb; }
+
 export interface CardInstance { id: number; card_id: number; group_id: number | null; x:number; y:number; z:number; rotation:number; scale:number; tags:string|null; }
 
-export interface GroupRow { id:number; parent_id:number|null; name:string|null; collapsed:number; }
+export interface GroupRow { id:number; parent_id:number|null; name:string|null; collapsed:number; transform_json:string|null; }
 
 // In-memory fallback stores
 const mem = { instances: [] as CardInstance[], groups: [] as GroupRow[] };
@@ -49,7 +51,7 @@ export const InstancesRepo = {
   },
   list() {
     const db = getDbSafe();
-    if (db) return db.prepare('SELECT * FROM card_instances').all() as CardInstance[];
+  if (db) return db.prepare('SELECT id, card_id, group_id, x, y, z, rotation, scale, tags FROM card_instances').all() as CardInstance[];
     warnOnce('[InstancesRepo] Using in-memory list');
     return mem.instances;
   },
@@ -80,23 +82,39 @@ export const InstancesRepo = {
 };
 
 export const GroupsRepo = {
-  create(name:string|null, parent_id:number|null, x:number, y:number) {
+  create(name:string|null, parent_id:number|null, x:number, y:number, w:number=300, h:number=300) {
     const db = getDbSafe();
     if (db) {
       const stmt = db.prepare('INSERT INTO groups (parent_id, name, collapsed, transform_json) VALUES (?,?,0,?)');
-      const info = stmt.run(parent_id, name, JSON.stringify({x,y}));
+      const info = stmt.run(parent_id, name, JSON.stringify({x,y,w,h}));
       return info.lastInsertRowid as number;
     }
-    const row: GroupRow = { id: memGroupId++, parent_id, name, collapsed:0 };
+    const row: GroupRow = { id: memGroupId++, parent_id, name, collapsed:0, transform_json: JSON.stringify({x,y,w,h}) };
     mem.groups.push(row); return row.id;
   },
   list() {
-    const db = getDbSafe(); if (db) return db.prepare('SELECT * FROM groups').all() as GroupRow[];
-    return mem.groups;
+    const db = getDbSafe(); if (db) return db.prepare('SELECT id,parent_id,name,collapsed,transform_json FROM groups').all() as GroupRow[];
+    return mem.groups as any;
   },
   deleteMany(ids:number[]) {
     if (!ids.length) return; const db = getDbSafe();
     if (db) { const stmt = db.prepare(`DELETE FROM groups WHERE id IN (${ids.map(()=>'?').join(',')})`); stmt.run(...ids); return; }
     mem.groups = mem.groups.filter(g=> !ids.includes(g.id));
+  },
+  updateTransform(id:number, t:{x:number,y:number,w:number,h:number}) {
+    const db = getDbSafe();
+    const json = JSON.stringify(t);
+    if (db) { db.prepare('UPDATE groups SET transform_json=? WHERE id=?').run(json, id); return; }
+    const g = mem.groups.find(g=> g.id===id); if (g) (g as any).transform_json = json;
+  },
+  setCollapsed(id:number, collapsed:boolean) {
+    const db = getDbSafe();
+    if (db) { db.prepare('UPDATE groups SET collapsed=? WHERE id=?').run(collapsed?1:0, id); return; }
+    const g = mem.groups.find(g=> g.id===id); if (g) g.collapsed = collapsed?1:0;
+  },
+  rename(id:number, name:string) {
+    const db = getDbSafe();
+    if (db) { db.prepare('UPDATE groups SET name=? WHERE id=?').run(name, id); return; }
+    const g = mem.groups.find(g=> g.id===id); if (g) g.name = name;
   }
 };
