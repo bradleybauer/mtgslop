@@ -36,9 +36,9 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
   wrap.style.cssText = 'position:fixed;top:14%;left:50%;transform:translateX(-50%);z-index:10050;display:flex;flex-direction:column;gap:14px;min-width:440px;max-width:760px;width:clamp(440px,56vw,760px);';
   wrap.className = 'ui-panel';
   wrap.innerHTML = '<div style="font-size:26px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.85;">Search Cards</div>';
-    inputEl = document.createElement('input');
+  inputEl = document.createElement('input');
     inputEl.type = 'text';
-    inputEl.placeholder = 'Type keywords (space = OR). Press Enter to group results.';
+  inputEl.placeholder = 'Search cards (Scryfall syntax). Examples: t:creature o:"draw a card" c>=ug. Enter=Group, Esc=Close';
   inputEl.className='ui-input ui-input-lg'; inputEl.style.width='100%';
     wrap.appendChild(inputEl);
     // Filter pills
@@ -79,12 +79,12 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     function centerOnCursor(){ const id = currentMatches[cursor]; if (id!=null) focusSprite(id); }
     prevBtn.onclick=()=> { if (cursor>0){ cursor--; updateNavState(); centerOnCursor(); } };
     nextBtn.onclick=()=> { if (cursor<currentMatches.length-1){ cursor++; updateNavState(); centerOnCursor(); } };
-    groupBtn.onclick=()=> { if (currentMatches.length){ const q = inputEl?.value.trim() || ''; const name = `Search: ${q} (${currentMatches.length})`; createGroupForSprites(currentMatches.slice(), name); hide(); } };
+  groupBtn.onclick=()=> { if (currentMatches.length){ const q = inputEl?.value.trim() || ''; const name = `Search: ${q}`; createGroupForSprites(currentMatches.slice(), name); hide(); } };
     navEl.append(prevBtn, counterEl, nextBtn, groupBtn);
     wrap.appendChild(navEl);
     const hint = document.createElement('div');
   hint.style.cssText = 'font-size:12px;opacity:.6;';
-  hint.innerHTML = 'Scryfall-like syntax: name:, o:, t:, layout:, cmc>=3, c>=uw, -t:creature, foo OR bar.\nQuotes for phrases ("draw a card"). * wildcard inside words. Color identity: c=uw, c>=uw, c<=w, -c:w.\nLegacy: +token for MUST, a|b inline OR. Filters: All/Ungrouped/Grouped (Alt+A/U/G).';
+  hint.innerHTML = 'Scryfall-like: name:, o:, t:, a:, ft:, wm:, r:, e:, lang:, game:, frame:, border:, stamp:.\nColors: c=uw, c>=ug, id<=wub. Mana: m:2WW, mana:{R/P}, manavalue>=3, manavalue:even.\nStats: pow>=3, pow>tou, pt>=10. Formats: f:modern, banned:legacy. Prices: usd>1.\nNegate with -, exact name with !"Lightning Bolt", regex with o:/^\\{T\\}:/. OR and (parentheses) supported.';
     wrap.appendChild(hint);
     document.body.appendChild(wrap);
     // Global escape handler so palette closes even if focus moved to buttons
@@ -180,10 +180,13 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     }
   // Try advanced Scryfall-like parse first
   const adv = parseScryfallQuery(q);
+  // Heuristic: if no field operators/OR/parentheses/negation, treat as name-only search and dedupe by name
+  const isNameOnly = !/[A-Za-z_][A-Za-z0-9_]*:/.test(q) && !/\bOR\b/i.test(q) && !/[()]/.test(q) && !/^\-/.test(q);
   const tk = adv ? null : tokenize(q);
     const sprites = getSprites();
     // const MAX = 800; // safety cap
   const matched: number[] = [];
+    const seenNames = new Set<string>();
     for (const s of sprites) {
       const c = (s as any).__card; if (!c) continue;
       if (filterMode==='ungrouped' && (s as any).__groupId) continue;
@@ -191,7 +194,16 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       let ok=false;
       if (adv) ok = adv(c);
       else if (tk) ok = match(c, tk);
-      if (ok) matched.push(s.__id);
+      if (ok) {
+        if (isNameOnly) {
+          const nm = (c.name||'').toLowerCase();
+          if (nm) {
+            if (seenNames.has(nm)) continue;
+            seenNames.add(nm);
+          }
+        }
+        matched.push(s.__id);
+      }
     }
   currentMatches = matched;
   cursor = 0;
@@ -206,7 +218,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     if (typeof window !== 'undefined') { const evt = (window as any).requestAnimationFrame ? (window as any).requestAnimationFrame : (fn:Function)=> setTimeout(fn,0); evt(()=> { const total = currentMatches.length; if (counterEl) counterEl.textContent = total? `${cursor+1} / ${total}`:'0 / 0'; if (prevBtn) prevBtn.disabled = cursor<=0; if (nextBtn) nextBtn.disabled = cursor>=total-1; if (navEl) navEl.style.display = total? 'flex':'none'; }); }
     if (commit) {
       if (!matched.length) { infoEl.textContent = 'No matches.'; return; }
-      const name = `Search: ${q} (${matched.length})`;
+  const name = `Search: ${q}`;
       createGroupForSprites(matched, name);
       hide();
     }
