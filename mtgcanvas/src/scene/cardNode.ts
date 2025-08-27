@@ -358,6 +358,8 @@ export function attachCardInteractions(s: CardSprite, getAll: ()=>CardSprite[], 
   s.on('pointerdown', (e:any)=> {
   if (e.button!==0) return; // only left button selects / drags
   if (isPanning && isPanning()) return; // ignore clicks while panning with space
+  // Suppress direct card drag if its group overlay label is active (zoomed out macro view).
+  if ((s as any).__groupOverlayActive) return;
     // If Shift held, allow marquee instead of starting a card drag (when user intends multi-select)
     if (e.shiftKey && startMarquee) {
       startMarquee(new PIXI.Point(e.global.x, e.global.y), true);

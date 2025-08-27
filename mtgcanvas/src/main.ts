@@ -3,7 +3,7 @@ import { SelectionStore } from './state/selectionStore';
 import { Camera } from './scene/camera';
 import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale, preloadCardQuality, getHiResQueueLength, getInflightTextureCount } from './scene/cardNode';
 import { getImageCacheStats, hasCachedURL, getCacheUsage } from './services/imageCache';
-import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics } from './scene/groupNode';
+import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics, updateGroupZoomPresentation } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
 import { initHelp } from './ui/helpPanel';
@@ -132,6 +132,27 @@ const app = new PIXI.Application();
 
   // Groups container + visuals
   const groups = new Map<number, GroupVisual>();
+  // Unified group deletion: reset member cards and remove the group
+  function deleteGroupById(id: number){
+    const gv = groups.get(id); if (!gv) return;
+    const ids = [...gv.items];
+    const updates: { id:number; group_id: null }[] = [];
+    ids.forEach(cid=> {
+      const sp = sprites.find(s=> s.__id===cid);
+      if (sp){
+        (sp as any).__groupId = undefined;
+        (sp as any).__groupOverlayActive = false;
+        (sp as any).eventMode = 'static';
+        sp.cursor = 'pointer';
+        sp.alpha = 1; sp.visible = true; sp.renderable = true;
+        updateCardSpriteAppearance(sp, SelectionStore.state.cardIds.has(sp.__id));
+      }
+      updates.push({ id: cid, group_id: null });
+    });
+    try { if (updates.length) InstancesRepo.updateMany(updates as any); } catch {}
+    try { gv.gfx.destroy(); } catch {}
+    groups.delete(id);
+  }
   // Memory mode group persistence helpers
   let lsGroupsTimer:any=null; function scheduleGroupSave(){ if (PERSIST_MODE!=='memory') return; if (lsGroupsTimer) return; lsGroupsTimer = setTimeout(persistLocalGroups, 400); }
   function persistLocalGroups(){ lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
@@ -250,7 +271,7 @@ const app = new PIXI.Application();
   function makeBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.type='button'; b.className='ui-btn'; b.style.fontSize='15px'; b.style.padding='8px 12px'; b.onclick=handler; return b; }
   const autoBtn = makeBtn('Auto-pack', ()=> { const gv = currentPanelGroup(); if (!gv) return; autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id,minX:s.x,minY:s.y,maxX:s.x+100,maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); });
     const recolorBtn = makeBtn('Recolor', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.color = (Math.random()*0xffffff)|0; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); });
-  const deleteBtn = makeBtn('Delete', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.gfx.destroy(); groups.delete(gv.id); SelectionStore.clear(); scheduleGroupSave(); updateGroupInfoPanel(); }); deleteBtn.classList.add('danger');
+  const deleteBtn = makeBtn('Delete', ()=> { const gv = currentPanelGroup(); if (!gv) return; deleteGroupById(gv.id); SelectionStore.clear(); scheduleGroupSave(); updateGroupInfoPanel(); }); deleteBtn.classList.add('danger');
   actions.append(autoBtn, recolorBtn, deleteBtn); el.appendChild(actions);
     // Color palette strip
     const paletteStrip = document.createElement('div'); paletteStrip.style.cssText='display:flex;flex-wrap:wrap;gap:4px;';
@@ -333,19 +354,160 @@ const app = new PIXI.Application();
   SelectionStore.on(()=> { updateGroupInfoPanel(); updateCardInfoPanel(); });
 
   function attachResizeHandle(gv: GroupVisual) {
-  const r = gv.resize; let resizing=false; let startW=0; let startH=0; let anchorX=0; let anchorY=0;
-  r.on('pointerdown', e=> { if (gv.collapsed) return; e.stopPropagation(); const local = world.toLocal(e.global); resizing = true; startW = gv.w; startH = gv.h; anchorX = local.x; anchorY = local.y; });
-  app.stage.on('pointermove', e=> { if (!resizing) return; const local = world.toLocal(e.global); const dw = local.x - anchorX; const dh = local.y - anchorY; gv.w = Math.max(160, snap(startW + dw)); gv.h = Math.max(HEADER_HEIGHT+80, snap(startH + dh)); gv._expandedH = gv.h; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.x+140 })); });
-    const endResize=()=>{ if (resizing) resizing=false; };
-    app.stage.on('pointerup', endResize); app.stage.on('pointerupoutside', endResize);
+  const r = gv.resize; let resizing=false; let startW=0; let startH=0; let anchorX=0; let anchorY=0; let startX=0; let startY=0; let resizeMode:''| 'n'|'s'|'e'|'w'|'ne'|'nw'|'se'|'sw' = '';
+  const MIN_W = 160; const MIN_H = HEADER_HEIGHT + 80; const EDGE_PX = 16; // edge handle thickness in screen pixels
+
+  // Debug overlay to visualize interactive edge bands (screen-relative)
+  if ((window as any).__debugResizeTargets === undefined) (window as any).__debugResizeTargets = false; // default OFF
+  function ensureDebugG(){
+    let dbg: PIXI.Graphics = (gv.gfx as any).__resizeDbg;
+    if (!dbg){ dbg = new PIXI.Graphics(); (gv.gfx as any).__resizeDbg = dbg; dbg.eventMode='none'; dbg.zIndex = 999999; gv.gfx.addChild(dbg); }
+    return dbg;
+  }
+  function updateResizeDebug(){
+    const enabled = !!(window as any).__debugResizeTargets;
+    const dbg = ensureDebugG(); dbg.visible = enabled; if (!enabled) { dbg.clear(); return; }
+    const edgeWorld = EDGE_PX / (world.scale.x || 1);
+    dbg.clear();
+    // Top (blue)
+    dbg.rect(0, 0, gv.w, edgeWorld).fill({ color: 0x3355ff, alpha: 0.25 });
+    // Bottom (blue)
+    dbg.rect(0, gv.h - edgeWorld, gv.w, edgeWorld).fill({ color: 0x3355ff, alpha: 0.25 });
+    // Left (green)
+    dbg.rect(0, 0, edgeWorld, gv.h).fill({ color: 0x33cc66, alpha: 0.25 });
+    // Right (green)
+    dbg.rect(gv.w - edgeWorld, 0, edgeWorld, gv.h).fill({ color: 0x33cc66, alpha: 0.25 });
+    // Corners (red) overdraw so they stand out
+    dbg.rect(0, 0, edgeWorld, edgeWorld).fill({ color: 0xff3366, alpha: 0.35 }); // NW
+    dbg.rect(gv.w - edgeWorld, 0, edgeWorld, edgeWorld).fill({ color: 0xff3366, alpha: 0.35 }); // NE
+    dbg.rect(0, gv.h - edgeWorld, edgeWorld, edgeWorld).fill({ color: 0xff3366, alpha: 0.35 }); // SW
+    dbg.rect(gv.w - edgeWorld, gv.h - edgeWorld, edgeWorld, edgeWorld).fill({ color: 0xff3366, alpha: 0.35 }); // SE
+  }
+
+  function modeFromPoint(localX:number, localY:number, edgeWorld:number): typeof resizeMode {
+    const w = gv.w, h = gv.h; const left = localX <= edgeWorld; const right = localX >= w - edgeWorld; const top = localY <= edgeWorld; const bottom = localY >= h - edgeWorld;
+    if (top && left) return 'nw'; if (top && right) return 'ne'; if (bottom && left) return 'sw'; if (bottom && right) return 'se';
+    if (top) return 'n'; if (bottom) return 's'; if (left) return 'w'; if (right) return 'e';
+    return '';
+  }
+  function cursorFor(mode: typeof resizeMode) {
+    switch(mode){
+      case 'n': case 's': return 'ns-resize';
+      case 'e': case 'w': return 'ew-resize';
+      case 'ne': case 'sw': return 'nesw-resize';
+      case 'nw': case 'se': return 'nwse-resize';
+      default: return 'default';
+    }
+  }
+
+  // Existing bottom-right triangle -> always se resize
+  r.on('pointerdown', e=> { if (gv.collapsed) return; e.stopPropagation(); const local = world.toLocal(e.global); resizing = true; resizeMode='se'; startW = gv.w; startH = gv.h; startX = gv.gfx.x; startY = gv.gfx.y; anchorX = local.x; anchorY = local.y; });
+
+  // Edge / corner resize via frame body
+  gv.frame.on('pointermove', (e:any)=> { if (resizing || gv.collapsed) return; const local = world.toLocal(e.global); const lx = local.x - gv.gfx.x; const ly = local.y - gv.gfx.y; const edgeWorld = EDGE_PX / (world.scale.x || 1); const mode = modeFromPoint(lx, ly, edgeWorld); gv.frame.cursor = cursorFor(mode); updateResizeDebug(); });
+  gv.frame.on('pointerout', ()=> { if (!resizing && gv.frame.cursor!=='default') gv.frame.cursor='default'; });
+  gv.frame.on('pointerdown', (e:any)=> {
+    if (gv.collapsed) return; if (e.button!==0) return; // only left button
+    const local = world.toLocal(e.global); const lx = local.x - gv.gfx.x; const ly = local.y - gv.gfx.y; const edgeWorld = EDGE_PX / (world.scale.x || 1); const mode = modeFromPoint(lx, ly, edgeWorld);
+    if (!mode) return; // not on edge -> allow other handlers (drag / marquee)
+    e.stopPropagation(); resizing=true; resizeMode = mode; startW = gv.w; startH = gv.h; startX = gv.gfx.x; startY = gv.gfx.y; anchorX = local.x; anchorY = local.y;
+    updateResizeDebug();
+  });
+
+  // Header resize support for top/left/right edges (screen-relative thickness)
+  gv.header.on('pointermove', (e:any)=> {
+    if (resizing || gv.collapsed) return;
+    const local = world.toLocal(e.global); const lx = local.x - gv.gfx.x; const ly = local.y - gv.gfx.y; const edgeWorld = EDGE_PX / (world.scale.x || 1);
+    const w = gv.w; const left = lx <= edgeWorld; const right = lx >= w - edgeWorld; const top = ly <= edgeWorld;
+    let mode: typeof resizeMode = '';
+    if (top && left) mode = 'nw';
+    else if (top && right) mode = 'ne';
+    else if (left) mode = 'w';
+    else if (right) mode = 'e';
+    else if (top) mode = 'n';
+    gv.header.cursor = cursorFor(mode) || 'move';
+    updateResizeDebug();
+  });
+  gv.header.on('pointerout', ()=> { if (!resizing) gv.header.cursor='move'; });
+  gv.header.on('pointerdown', (e:any)=> {
+    if (gv.collapsed) return; if (e.button!==0) return; // left only
+    const local = world.toLocal(e.global); const lx = local.x - gv.gfx.x; const ly = local.y - gv.gfx.y; const edgeWorld = EDGE_PX / (world.scale.x || 1);
+    const w = gv.w; const left = lx <= edgeWorld; const right = lx >= w - edgeWorld; const top = ly <= edgeWorld;
+    let mode: typeof resizeMode = '';
+    if (top && left) mode = 'nw';
+    else if (top && right) mode = 'ne';
+    else if (left) mode = 'w';
+    else if (right) mode = 'e';
+    else if (top) mode = 'n';
+    if (!mode) return; // not near top edge -> let normal drag logic run
+    e.stopPropagation(); // prevent header drag
+    resizing = true; resizeMode = mode; startW = gv.w; startH = gv.h; startX = gv.gfx.x; startY = gv.gfx.y; anchorX = local.x; anchorY = local.y;
+    updateResizeDebug();
+  });
+
+  app.stage.on('pointermove', e=> {
+    if (!resizing) return; const local = world.toLocal(e.global); const dx = local.x - anchorX; const dy = local.y - anchorY; const rightEdge = startX + startW; const bottomEdge = startY + startH; let newW = startW; let newH = startH; let newX = startX; let newY = startY;
+    // Horizontal adjustments
+    if (resizeMode.includes('e')) { newW = startW + dx; }
+    if (resizeMode.includes('w')) { newW = startW - dx; /* keep right edge fixed */ }
+    // Vertical adjustments
+    if (resizeMode.includes('s')) { newH = startH + dy; }
+    if (resizeMode.includes('n')) { newH = startH - dy; }
+    // Clamp & snap
+    if (resizeMode.includes('w')) { newW = Math.max(MIN_W, newW); newW = snap(newW); newX = rightEdge - newW; }
+    else if (resizeMode.includes('e')) { newW = Math.max(MIN_W, newW); newW = snap(newW); }
+    if (resizeMode.includes('n')) { newH = Math.max(MIN_H, newH); newH = snap(newH); newY = bottomEdge - newH; }
+    else if (resizeMode.includes('s')) { newH = Math.max(MIN_H, newH); newH = snap(newH); }
+    // Apply
+    gv.w = newW; gv.h = newH; gv.gfx.x = newX; gv.gfx.y = newY; gv._expandedH = gv.h;
+    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+    updateResizeDebug();
+  });
+  const endResize=()=>{ if (resizing) { resizing=false; resizeMode=''; gv.frame.cursor='default'; } };
+  app.stage.on('pointerup', endResize); app.stage.on('pointerupoutside', endResize);
+  // Initial draw
+  updateResizeDebug();
   }
 
   function attachGroupInteractions(gv: GroupVisual) {
     let drag=false; let dx=0; let dy=0; const g=gv.gfx; let memberOffsets: {sprite:CardSprite, ox:number, oy:number}[] = [];
     gv.header.eventMode='static'; gv.header.cursor='move';
   gv.header.on('pointerdown', (e:any)=> { e.stopPropagation(); if (e.button===2) return; // right-click handled separately
+      // If near resize edges, do not start drag (resize handler will take over)
+      try {
+        const local = world.toLocal(e.global); const lx = local.x - gv.gfx.x; const ly = local.y - gv.gfx.y; const edgeWorld = 16 / (world.scale.x || 1);
+        const w = gv.w; const nearLeft = lx <= edgeWorld; const nearRight = lx >= w - edgeWorld; const nearTop = ly <= edgeWorld;
+        if (nearLeft || nearRight || nearTop) return; // let resize path handle
+      } catch {}
       if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id)) SelectionStore.selectOnlyGroup(gv.id); else if (e.shiftKey) SelectionStore.toggleGroup(gv.id); const local = world.toLocal(e.global); drag=true; dx = local.x - g.x; dy = local.y - g.y; memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox:s.x - g.x, oy:s.y - g.y}: null; }).filter(Boolean) as any; });
     gv.header.on('pointertap', (e:any)=> { if (e.detail===2 && e.button!==2) startGroupRename(gv); });
+    // Overlay drag surface (when zoomed out). Acts like header.
+    if ((gv as any)._overlayDrag) {
+      const ds:any = (gv as any)._overlayDrag;
+      ds.on('pointerdown', (e:any)=> { if (e.button!==0) return; if (!ds.visible) return; e.stopPropagation(); if (!SelectionStore.state.groupIds.has(gv.id)) SelectionStore.selectOnlyGroup(gv.id); const local = world.toLocal(e.global); drag=true; dx = local.x - g.x; dy = local.y - g.y; memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox:s.x - g.x, oy:s.y - g.y}: null; }).filter(Boolean) as any; });
+    }
+    // When zoom overlay active (cards hidden / faded) allow dragging from the whole body area.
+    // Reuse same drag logic; only trigger if overlay phase recently > 0 (tracked via _lastZoomPhase).
+    gv.frame.cursor = 'default'; gv.frame.eventMode='static';
+    gv.frame.on('pointerdown', (e:any)=> {
+      if (e.button!==0) return;
+      // Only consider using the frame as a drag surface if overlay is active AND there's no dedicated drag surface.
+      if (!gv._lastZoomPhase || gv._lastZoomPhase < 0.05) return; // overlay not active enough
+      if ((gv as any)._overlayDrag) return; // defer to overlay drag surface to avoid conflicts with resize
+      // Fallback: avoid starting drag when near edges so resize can take precedence
+      try {
+        const local = world.toLocal(e.global); const lx = local.x - gv.gfx.x; const ly = local.y - gv.gfx.y; const edgeWorld = 16 / (world.scale.x || 1);
+        const w = gv.w; const nearEdge = (lx <= edgeWorld) || (lx >= w - edgeWorld) || (ly <= edgeWorld) || (ly >= gv.h - edgeWorld);
+        if (nearEdge) return; // let resize path handle
+      } catch {}
+      // Avoid starting drag when clicking resize triangle
+      const hit = e.target; if (hit === gv.resize) return;
+      e.stopPropagation();
+      if (!SelectionStore.state.groupIds.has(gv.id)) SelectionStore.selectOnlyGroup(gv.id);
+      const local = world.toLocal(e.global);
+      drag = true; dx = local.x - g.x; dy = local.y - g.y;
+      memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox:s.x - g.x, oy:s.y - g.y}: null; }).filter(Boolean) as any;
+    });
     // Context menu (right-click)
     // Show context menu only if no significant right-drag (panning) occurred.
     gv.header.on('rightclick', (e:any)=> {
@@ -382,7 +544,7 @@ const app = new PIXI.Application();
   addItem('Auto-pack', ()=> { autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
     addItem('Rename', ()=> startGroupRename(gv));
   addItem('Recolor', ()=> { gv.color = PALETTE[Math.floor(Math.random()*PALETTE.length)]; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
-    addItem('Delete', ()=> { const row = groups.get(gv.id); if (row){ row.gfx.destroy(); groups.delete(gv.id);} SelectionStore.clear(); scheduleGroupSave(); });
+  addItem('Delete', ()=> { deleteGroupById(gv.id); SelectionStore.clear(); scheduleGroupSave(); });
     const sw=document.createElement('div'); sw.style.cssText='display:flex;gap:4px;padding:4px 6px 2px;flex-wrap:wrap;';
   PALETTE.forEach(c=> { const sq=document.createElement('div'); sq.style.cssText=`width:16px;height:16px;border-radius:4px;background:#${c.toString(16).padStart(6,'0')};cursor:pointer;border:1px solid #182830;`; sq.onclick=()=> { gv.color=c; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); hideGroupMenu(); }; sw.appendChild(sq); });
     el.appendChild(sw);
@@ -621,9 +783,7 @@ const app = new PIXI.Application();
     cardIds.forEach(id=> { const idx = sprites.findIndex(s=> s.__id===id); if (idx>=0) { const s = sprites[idx]; const gid = s.__groupId; if (gid) { const gv = groups.get(gid); gv && gv.items.delete(s.__id); touchedGroups.add(gid); } s.destroy(); sprites.splice(idx,1); } });
   touchedGroups.forEach(gid=> { const gv = groups.get(gid); if (gv) layoutGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); }); if (touchedGroups.size) scheduleGroupSave();
       }
-      if (groupIds.length) {
-    groupIds.forEach(id=> { const gv = groups.get(id); if (gv) { gv.gfx.destroy(); groups.delete(id);} }); scheduleGroupSave();
-      }
+  if (groupIds.length) { groupIds.forEach(id=> deleteGroupById(id)); scheduleGroupSave(); }
       SelectionStore.clear();
     }
   });
@@ -1088,7 +1248,7 @@ const app = new PIXI.Application();
     }
   }
 
-  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
+  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> { updateGroupTextQuality(gv, world.scale.x); updateGroupZoomPresentation(gv, world.scale.x, sprites); }); updatePerf(dt); });
   // Periodically ensure any new sprites have context listeners
   setInterval(()=> { try { ensureCardContextListeners(); } catch {} }, 2000);
   if (PERSIST_MODE==='memory') {

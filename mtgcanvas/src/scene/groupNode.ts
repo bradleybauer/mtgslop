@@ -30,10 +30,14 @@ export interface GroupVisual {
   order: number[];               // ordering for layout
   _lastTextRes?: number;         // internal: last applied resolution for dynamic crispness
   totalPrice: number;            // cached aggregate price
+  _zoomLabel?: PIXI.Text;        // large centered label when zoomed far out
+  _lastZoomPhase?: number;       // memo of last applied phase (0..1)
+  _overlayDrag?: PIXI.Graphics;  // transparent drag surface when overlay visible
 }
 
 // Styling constants (tuned to approximate ComfyUI aesthetic while remaining generic)
-export const HEADER_HEIGHT = 24;
+// Slightly larger header for improved readability and to better host inline controls.
+export const HEADER_HEIGHT = 32;
 const BODY_RADIUS = 6;
 const HEADER_RADIUS = 6;
 // Colors now derived from CSS variables so light/dark themes stay in sync.
@@ -97,7 +101,13 @@ export function createGroupVisual(id:number, x:number, y:number, w=320, h=280): 
   const resize = new PIXI.Graphics(); resize.eventMode='static'; resize.cursor='nwse-resize';
   const color = PALETTE[id % PALETTE.length];
   const gv: GroupVisual = { id, gfx, frame, header, label, count, price, resize, name:`Group ${id}`, color, w, h, collapsed:false, _expandedH:h, items:new Set(), order:[], totalPrice:0 };
-  gfx.addChild(frame, header, label, count, price, resize);
+  // Zoom-out overlay label (initially hidden)
+  const zoomLabel = new PIXI.Text({ text: gv.name, style:{ fill: HEADER_TEXT_COLOR, fontSize: 96, fontFamily: FONT_FAMILY, fontWeight: '600', align:'center', lineHeight: 100 } });
+  zoomLabel.visible = false; zoomLabel.alpha = 0; gv._zoomLabel = zoomLabel;
+  // Dedicated transparent drag surface placed below text
+  const overlayDrag = new PIXI.Graphics();
+  overlayDrag.visible = false; overlayDrag.alpha = 0; (overlayDrag as any).eventMode = 'none'; gv._overlayDrag = overlayDrag;
+  gfx.addChild(frame, header, label, count, price, resize, overlayDrag, zoomLabel);
   drawGroup(gv, false);
   return gv;
 }
@@ -139,21 +149,8 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   count.text = gv.items.size.toString();
   count.x = price.x - count.width - 6; positionHeaderText(count);
 
-  // Resize affordance only when expanded
-  resize.visible = !collapsed;
-  if (!collapsed) {
-    const sz = 14;
-    resize.clear();
-    // triangle bottom-right
-    resize.moveTo(w, h)
-      .lineTo(w-sz, h)
-      .lineTo(w, h-sz)
-      .closePath()
-      .fill({color: RESIZE_TRI_COLOR});
-    resize.stroke({color: borderColor, width:1});
-    resize.x = 0; resize.y = 0; // absolute inside group
-    resize.hitArea = new PIXI.Rectangle(w - sz, h - sz, sz, sz);
-  }
+  // Legacy resize triangle removed (edge/corner resize active everywhere). Keep graphic hidden & non-interactive.
+  resize.visible = false; resize.eventMode='none'; resize.hitArea = null as any;
 }
 
 function truncateLabelIfNeeded(gv: GroupVisual) {
@@ -205,6 +202,7 @@ export function layoutGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: (s
   const neededH = HEADER_HEIGHT + PAD_Y + rows * CARD_H + (rows-1) * GAP_Y + PAD_Y + PAD_BOTTOM_EXTRA;
   if (neededH > gv.h) { gv.h = snap(neededH); gv._expandedH = gv.h; }
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+  positionZoomOverlay(gv); // maintain overlay position after layout growth
 }
 
 export function setGroupCollapsed(gv: GroupVisual, collapsed:boolean, sprites: CardSprite[]) {
@@ -236,6 +234,7 @@ export function autoPackGroup(gv: GroupVisual, sprites: CardSprite[], onMoved?: 
   gv._expandedH = gv.h;
   layoutGroup(gv, sprites, onMoved);
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+  positionZoomOverlay(gv);
 }
 
 export function insertionIndexForPoint(gv: GroupVisual, worldX:number, worldY:number): number {
@@ -307,4 +306,112 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
   }
   gv.totalPrice = total;
 }
+
+// ---------------- Zoom-Out Presentation -----------------
+// Fade cards + normal chrome out as user zooms far out; fade in large centered group label so the
+// whole group becomes a readable info tile at macro scale.
+// Thresholds (world scale): below HIGH start fade; at/below LOW overlay fully active.
+// Hard-coded to "kick in sharply at zooms < 1" per request.
+export let ZOOM_OVERLAY_HIGH = 0.8; // start just under 1
+export let ZOOM_OVERLAY_LOW = 0.8;  // finish quickly
+export let ZOOM_OVERLAY_CURVE = 2.0; // >1 sharper, =1 linear
+
+// Developer override (e.g. via console) if future tuning desired; no persistence side effects.
+export function setGroupOverlayThresholds(high:number, low:number, curve?:number){
+  if (!isFinite(high) || !isFinite(low)) return;
+  const MIN = 0.01, MAX = 3;
+  high = Math.min(MAX, Math.max(MIN, high));
+  low = Math.min(MAX, Math.max(MIN, low));
+  if (low > high) [low, high] = [high, low];
+  ZOOM_OVERLAY_HIGH = high; ZOOM_OVERLAY_LOW = low;
+  if (curve !== undefined && isFinite(curve) && curve > 0) ZOOM_OVERLAY_CURVE = curve;
+  try { const all: any[] = (window as any).__mtgGroups || []; all.forEach(gv=> gv && (gv._lastZoomPhase = undefined)); } catch {}
+}
+
+function positionZoomOverlay(gv: GroupVisual){
+  if (!gv._zoomLabel) return;
+  const zl = gv._zoomLabel;
+  zl.text = `${gv.name}\n${gv.items.size} cards  $${gv.totalPrice.toFixed(2)}`;
+  // Constrain width and adjust font size downward if necessary (simple heuristic)
+  const pad = 16;
+  const maxWidth = Math.max(60, gv.w - pad*2);
+  const style: any = zl.style; style.wordWrap = true; style.wordWrapWidth = maxWidth;
+  let size = 96; style.fontSize = size; (zl as any).dirty = true; (zl as any).updateText && (zl as any).updateText();
+  while (zl.width > maxWidth && size > 18){ size -= 2; style.fontSize = size; (zl as any).dirty = true; (zl as any).updateText && (zl as any).updateText(); }
+  zl.x = (gv.w - zl.width)/2;
+  zl.y = (gv.h - zl.height)/2;
+  // Make text non-interactive; a separate drag surface will receive input.
+  (zl as any).eventMode = 'none';
+  (zl as any).cursor = 'default';
+}
+
+export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, sprites: CardSprite[]) {
+  if (gv.collapsed) {
+    if (gv._zoomLabel) { gv._zoomLabel.visible=false; gv._zoomLabel.alpha=0; }
+    gv._lastZoomPhase = 0; return;
+  }
+  let phase = 0; // 0 cards visible, 1 overlay fully visible
+  if (worldScale <= ZOOM_OVERLAY_HIGH) {
+    if (worldScale <= ZOOM_OVERLAY_LOW) phase = 1; else {
+      const span = ZOOM_OVERLAY_HIGH - ZOOM_OVERLAY_LOW; const lin = 1 - ((worldScale - ZOOM_OVERLAY_LOW)/span); phase = Math.pow(lin, ZOOM_OVERLAY_CURVE); // curve sharpens
+    }
+  }
+  const prevPhase = gv._lastZoomPhase ?? 0;
+  const lastScale:any = (gv as any).__lastOverlayScale ?? -1;
+  const scaleChanged = Math.abs(worldScale - lastScale) > 1e-4;
+  const minorPhase = Math.abs(phase - prevPhase) < 0.02;
+  (gv as any).__lastOverlayScale = worldScale;
+  gv._lastZoomPhase = phase;
+  const overlay = gv._zoomLabel;
+  if (overlay) {
+    if (phase > 0 && !overlay.visible) { overlay.visible=true; positionZoomOverlay(gv); }
+    overlay.alpha = phase;
+    if (phase === 0) overlay.visible = false;
+    else if (phase === 1) positionZoomOverlay(gv); // ensure centered after any dimension changes
+  }
+  // Maintain a dedicated transparent drag surface with an inset hitArea so edges remain clickable.
+  const dragSurf = gv._overlayDrag as PIXI.Graphics | undefined;
+  if (dragSurf) {
+    if (phase > 0) {
+      const EDGE_PX = 16; // must match main.ts EDGE_PX
+      const scale = Math.max(0.0001, worldScale);
+      const inset = Math.min(gv.w/2, Math.min(gv.h/2, EDGE_PX / scale));
+      const iw = Math.max(0, gv.w - inset*2);
+      const ih = Math.max(0, gv.h - inset*2);
+      (dragSurf as any).eventMode = 'static';
+      (dragSurf as any).cursor = 'move';
+      dragSurf.visible = true;
+      (dragSurf as any).hitArea = new PIXI.Rectangle(inset, inset, iw, ih);
+    } else {
+      dragSurf.visible = false;
+      (dragSurf as any).eventMode = 'none';
+      (dragSurf as any).hitArea = null as any;
+    }
+  }
+  // If only minor phase change and no scale change, we can skip heavier per-card updates.
+  if (minorPhase && !scaleChanged) return;
+  // Adjust member card sprite visibility/alpha
+  for (const id of gv.items) {
+    const sp = sprites.find(s=> s.__id===id); if (!sp) continue;
+  // Flag overlay activity for interaction layer so card drags are suppressed when overlay intended for group drag.
+  const overlayActive = phase > 0; // any visible phase suppresses card interactivity
+  (sp as any).__groupOverlayActive = overlayActive;
+  // Toggle eventMode so sibling overlay can receive pointer events (cards are siblings, not children of group)
+  const desiredMode = overlayActive ? 'none' : 'static';
+  if ((sp as any).eventMode !== desiredMode) (sp as any).eventMode = desiredMode as any;
+  if (overlayActive) { if (sp.cursor !== 'default') sp.cursor='default'; }
+  else { if (sp.cursor !== 'pointer') sp.cursor='pointer'; }
+    if (phase <= 0) {
+      if (sp.alpha !== 1) sp.alpha=1; if (!sp.visible) sp.visible=true; if (!sp.renderable) sp.renderable=true;
+    } else if (phase >= 1) {
+      if (sp.alpha !== 0) sp.alpha=0; if (sp.visible) { sp.visible=false; sp.renderable=false; }
+    } else {
+      const a = 1 - phase; if (Math.abs(sp.alpha - a) > 0.05) sp.alpha = a; if (!sp.visible) sp.visible=true; if (!sp.renderable) sp.renderable=true;
+    }
+  }
+  // Dim frame + header (keep subtle silhouette for spatial awareness)
+  const dimAlpha = 1 - phase*0.6;
+  gv.frame.alpha = dimAlpha; gv.header.alpha = dimAlpha;
+}
+
 
