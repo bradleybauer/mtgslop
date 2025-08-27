@@ -86,8 +86,11 @@ function canonicalize(url:string){
 }
 
 // In-memory de-duplication maps
-const inFlight = new Map<string, Promise<string>>(); // url -> objectURL
+const inFlight = new Map<string, Promise<CachedImage>>(); // url -> CachedImage
 const objectUrlCache = new Map<string, string>(); // url -> objectURL for session
+// Parallel blob cache (canonical url -> Blob) so decode path can avoid re-fetching object URL.
+// Only populated for IDB + network paths (legacy session hits may start empty until first materialization).
+const blobCache = new Map<string, Blob>();
 
 // Metrics & debug instrumentation
 let sessionHits = 0;       // objectUrlCache hit
@@ -147,7 +150,9 @@ export async function hasCachedURL(url:string): Promise<boolean> {
   const e = await getEntry(url) || await getEntry(canonicalize(url)); return !!e;
 }
 
-async function fetchAndCache(url:string): Promise<string> {
+interface CachedImage { objectURL: string; blob?: Blob; canonical: string; source: 'session'|'idb'|'network'; size?: number; }
+
+async function fetchAndCache(url:string): Promise<CachedImage> {
   const canonical = canonicalize(url);
   // Session hits (prefer canonical)
   const hit = objectUrlCache.get(canonical) || objectUrlCache.get(url);
@@ -155,19 +160,20 @@ async function fetchAndCache(url:string): Promise<string> {
     sessionHits++;
     if (hit===objectUrlCache.get(canonical) && canonical!==url) { canonicalHits++; duplicateCanonicals++; }
     dbg('session hit', canonical !== url ? {canonical, original:url} : canonical);
-    return hit;
+    return { objectURL: hit, blob: blobCache.get(canonical), canonical, source:'session', size: blobCache.get(canonical)?.size };
   }
   // IndexedDB
   const cached = await getEntry(canonical);
   if (cached) {
     const objUrl = URL.createObjectURL(cached.blob);
     objectUrlCache.set(canonical, objUrl); objectUrlCache.set(url, objUrl);
+    blobCache.set(canonical, cached.blob);
     // No touch needed (we ignore time for eviction-less mode)
     idbHits++;
     if (canonical!==url) canonicalHits++;
     if (cached.size < 1024) { unexpectedSmallBlob++; dbg('idb small blob?', canonical, cached.size); }
     dbg('idb hit', canonical, (cached.size/1024).toFixed(1)+'KB');
-    return objUrl;
+    return { objectURL: objUrl, blob: cached.blob, canonical, source:'idb', size: cached.size };
   }
   // Network
   const start = performance.now();
@@ -180,11 +186,12 @@ async function fetchAndCache(url:string): Promise<string> {
     putEntry(meta);
     const objUrl = URL.createObjectURL(blob);
     objectUrlCache.set(canonical, objUrl); objectUrlCache.set(url, objUrl);
+    blobCache.set(canonical, blob);
     netFetches++; netBytes += blob.size; lastNetMs = performance.now() - start;
     if (blob.size < 1024) { unexpectedSmallBlob++; dbg('NET very small blob', canonical, blob.size); }
     if (debugEnabled) dbg('NET', canonical, (blob.size/1024).toFixed(1)+'KB', 't='+lastNetMs.toFixed(1)+'ms');
     else if (debugLogged < 10) { console.log('[imageCache] NET', canonical, '->', (blob.size/1024).toFixed(1)+'KB', 't='+lastNetMs.toFixed(1)+'ms'); debugLogged++; }
-    return objUrl;
+    return { objectURL: objUrl, blob, canonical, source:'network', size: blob.size };
   } catch (e:any) {
     netErrors++;
     if (e && (''+e).includes('ERR_INSUFFICIENT_RESOURCES')) resourceErrors++;
@@ -194,12 +201,15 @@ async function fetchAndCache(url:string): Promise<string> {
   }
 }
 
-export async function getCachedObjectURL(url:string): Promise<string> {
+export async function getCachedImage(url:string): Promise<CachedImage> {
   if (inFlight.has(url)) return inFlight.get(url)!;
-  const p = fetchAndCache(url).catch(err=> { inFlight.delete(url); throw err; });
+  const p = fetchAndCache(url).finally(()=> { inFlight.delete(url); });
   inFlight.set(url, p);
-  const objUrl = await p; inFlight.delete(url); return objUrl;
+  return p;
 }
+
+// Backward compatible (string-only) API retained
+export async function getCachedObjectURL(url:string): Promise<string> { return (await getCachedImage(url)).objectURL; }
 
 // Utility to clear cache (not wired to UI yet)
 export async function clearImageCache() {

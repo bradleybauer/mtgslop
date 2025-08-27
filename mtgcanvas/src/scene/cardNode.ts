@@ -1,42 +1,75 @@
 import * as PIXI from 'pixi.js';
 import { SelectionStore } from '../state/selectionStore';
-import { getCachedObjectURL } from '../services/imageCache';
+import { getCachedImage } from '../services/imageCache';
 
 // --- Fast in-memory texture cache & loaders ---
-interface TexCacheEntry { tex: PIXI.Texture; level: number; }
-const textureCache = new Map<string, TexCacheEntry>(); // url -> texture
+interface TexCacheEntry { tex: PIXI.Texture; level: number; refs: number; bytes: number; lastUsed: number; url: string; }
+const textureCache = new Map<string, TexCacheEntry>(); // url -> texture entry
+let totalTextureBytes = 0;
+const GPU_BUDGET_MB = Number(localStorage.getItem('gpuTexBudgetMB') || '1024'); // adjustable
+// Hi-res disable now only blocks PNG tier (level 2). Medium (normal) tier still loads.
+const DISABLE_PNG_TIER = true;
+const NO_EVICT = localStorage.getItem('noEvictTextures') === '1'; // if set, skip LRU eviction (honor user's persistent cache preference)
+const GPU_BUDGET_BYTES = GPU_BUDGET_MB * 1024 * 1024;
 const inflightTex = new Map<string, Promise<PIXI.Texture>>();
+
+// Central decode queue to throttle createImageBitmap to avoid main thread jank during large zoom transitions.
+// We allow a small number of parallel decodes; others queue FIFO.
+const MAX_PARALLEL_DECODES = 32; // use 32 since I have a decent gaming pc
+let activeDecodes = 0;
+const decodeQueue: { blob: Blob; url: string; resolve: (t:PIXI.Texture)=>void; reject:(e:any)=>void; }[] = [];
+
+function scheduleDecode(blob:Blob, url:string): Promise<PIXI.Texture> {
+  return new Promise((resolve,reject)=> {
+    decodeQueue.push({ blob, url, resolve, reject });
+    pumpDecodeQueue();
+  });
+}
+async function runDecodeTask(task:{blob:Blob; url:string; resolve:(t:PIXI.Texture)=>void; reject:(e:any)=>void;}) {
+  activeDecodes++;
+  try {
+    const canBitmap = typeof (window as any).createImageBitmap === 'function';
+    let source: any;
+    if (canBitmap) {
+      source = await (window as any).createImageBitmap(task.blob);
+    } else {
+      // Fallback image element decode
+      source = await new Promise<HTMLImageElement>((res,rej)=> { const img=new Image(); img.onload=()=>res(img); img.onerror=()=>rej(new Error('img error')); img.src = URL.createObjectURL(task.blob); });
+    }
+    const tex = PIXI.Texture.from(source as any);
+    const bt:any = tex.baseTexture as any; if (bt?.style){ bt.style.mipmap='on'; bt.style.scaleMode='linear'; bt.style.anisotropicLevel=8; }
+    task.resolve(tex);
+  } catch (e) { task.reject(e); }
+  finally { activeDecodes--; pumpDecodeQueue(); }
+}
+function pumpDecodeQueue(){
+  while (activeDecodes < MAX_PARALLEL_DECODES && decodeQueue.length){
+    // Simple FIFO; could prioritize by visibility or desired quality in future.
+    const task = decodeQueue.shift()!;
+    runDecodeTask(task);
+  }
+}
 
 export async function loadTextureFromCachedURL(url:string): Promise<PIXI.Texture> {
   if (textureCache.has(url)) return textureCache.get(url)!.tex;
   if (inflightTex.has(url)) return inflightTex.get(url)!;
   const p = (async ()=> {
-    const objUrl = await getCachedObjectURL(url);
-    // Use createImageBitmap if available for off-main-thread decode
-    try {
-      const resp = await fetch(objUrl);
-      const blob = await resp.blob();
-  const canBitmap = typeof (window as any).createImageBitmap === 'function';
-  const bmp = await (canBitmap ? (window as any).createImageBitmap(blob) : new Promise<ImageBitmap>((res,rej)=>{
-        const img=new Image(); img.onload=()=>{ try { (res as any)(img as any); } catch(e){rej(e);} }; img.onerror=()=>rej(new Error('img error')); img.src=objUrl; }));
-      const tex = PIXI.Texture.from(bmp as any);
-      const bt:any = tex.baseTexture as any; if (bt?.style){ bt.style.mipmap='on'; bt.style.scaleMode='linear'; bt.style.anisotropicLevel=8; }
-      textureCache.set(url, { tex, level: 0 });
-      return tex;
-    } catch {
-      // Fallback: traditional Image path
-      const tex = await new Promise<PIXI.Texture>((resolve, reject)=> {
-        const img = new Image(); img.crossOrigin='anonymous';
-        img.onload = ()=> { try { const t = PIXI.Texture.from(img); const bt:any = t.baseTexture as any; if (bt?.style){ bt.style.mipmap='on'; bt.style.scaleMode='linear'; } resolve(t);} catch(e){ reject(e);} };
-        img.onerror = ()=> reject(new Error('img load error'));
-        img.src = objUrl;
-      });
-      textureCache.set(url, { tex, level: 0 });
-      return tex;
+    const ci = await getCachedImage(url);
+    // Reuse existing blob (preferred) else fall back to fetching objectURL (edge legacy path)
+    let blob = ci.blob;
+    if (!blob) {
+      // Fallback: fetch once (should be memory-local since object URL); avoid double network due to persistence layer guarantee.
+      const resp = await fetch(ci.objectURL);
+      blob = await resp.blob();
     }
+  const tex = await scheduleDecode(blob, url);
+  const bytes = estimateTextureBytes(tex);
+  textureCache.set(url, { tex, level: 0, refs: 0, bytes, lastUsed: performance.now(), url });
+  totalTextureBytes += bytes;
+    return tex;
   })();
   inflightTex.set(url, p);
-  try { const tex = await p; return tex; } finally { inflightTex.delete(url); }
+  try { return await p; } finally { inflightTex.delete(url); }
 }
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
@@ -79,6 +112,31 @@ export function createCardSprite(opts: CardVisualOptions) {
   return sp;
 }
 
+function estimateTextureBytes(tex: PIXI.Texture): number {
+  try { const bt:any = tex.baseTexture; const w = bt?.width || tex.width; const h = bt?.height || tex.height; if (w && h) return w*h*4; } catch {}
+  return 0;
+}
+
+function enforceTextureBudget(){
+  if (NO_EVICT) return; // user opted out of texture eviction
+  if (!isFinite(GPU_BUDGET_BYTES) || totalTextureBytes <= GPU_BUDGET_BYTES) return;
+  const candidates: TexCacheEntry[] = [];
+  textureCache.forEach(ent=> { if (ent.refs===0) candidates.push(ent); });
+  if (!candidates.length) return;
+  candidates.sort((a,b)=> a.lastUsed - b.lastUsed);
+  for (const ent of candidates){
+    if (totalTextureBytes <= GPU_BUDGET_BYTES) break;
+    try { ent.tex.destroy(true); } catch {}
+    textureCache.delete(ent.url);
+    totalTextureBytes -= ent.bytes;
+  }
+}
+
+function markTextureUsed(url:string){ const ent = textureCache.get(url); if (ent) ent.lastUsed = performance.now(); }
+
+export function registerVisibleSpriteTexture(sprite: CardSprite){ const url:any = (sprite as any).__currentTexUrl; if (url) markTextureUsed(url); }
+export function enforceTextureBudgetNow(){ enforceTextureBudget(); }
+
 export function ensureCardImage(sprite: CardSprite) {
   if (sprite.__imgLoaded || sprite.__imgLoading) return;
   const card = sprite.__card; if (!card) return;
@@ -89,6 +147,8 @@ export function ensureCardImage(sprite: CardSprite) {
   sprite.__imgUrl = url; sprite.__imgLoading = true;
   loadTextureFromCachedURL(url).then(tex=> {
     if (!tex) { sprite.__imgLoading=false; return; }
+    // Retain reference for base small texture
+  try { const ent = textureCache.get(url); if (ent) { ent.refs++; ent.lastUsed = performance.now(); } (sprite as any).__currentTexUrl = url; } catch {}
     sprite.texture = tex; sprite.width = 100; sprite.height = 140;
     sprite.__imgLoaded = true; sprite.__imgLoading=false;
     if (sprite.__qualityLevel===undefined) sprite.__qualityLevel = 0;
@@ -125,9 +185,12 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   if (pxHeight > 140) desired = 2; // promote to png at lower on-screen size
   else if (pxHeight > 90) desired = 1; // switch to normal sooner
   // Avoid downgrade churn
+  // If highest tier disabled, cap desired at 1 (normal)
+  if (DISABLE_PNG_TIER && desired === 2) desired = 1;
   if (sprite.__qualityLevel !== undefined && desired <= sprite.__qualityLevel) return;
   // Already loading something higher
   if (sprite.__hiResLoading) return;
+  // If already decoding lower tier and higher tier requested, we allow parallel because decode queue throttles globally.
   const card = sprite.__card;
   const faceIdx = sprite.__faceIndex || 0;
   const face = (card.card_faces && card.card_faces[faceIdx]) || null;
@@ -140,10 +203,28 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   if (!url) return;
   // If already at this URL skip
   if (sprite.texture?.baseTexture?.resource?.url === url || sprite.__hiResUrl === url) { sprite.__qualityLevel = desired; return; }
+  const prevUrl: string | undefined = (sprite as any).__currentTexUrl;
+  const prevLevel = sprite.__qualityLevel ?? 0;
   sprite.__hiResLoading = true; sprite.__hiResUrl = url;
   loadTextureFromCachedURL(url)
-  .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; sprite.texture=tex; sprite.width=100; sprite.height=140; sprite.__qualityLevel=desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); } if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); if (sprite.__card && isDoubleSided(sprite.__card)) ensureDoubleSidedBadge(sprite, true); else if (sprite.__doubleBadge) { sprite.__doubleBadge.destroy(); sprite.__doubleBadge = undefined; } })
+    .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; try { const ent = textureCache.get(url); if (ent) { ent.refs++; ent.level = desired; ent.lastUsed = performance.now(); } (sprite as any).__currentTexUrl = url; if (prevUrl && prevUrl !== url) { const pe = textureCache.get(prevUrl); if (pe) { pe.refs = Math.max(0, pe.refs-1); if (pe.refs===0 && pe.level < desired) { try { pe.tex.destroy(true); totalTextureBytes -= pe.bytes; } catch {}; textureCache.delete(prevUrl); } } } } catch {}
+      sprite.texture=tex; sprite.width=100; sprite.height=140; sprite.__qualityLevel=desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); } if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); if (sprite.__card && isDoubleSided(sprite.__card)) ensureDoubleSidedBadge(sprite, true); else if (sprite.__doubleBadge) { sprite.__doubleBadge.destroy(); sprite.__doubleBadge = undefined; } })
     .catch(()=> { sprite.__hiResLoading=false; });
+  enforceTextureBudget();
+}
+
+// Patch sprite destroy to release texture refs when removed.
+export function attachDestroyRelease(sprite: CardSprite){
+  const anySprite:any = sprite as any;
+  if (anySprite.__destroyPatched) return; anySprite.__destroyPatched = true;
+  const orig = sprite.destroy.bind(sprite);
+  sprite.destroy = function(...args:any[]){
+    const url:any = (sprite as any).__currentTexUrl; if (url){ const ent = textureCache.get(url); if (ent){ ent.refs = Math.max(0, ent.refs-1); if (ent.refs===0){ // opportunistic eviction if over budget
+        enforceTextureBudget();
+      } }
+    }
+    orig(...args);
+  } as any;
 }
 
 // Helper: derive image URL for a given quality tier (0 small,1 normal,2 png)
