@@ -33,21 +33,22 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     palette = wrap;
     wrap.id = 'search-palette';
   // Widened palette to better fit enlarged font sizes (was min 320 / max 400)
-  wrap.style.cssText = 'position:fixed;top:14%;left:50%;transform:translateX(-50%);background:#0f181d;border:1px solid #27414f;border-radius:14px;padding:18px 22px;z-index:10050;display:flex;flex-direction:column;gap:14px;min-width:440px;max-width:760px;width:clamp(440px,56vw,760px);box-shadow:0 10px 48px -12px #000c;font:14px "Inter",system-ui,sans-serif;color:#cfe3ec;';
+  wrap.style.cssText = 'position:fixed;top:14%;left:50%;transform:translateX(-50%);z-index:10050;display:flex;flex-direction:column;gap:14px;min-width:440px;max-width:760px;width:clamp(440px,56vw,760px);';
+  wrap.className = 'ui-panel';
   wrap.innerHTML = '<div style="font-size:26px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.85;">Search Cards</div>';
     inputEl = document.createElement('input');
     inputEl.type = 'text';
     inputEl.placeholder = 'Type keywords (space = OR). Press Enter to group results.';
-  inputEl.style.cssText = 'background:#182830;border:1px solid #325261;border-radius:6px;padding:14px 16px;color:#e8f7ff;font:28px "Inter",system-ui;width:100%;max-width:100%;box-sizing:border-box;outline:none;';
+  inputEl.className='ui-input ui-input-lg'; inputEl.style.width='100%';
     wrap.appendChild(inputEl);
     // Filter pills
   filtersEl = document.createElement('div');
-    filtersEl.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;';
+  filtersEl.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;';
     function makePill(label:string, mode:FilterMode){
       const b = document.createElement('button');
       b.type='button';
       b.textContent=label;
-  b.style.cssText='background:#1d2c34;border:1px solid #2f4955;color:#c6dde6;padding:8px 14px;font:24px "Inter",system-ui;border-radius:20px;cursor:pointer;min-width:0;';
+  b.className='ui-pill'; b.style.fontSize='16px'; b.style.padding='8px 14px';
       const update=()=>{ b.style.opacity = filterMode===mode? '1':'0.55'; b.style.outline = filterMode===mode? '1px solid #4d90a8':'none'; };
       b.onclick=()=> { filterMode = mode; updateAllPills(); runSearch(false); };
       (b as any).__update = update;
@@ -61,15 +62,15 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     filtersEl.append(pillAll,pillUng,pillGrp);
     wrap.appendChild(filtersEl);
     infoEl = document.createElement('div');
-  infoEl.style.cssText = 'font-size:24px;min-height:32px;opacity:0.8;white-space:pre-line;';
+  infoEl.style.cssText = 'font-size:16px;min-height:24px;opacity:0.85;white-space:pre-line;';
     wrap.appendChild(infoEl);
     // Navigation bar (Prev / counter / Next / Group All)
     navEl = document.createElement('div');
-  navEl.style.cssText='display:flex;align-items:center;gap:18px;font-size:26px;';
-  prevBtn = document.createElement('button'); prevBtn.type='button'; prevBtn.textContent='◀'; prevBtn.title='Previous (Alt+Left)'; prevBtn.style.cssText='background:#1d2c34;border:1px solid #2f4955;color:#c6dde6;padding:10px 18px;font:26px "Inter";border-radius:10px;cursor:pointer;';
-  nextBtn = document.createElement('button'); nextBtn.type='button'; nextBtn.textContent='▶'; nextBtn.title='Next (Alt+Right)'; nextBtn.style.cssText='background:#1d2c34;border:1px solid #2f4955;color:#c6dde6;padding:10px 18px;font:26px "Inter";border-radius:10px;cursor:pointer;';
+  navEl.style.cssText='display:flex;align-items:center;gap:12px;font-size:16px;';
+  prevBtn = document.createElement('button'); prevBtn.type='button'; prevBtn.textContent='◀'; prevBtn.title='Previous (Alt+Left)'; prevBtn.className='ui-btn'; prevBtn.style.fontSize='18px'; prevBtn.style.padding='6px 12px';
+  nextBtn = document.createElement('button'); nextBtn.type='button'; nextBtn.textContent='▶'; nextBtn.title='Next (Alt+Right)'; nextBtn.className='ui-btn'; nextBtn.style.fontSize='18px'; nextBtn.style.padding='6px 12px';
     counterEl = document.createElement('span'); counterEl.textContent='0 / 0'; counterEl.style.opacity='0.75';
-  groupBtn = document.createElement('button'); groupBtn.type='button'; groupBtn.textContent='Group All'; groupBtn.title='Create group from all matches (Enter)'; groupBtn.style.cssText='margin-left:auto;background:#254052;border:1px solid #356276;color:#d2f2ff;padding:10px 20px;font:24px "Inter";border-radius:10px;cursor:pointer;';
+  groupBtn = document.createElement('button'); groupBtn.type='button'; groupBtn.textContent='Group All'; groupBtn.title='Create group from all matches (Enter)'; groupBtn.className='ui-btn'; groupBtn.style.marginLeft='auto'; groupBtn.style.fontSize='16px'; groupBtn.style.padding='6px 14px';
     function updateNavState(){
       const total = currentMatches.length; const show = total>0; if (navEl) navEl.style.display = show? 'flex':'none';
       if (counterEl) counterEl.textContent = total? `${cursor+1} / ${total}${last && last.limited===800?'*':''}` : '0 / 0';
@@ -82,7 +83,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     navEl.append(prevBtn, counterEl, nextBtn, groupBtn);
     wrap.appendChild(navEl);
     const hint = document.createElement('div');
-  hint.style.cssText = 'font-size:22px;opacity:.55;';
+  hint.style.cssText = 'font-size:12px;opacity:.6;';
   hint.innerHTML = 'Scryfall-like syntax: name:, o:, t:, layout:, cmc>=3, c>=uw, -t:creature, foo OR bar.\nQuotes for phrases ("draw a card"). * wildcard inside words. Color identity: c=uw, c>=uw, c<=w, -c:w.\nLegacy: +token for MUST, a|b inline OR. Filters: All/Ungrouped/Grouped (Alt+A/U/G).';
     wrap.appendChild(hint);
     document.body.appendChild(wrap);

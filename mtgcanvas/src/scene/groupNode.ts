@@ -36,13 +36,38 @@ export interface GroupVisual {
 export const HEADER_HEIGHT = 24;
 const BODY_RADIUS = 6;
 const HEADER_RADIUS = 6;
-const BORDER_COLOR = 0x222a30;
-const BORDER_COLOR_SELECTED = 0x33bbff;
-const BODY_BG = 0x161c20;          // flat dark body background
-const BODY_BG_COLLAPSED = 0x181e22;
-const HEADER_TEXT_COLOR = 0xffffff;
-const COUNT_TEXT_COLOR = 0xb5c7d1;
-const PRICE_TEXT_COLOR = 0xd9f0ff;
+// Colors now derived from CSS variables so light/dark themes stay in sync.
+// We sample only when theme changes to avoid per-frame cost.
+let BORDER_COLOR = 0x222a30;
+let BORDER_COLOR_SELECTED = 0x33bbff;
+let BODY_BG = 0x161c20;          // flat dark body background
+let BODY_BG_COLLAPSED = 0x181e22;
+let HEADER_TEXT_COLOR = 0xffffff;
+let COUNT_TEXT_COLOR = 0xb5c7d1;
+let PRICE_TEXT_COLOR = 0xd9f0ff;
+let RESIZE_TRI_COLOR = 0x2c3942;
+function hexFromCSS(varName:string, fallback:number){
+  try { const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim(); if (!v) return fallback; if (/^#?[0-9a-fA-F]{3,8}$/.test(v)){ const hex = v.startsWith('#')? v.slice(1):v; return parseInt(hex.length===3? hex.split('').map(c=> c+c).join(''): hex.slice(0,6),16); } } catch {}
+  return fallback;
+}
+export function applyGroupTheme(){
+  // Map CSS vars to internal palette; provide fallbacks resembling existing dark theme.
+  BORDER_COLOR = hexFromCSS('--panel-border', 0x222a30);
+  BORDER_COLOR_SELECTED = hexFromCSS('--panel-accent', 0x33bbff);
+  // Derive body backgrounds by darkening panel background slightly.
+  const panelBg = hexFromCSS('--panel-bg', 0x101b24);
+  const panelAlt = hexFromCSS('--panel-bg-alt', 0x0d1720);
+  BODY_BG = panelBg;
+  BODY_BG_COLLAPSED = panelAlt;
+  HEADER_TEXT_COLOR = hexFromCSS('--panel-fg', 0xffffff);
+  COUNT_TEXT_COLOR = hexFromCSS('--panel-fg-dim', 0xb5c7d1);
+  PRICE_TEXT_COLOR = HEADER_TEXT_COLOR;
+  RESIZE_TRI_COLOR = hexFromCSS('--menu-hover-bg', 0x2c3942);
+}
+// Initial sample (safe if executed before DOM ready; will be resampled on first theme ensure anyway)
+try { applyGroupTheme(); } catch {}
+import { registerThemeListener } from '../ui/theme';
+registerThemeListener(()=> applyGroupTheme());
 const FONT_FAMILY = 'Inter, system-ui, sans-serif';
 // Vertical placement is computed per text based on its font size for precise centering.
 
@@ -124,7 +149,7 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
       .lineTo(w-sz, h)
       .lineTo(w, h-sz)
       .closePath()
-      .fill({color: 0x2c3942});
+      .fill({color: RESIZE_TRI_COLOR});
     resize.stroke({color: borderColor, width:1});
     resize.x = 0; resize.y = 0; // absolute inside group
     resize.hitArea = new PIXI.Rectangle(w - sz, h - sz, sz, sz);

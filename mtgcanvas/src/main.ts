@@ -13,7 +13,7 @@ import { loadAll, queuePosition, persistGroupTransform, /* persistGroupCollapsed
 import { InstancesRepo, GroupsRepo, hasRealDb } from './data/repositories';
 import { fetchCardUniverse, spawnLargeSet } from './services/largeDataset';
 import { DATASET_PREFERRED, DATASET_FALLBACK } from './config/dataset';
-import { ensureThemeToggleButton, ensureThemeStyles } from './ui/theme';
+import { ensureThemeToggleButton, ensureThemeStyles, registerThemeListener } from './ui/theme';
 import { installSearchPalette } from './ui/searchPalette';
 
 // Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
@@ -31,6 +31,16 @@ function snap(v:number) { return Math.round(v/GRID_SIZE)*GRID_SIZE; }
 const app = new PIXI.Application();
 (async () => {
   await app.init({ background: '#1e1e1e', resizeTo: window, antialias: true, resolution: window.devicePixelRatio || 1 });
+  function applyCanvasBg(){
+    try {
+      const css = getComputedStyle(document.documentElement);
+      const bg = css.getPropertyValue('--canvas-bg').trim();
+      if (bg){ const hex = (PIXI as any).utils?.string2hex ? (PIXI as any).utils.string2hex(bg) : Number('0x'+bg.replace('#','')); app.renderer.background.color = hex; }
+    } catch {}
+  }
+  registerThemeListener(()=> applyCanvasBg());
+  // Will run once theme styles ensured below; calling here just in case dark default already present.
+  applyCanvasBg();
   document.body.appendChild(app.canvas);
 
   const world = new PIXI.Container();
@@ -197,7 +207,8 @@ const app = new PIXI.Application();
       btn.type='button';
       btn.textContent='✎';
       btn.title='Rename group (R)';
-      btn.style.cssText='position:fixed;z-index:10000;padding:0 4px;min-width:20px;height:18px;font:11px "Inter",system-ui,sans-serif;cursor:pointer;background:#20333d;color:#cbe8f5;border:1px solid #2d5366;border-radius:4px;display:flex;align-items:center;justify-content:center;opacity:0.85;';
+  btn.style.cssText='position:fixed;z-index:10000;padding:0 4px;min-width:20px;height:18px;font:11px var(--panel-font);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0.85;';
+  btn.className='ui-btn'; btn.style.fontSize='11px'; btn.style.lineHeight='16px';
       btn.onmouseenter=()=> btn!.style.opacity='1';
       btn.onmouseleave=()=> btn!.style.opacity='0.85';
       btn.onclick=(e)=> { e.stopPropagation(); startGroupRename(gv); };
@@ -223,29 +234,31 @@ const app = new PIXI.Application();
     const el = document.createElement('div');
     el.id = 'group-info-panel';
   // Bottom anchored slim bar replacing side panel
-  el.style.cssText='position:fixed;left:0;right:0;bottom:0;height:120px;background:#0f161b;border-top:1px solid #24353e;z-index:10020;font:12px/1.5 "Inter",system-ui,sans-serif;color:#d5e9f3;display:flex;flex-direction:row;align-items:flex-start;box-shadow:0 0 18px -4px #000a;padding:10px 14px;gap:16px;';
-  el.innerHTML = '<div style="font-size:26px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#88b4c8;">Group</div>';
+  el.style.cssText='position:fixed;left:0;right:0;bottom:0;height:120px;z-index:10020;display:flex;flex-direction:row;align-items:flex-start;padding:10px 14px;gap:16px;';
+  el.className='ui-panel';
+  el.innerHTML = '<div style="font-size:22px;font-weight:600;letter-spacing:.55px;text-transform:uppercase;color:var(--panel-accent);">Group</div>';
+  el.style.fontSize='16px';
     // Name editor
     const nameWrap = document.createElement('div'); nameWrap.style.display='flex'; nameWrap.style.flexDirection='column'; nameWrap.style.gap='4px';
     const nameLabel = document.createElement('label'); nameLabel.textContent='Name'; nameLabel.style.fontSize='11px'; nameLabel.style.opacity='0.75'; nameWrap.appendChild(nameLabel);
-    const nameInput = document.createElement('input'); groupInfoNameInput = nameInput; nameInput.type='text'; nameInput.maxLength=64; nameInput.style.cssText='background:#18252c;border:1px solid #2d4652;border-radius:4px;padding:5px 6px;color:#e6f7ff;font:12px "Inter",system-ui,sans-serif;'; nameWrap.appendChild(nameInput);
+  const nameInput = document.createElement('input'); groupInfoNameInput = nameInput; nameInput.type='text'; nameInput.maxLength=64; nameInput.className='ui-input'; nameInput.style.fontSize='16px'; nameInput.style.padding='8px 10px'; nameWrap.appendChild(nameInput);
     el.appendChild(nameWrap);
     // Metrics
-  const metrics = document.createElement('div'); metrics.id='group-info-metrics'; metrics.style.cssText='display:grid;grid-template-columns:auto 1fr;column-gap:12px;row-gap:4px;font-size:22px;min-width:140px;'; el.appendChild(metrics);
+  const metrics = document.createElement('div'); metrics.id='group-info-metrics'; metrics.style.cssText='display:grid;grid-template-columns:auto 1fr;column-gap:12px;row-gap:4px;font-size:16px;min-width:140px;'; el.appendChild(metrics);
     // Actions
   const actions = document.createElement('div'); actions.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;';
-    function makeBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.type='button'; b.style.cssText='background:#20333d;border:1px solid #2d5366;color:#cbe8f5;padding:4px 8px;font:11px "Inter",system-ui;border-radius:4px;cursor:pointer;'; b.onmouseenter=()=> b.style.background='#2c4b59'; b.onmouseleave=()=> b.style.background='#20333d'; b.onclick=handler; return b; }
+  function makeBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.type='button'; b.className='ui-btn'; b.style.fontSize='15px'; b.style.padding='8px 12px'; b.onclick=handler; return b; }
   const autoBtn = makeBtn('Auto-pack', ()=> { const gv = currentPanelGroup(); if (!gv) return; autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id,minX:s.x,minY:s.y,maxX:s.x+100,maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); });
     const recolorBtn = makeBtn('Recolor', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.color = (Math.random()*0xffffff)|0; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); });
-    const deleteBtn = makeBtn('Delete', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.gfx.destroy(); groups.delete(gv.id); SelectionStore.clear(); scheduleGroupSave(); updateGroupInfoPanel(); }); deleteBtn.style.background='#402529'; deleteBtn.style.borderColor='#5a3137';
+  const deleteBtn = makeBtn('Delete', ()=> { const gv = currentPanelGroup(); if (!gv) return; gv.gfx.destroy(); groups.delete(gv.id); SelectionStore.clear(); scheduleGroupSave(); updateGroupInfoPanel(); }); deleteBtn.classList.add('danger');
   actions.append(autoBtn, recolorBtn, deleteBtn); el.appendChild(actions);
     // Color palette strip
     const paletteStrip = document.createElement('div'); paletteStrip.style.cssText='display:flex;flex-wrap:wrap;gap:4px;';
-    for (let i=0;i<10;i++){ const sq=document.createElement('div'); const col = (i*0x222222 + 0x334455) & 0xffffff; sq.style.cssText=`width:18px;height:18px;border-radius:4px;background:#${col.toString(16).padStart(6,'0')};cursor:pointer;border:1px solid #182830;`; sq.onclick=()=> { const gv = currentPanelGroup(); if (!gv) return; gv.color = col; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); }; paletteStrip.appendChild(sq); }
+  for (let i=0;i<10;i++){ const sq=document.createElement('div'); const col = (i*0x222222 + 0x334455) & 0xffffff; sq.style.cssText='width:18px;height:18px;border-radius:4px;cursor:pointer;border:1px solid var(--panel-border);'; sq.style.background = '#'+col.toString(16).padStart(6,'0'); sq.onclick=()=> { const gv = currentPanelGroup(); if (!gv) return; gv.color = col; drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); updateGroupInfoPanel(); }; paletteStrip.appendChild(sq); }
     el.appendChild(paletteStrip);
   // Member list removed per requirements
     // Close button (optional)
-  const closeBtn = document.createElement('button'); closeBtn.textContent='×'; closeBtn.title='Clear selection'; closeBtn.style.cssText='position:absolute;top:6px;right:6px;background:#253842;border:1px solid #345562;color:#b4d6e5;width:36px;height:36px;border-radius:6px;cursor:pointer;font-size:28px;line-height:28px;padding:0;'; closeBtn.onclick=()=> { SelectionStore.clear(); updateGroupInfoPanel(); }; el.appendChild(closeBtn);
+  const closeBtn = document.createElement('button'); closeBtn.textContent='×'; closeBtn.title='Clear selection'; closeBtn.className='ui-btn'; closeBtn.style.cssText += 'position:absolute;top:6px;right:6px;width:40px;height:40px;font-size:22px;line-height:22px;padding:0;'; closeBtn.onclick=()=> { SelectionStore.clear(); updateGroupInfoPanel(); }; el.appendChild(closeBtn);
     // Name input commit
     nameInput.addEventListener('keydown', ev=> { if (ev.key==='Enter'){ commitName(); nameInput.blur(); } });
     nameInput.addEventListener('blur', ()=> commitName());
@@ -270,15 +283,16 @@ const app = new PIXI.Application();
     if (cardInfoPanel) return cardInfoPanel;
     const el = document.createElement('div'); cardInfoPanel = el;
     el.id='card-info-panel';
-  el.style.cssText='position:fixed;top:0;right:0;bottom:0;width:420px;max-width:45vw;background:#0f161b;border-left:1px solid #24353e;z-index:10015;display:flex;flex-direction:column;font:26px/1.6 "Inter",system-ui,sans-serif;color:#d5e9f3;box-shadow:0 0 22px -6px #000a;pointer-events:auto;';
-    el.innerHTML = '<div id="cip-header" style="padding:10px 14px 6px;font-size:12px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#88b4c8;display:flex;align-items:center;gap:8px;">Card</div>'+
-      '<div id="cip-scroll" style="overflow:auto;padding:0 14px 18px;display:flex;flex-direction:column;gap:12px;">'+
-        '<div id="cip-empty" style="opacity:.55;padding:12px 4px;font-size:12px;">No card selected</div>'+
-        '<div id="cip-content" style="display:none;flex-direction:column;gap:24px;">'+
-          '<div id="cip-name" style="font-size:32px;font-weight:600;line-height:1.25;color:#fff;"></div>'+
-          '<div id="cip-meta" style="display:flex;flex-direction:column;gap:10px;font-size:24px;line-height:1.5;"></div>'+
-          '<div id="cip-type" style="font-size:24px;color:#b9d2dc;"></div>'+
-          '<div id="cip-oracle" style="white-space:pre-wrap;font-size:24px;background:#132026;border:1px solid #21353f;padding:18px 20px;border-radius:10px;color:#cfe8f4;line-height:1.6;"></div>'+
+  el.style.cssText='position:fixed;top:0;right:0;bottom:0;width:420px;max-width:45vw;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;';
+  el.className='ui-panel';
+  el.innerHTML = '<div id="cip-header" style="padding:10px 14px 6px;font-size:14px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:8px;">Card</div>'+
+      '<div id="cip-scroll" style="overflow:auto;padding:0 14px 18px;display:flex;flex-direction:column;gap:14px;">'+
+        '<div id="cip-empty" style="opacity:.55;padding:14px 4px;font-size:14px;">No card selected</div>'+
+        '<div id="cip-content" style="display:none;flex-direction:column;gap:28px;">'+
+          '<div id="cip-name" style="font-size:32px;font-weight:600;line-height:1.2;"></div>'+
+          '<div id="cip-meta" style="display:flex;flex-direction:column;gap:8px;font-size:18px;line-height:1.5;opacity:.9;"></div>'+
+          '<div id="cip-type" style="font-size:18px;opacity:.8;"></div>'+
+          '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:18px;line-height:1.6;padding:16px 18px;min-height:160px;"></div>'+
         '</div>'+
       '</div>';
     document.body.appendChild(el);
@@ -349,7 +363,7 @@ const app = new PIXI.Application();
   const PALETTE = [0x2d3e53,0x444444,0x554433,0x224433,0x333355,0x553355,0x335555,0x4a284a,0x3c4a28,0x284a4a];
   function ensureGroupMenu(){
     if (groupMenu) return groupMenu; const el = document.createElement('div'); groupMenu = el;
-  el.style.cssText='position:fixed;z-index:10001;background:#101820;border:1px solid #2d4652;border-radius:6px;min-width:200px;font:14px/1.5 "Inter",system-ui,sans-serif;color:#d0e7f1;box-shadow:0 4px 18px -4px #000c;padding:6px 6px 4px;';
+  el.style.cssText='position:fixed;z-index:10001;min-width:200px;'; el.className='ui-menu';
   // Prevent both mouse and pointer events from bubbling (so global pointerdown doesn't instantly hide menu)
   el.addEventListener('mousedown', ev=> ev.stopPropagation());
   el.addEventListener('pointerdown', ev=> ev.stopPropagation());
@@ -363,7 +377,7 @@ const app = new PIXI.Application();
   });
   function showGroupContextMenu(gv: GroupVisual, globalPt: PIXI.Point){
     const el = ensureGroupMenu(); menuTarget = gv; el.innerHTML='';
-  function addItem(label:string, action:()=>void){ const it=document.createElement('div'); it.textContent=label; it.style.cssText='padding:6px 10px;cursor:pointer;border-radius:4px;'; it.onmouseenter=()=> it.style.background='#1d3440'; it.onmouseleave=()=> it.style.background='transparent'; it.onclick=()=> { action(); hideGroupMenu(); }; el.appendChild(it); }
+  function addItem(label:string, action:()=>void){ const it=document.createElement('div'); it.textContent=label; it.className='ui-menu-item'; it.onclick=()=> { action(); hideGroupMenu(); }; el.appendChild(it); }
   // Collapse feature removed
   addItem('Auto-pack', ()=> { autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); updateGroupMetrics(gv, sprites); drawGroup(gv, SelectionStore.state.groupIds.has(gv.id)); scheduleGroupSave(); });
     addItem('Rename', ()=> startGroupRename(gv));
@@ -382,7 +396,7 @@ const app = new PIXI.Application();
   let cardMenu: HTMLDivElement | null = null; let cardMenuTarget: CardSprite | null = null;
   function ensureCardMenu(){
     if (cardMenu) return cardMenu; const el = document.createElement('div'); cardMenu = el;
-    el.style.cssText='position:fixed;z-index:10001;background:#101820;border:1px solid #2d4652;border-radius:6px;min-width:220px;font:13px/1.45 "Inter",system-ui,sans-serif;color:#d0e7f1;box-shadow:0 4px 18px -4px #000c;padding:6px 6px 4px;';
+  el.style.cssText='position:fixed;z-index:10001;min-width:220px;'; el.className='ui-menu';
   el.addEventListener('mousedown', ev=> ev.stopPropagation());
   el.addEventListener('pointerdown', ev=> ev.stopPropagation());
     document.body.appendChild(el); return el;
@@ -394,7 +408,7 @@ const app = new PIXI.Application();
     const header = document.createElement('div'); header.textContent = 'Add to Group'; header.style.cssText='font-size:22px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;opacity:.7;padding:4px 6px 10px;'; el.appendChild(header);
   // All groups considered open (collapse removed)
   const openGroups = [...groups.values()];
-    function addItem(label:string, action:()=>void, disabled=false){ const it=document.createElement('div'); it.textContent=label; it.style.cssText='padding:6px 10px;cursor:'+ (disabled?'default':'pointer') +';border-radius:4px;display:flex;align-items:center;gap:6px;'; if (!disabled){ it.onmouseenter=()=> it.style.background='#1d3440'; it.onmouseleave=()=> it.style.background='transparent'; it.onclick=()=> { action(); hideCardMenu(); }; } else { it.style.opacity='0.5'; }
+    function addItem(label:string, action:()=>void, disabled=false){ const it=document.createElement('div'); it.textContent=label; it.className='ui-menu-item'; it.style.display='flex'; it.style.alignItems='center'; it.style.gap='6px'; if (disabled){ it.classList.add('disabled'); } else { it.onclick=()=> { action(); hideCardMenu(); }; }
       el.appendChild(it); return it; }
     if (!openGroups.length){ addItem('(No open groups)', ()=>{}, true); }
     else {
@@ -760,8 +774,8 @@ const app = new PIXI.Application();
 
   // ---- Performance overlay ----
   ensureThemeStyles();
-  // Remove theme toggle FAB if it exists (user requested removal)
-  const oldThemeBtn = document.getElementById('theme-toggle-btn'); if (oldThemeBtn) oldThemeBtn.remove();
+  // Ensure modern day/night toggle (flat pill)
+  try { ensureThemeToggleButton(); } catch {}
   const perfEl = document.createElement('div'); perfEl.id='perf-overlay';
   // Use shared panel theme (ensure fixed positioning & stacking above canvas)
   perfEl.className='ui-panel perf-grid';
@@ -769,9 +783,9 @@ const app = new PIXI.Application();
   perfEl.style.left='6px';
   perfEl.style.top='6px';
   perfEl.style.zIndex='10002';
-  perfEl.style.minWidth='260px';
-  perfEl.style.padding='12px 14px';
-  perfEl.style.fontSize='13px';
+  perfEl.style.minWidth='280px';
+  perfEl.style.padding='14px 16px';
+  perfEl.style.fontSize='15px';
   perfEl.style.pointerEvents='none';
   document.body.appendChild(perfEl);
   (window as any).__perfOverlay = perfEl;
@@ -834,9 +848,10 @@ const app = new PIXI.Application();
       let el = document.getElementById('debug-panel'); if (el) return el as HTMLDivElement;
   el = document.createElement('div'); el.id='debug-panel';
   // Base styling; precise position continuously synced below perf overlay each frame
-  el.style.cssText='position:fixed;left:6px;top:300px;z-index:10005;background:#101b22;border:1px solid #2d4652;padding:8px 10px 10px;font:12px/1.45 system-ui,sans-serif;color:#b9d7e3;border-radius:6px;display:flex;flex-direction:column;gap:6px;min-width:220px;transition:top .08s linear;';
-  el.innerHTML = '<div style="font-weight:600;font-size:24px;margin-bottom:4px;">Debug</div>';
-  function addBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.style.cssText='all:unset;background:#20333d;color:#d7f3ff;padding:10px 16px;border-radius:6px;cursor:pointer;font-size:24px;text-align:center;'; b.onmouseenter=()=> b.style.background='#2c4b59'; b.onmouseleave=()=> b.style.background='#20333d'; b.onclick=handler; el!.appendChild(b); }
+  el.style.cssText='position:fixed;left:6px;top:300px;z-index:10005;display:flex;flex-direction:column;gap:6px;min-width:220px;transition:top .08s linear;';
+  el.className='ui-panel';
+  el.innerHTML = '<div style="font-weight:600;font-size:20px;margin-bottom:6px;color:var(--panel-accent);">Debug</div>';
+  function addBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.className='ui-btn'; b.style.fontSize='16px'; b.style.padding='10px 14px'; b.onclick=handler; el!.appendChild(b); }
   addBtn('Grid Ungrouped Cards', ()=> { gridUngroupedCards(); });
   addBtn('Full Reset (Clear + Grid All)', ()=> { clearGroupsOnly(); resetLayout(true); });
       document.body.appendChild(el);
