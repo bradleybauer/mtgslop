@@ -471,7 +471,7 @@ export function ensureCardImage(sprite: CardSprite) {
       if (sprite.__qualityLevel === undefined) sprite.__qualityLevel = 0;
       if (SelectionStore.state.cardIds.has(sprite.__id))
         updateCardSpriteAppearance(sprite, true);
-      if (isDoubleSided(card)) ensureDoubleSidedBadge(sprite, true);
+      if (isDoubleSided(card)) ensureDoubleSidedBadge(sprite);
       // Enforce GPU texture budget after loading a new base texture
       scheduleEnforceTextureBudget();
     })
@@ -629,7 +629,6 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
     return;
   }
   const prevUrl: string | undefined = (sprite as any).__currentTexUrl;
-  const prevLevel = sprite.__qualityLevel ?? 0;
   // mark inflight for this desired tier
   (sprite as any).__inflightLevel = desired;
   sprite.__hiResLoading = true;
@@ -683,7 +682,7 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
       if (SelectionStore.state.cardIds.has(sprite.__id))
         updateCardSpriteAppearance(sprite, true);
       if (sprite.__card && isDoubleSided(sprite.__card))
-        ensureDoubleSidedBadge(sprite, true);
+  ensureDoubleSidedBadge(sprite);
       else if (sprite.__doubleBadge) {
         sprite.__doubleBadge.destroy();
         sprite.__doubleBadge = undefined;
@@ -836,7 +835,7 @@ function isDoubleSided(card: any): boolean {
   return false;
 }
 
-function ensureDoubleSidedBadge(sprite: CardSprite, repositionOnly = false) {
+function ensureDoubleSidedBadge(sprite: CardSprite) {
   if (!isDoubleSided(sprite.__card)) {
     if (sprite.__doubleBadge) {
       sprite.__doubleBadge.destroy();
@@ -974,7 +973,7 @@ function flipCardFace(sprite: CardSprite) {
       } catch {}
     });
   }
-  ensureDoubleSidedBadge(sprite, true); // reposition after flip
+  ensureDoubleSidedBadge(sprite); // reposition after flip
 }
 
 export function attachCardInteractions(

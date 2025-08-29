@@ -252,14 +252,6 @@ const FIELD_ALIASES: Record<string, string> = {
   stamp: "security_stamp",
 };
 
-const NUM_FIELDS = new Set([
-  "cmc",
-  "power",
-  "toughness",
-  "loyalty",
-  "pt",
-  "year",
-]);
 const TEXT_FIELDS = new Set([
   "name",
   "oracle_text",
@@ -414,15 +406,6 @@ function parse(tokens: LexToken[]): Node {
   return ast;
 }
 
-function buildAnd(group: LexToken[]): Predicate {
-  const preds: Predicate[] = [];
-  for (const t of group) {
-    const p = buildTokenPredicate(t.v, t.neg || false, t.exact || false);
-    if (p) preds.push(p);
-  }
-  if (!preds.length) return () => true;
-  return (card) => preds.every((fn) => fn(card));
-}
 
 function buildTokenPredicate(
   raw: string,
@@ -695,11 +678,6 @@ function evalNode(node: Node, card: CardLike): boolean {
 
 // -------------------- Helpers & extended predicates --------------------
 
-function aggregateNameAndOracle(card: CardLike): string {
-  const n = card.name || "";
-  const o = card.oracle_text || facesConcat(card, "oracle_text") || "";
-  return `${n}\n${o}`;
-}
 
 function facesConcat(
   card: CardLike,
@@ -1246,12 +1224,12 @@ function manaCostPredicate(raw: string, neg: boolean): Predicate {
 function devotionPredicate(specRaw: string, neg: boolean): Predicate {
   // spec like {u/b}{u/b}{u/b} or {G}{G}{G}
   const wants = (specRaw.match(/\{[^}]+\}/g) || []).map((tok) =>
-    tok.replace(/[\{\}]/g, "").toUpperCase(),
+    tok.replace(/[{}]/g, "").toUpperCase(),
   );
   return (card) => {
     const mine = (card.mana_cost || "").toUpperCase();
     const mineSyms = (mine.match(/\{[^}]+\}/g) || []).map((s) =>
-      s.replace(/[\{\}]/g, ""),
+      s.replace(/[{}]/g, ""),
     );
     // Greedy match: each wanted slot must be satisfied by some symbol in cost that contains any of its letters
     const pool = mineSyms.slice();

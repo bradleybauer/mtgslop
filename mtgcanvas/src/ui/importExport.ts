@@ -51,8 +51,8 @@ function countsToText(items: { name: string; count: number }[]): string {
 function parseDecklist(text: string): { name: string; count: number }[] {
   const out: { name: string; count: number }[] = [];
   const lines = text.split(/\r?\n/);
-  for (let raw of lines) {
-    let line = raw.trim();
+  for (const rawLine of lines) {
+    let line = rawLine.trim();
     if (!line) continue;
     // Remove comments after '#'
     const hash = line.indexOf("#");
@@ -220,7 +220,7 @@ export function installImportExport(
     const importBtn = el.querySelector("#ie-import-btn") as HTMLButtonElement;
     const scryPane = el.querySelector("#ie-scry-pane") as HTMLDivElement | null;
 
-    function refreshExport() {
+  const refreshExport = () => {
       const fmt = formatSel?.value || "counts";
       if (fmt === "groups" && opts.getGroupsExport) {
         if (exportArea) exportArea.value = opts.getGroupsExport();
@@ -229,7 +229,7 @@ export function installImportExport(
       const names = scopeAll ? opts.getAllNames() : opts.getSelectedNames();
       const items = groupCounts(names);
       if (exportArea) exportArea.value = countsToText(items);
-    }
+  };
 
     scopeAllEl.onchange = () => {
       scopeAll = true;
@@ -283,9 +283,9 @@ export function installImportExport(
     }
     importBtn.onclick = async () => {
       if (!importArea) return;
-      const raw = importArea.value;
+      const inputText = importArea.value;
       // Try groups format first
-      const asGroups = parseGroupsText(raw);
+      const asGroups = parseGroupsText(inputText);
       if (asGroups && opts.importGroups) {
         if (statusEl) statusEl.textContent = "Importing groups…";
         const res = await opts.importGroups(asGroups);
@@ -294,7 +294,7 @@ export function installImportExport(
         return;
       }
       // Fallback to decklist format
-      const items = parseDecklist(raw);
+      const items = parseDecklist(inputText);
       if (!items.length) {
         if (statusEl) statusEl.textContent = "Nothing to import.";
         return;
@@ -316,15 +316,15 @@ export function installImportExport(
       ) as HTMLDivElement | null;
       let scryInFlight = false;
       let scryAbort: AbortController | null = null;
-      function setScryBusy(busy: boolean) {
+      const setScryBusy = (busy: boolean) => {
         scryInFlight = busy;
         if (qEl) qEl.disabled = busy;
         if (runBtn) {
           runBtn.disabled = false;
           runBtn.textContent = busy ? "Cancel" : "Import";
         }
-      }
-      async function runOrCancel() {
+      };
+        const runOrCancel = async () => {
         if (scryInFlight) {
           // Treat click as cancel
           try {
@@ -371,7 +371,7 @@ export function installImportExport(
           setScryBusy(false);
           scryAbort = null;
         }
-      }
+        };
       runBtn?.addEventListener("click", runOrCancel);
       qEl?.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" && !ev.shiftKey) {

@@ -176,21 +176,41 @@ export const InstancesRepo = {
     if (!batch.length) return;
     const db = getDbSafe();
     if (db) {
-      const stmt = db.prepare(
-        "UPDATE card_instances SET x=COALESCE(?,x), y=COALESCE(?,y), z=COALESCE(?,z), group_id=COALESCE(?,group_id) WHERE id=?",
-      );
-      const tx = db.transaction((rows: typeof batch) => {
-        rows.forEach((r) =>
-          stmt.run(
-            r.x ?? null,
-            r.y ?? null,
-            r.z ?? null,
-            r.group_id === undefined ? null : r.group_id,
-            r.id,
-          ),
+      // Preserve tri-state semantics for group_id:
+      //  - undefined -> leave unchanged
+      //  - number    -> set to that id
+      //  - null      -> set to NULL (clear)
+      const posOnly = batch.filter((r) => r.group_id === undefined);
+      const withGroup = batch.filter((r) => r.group_id !== undefined);
+      if (posOnly.length) {
+        const stmtPos = db.prepare(
+          "UPDATE card_instances SET x=COALESCE(?,x), y=COALESCE(?,y), z=COALESCE(?,z) WHERE id=?",
         );
-      });
-      tx(batch);
+        const txPos = db.transaction((rows: typeof posOnly) => {
+          rows.forEach((r) =>
+            stmtPos.run(r.x ?? null, r.y ?? null, r.z ?? null, r.id),
+          );
+        });
+        txPos(posOnly);
+      }
+      if (withGroup.length) {
+        const stmtGrp = db.prepare(
+          "UPDATE card_instances SET x=COALESCE(?,x), y=COALESCE(?,y), z=COALESCE(?,z), group_id=? WHERE id=?",
+        );
+        const txGrp = db.transaction((rows: typeof withGroup) => {
+          rows.forEach((r) =>
+            stmtGrp.run(
+              r.x ?? null,
+              r.y ?? null,
+              r.z ?? null,
+              // r.group_id can be number or null here
+              (r as any).group_id,
+              r.id,
+            ),
+          );
+        });
+        txGrp(withGroup);
+      }
       return;
     }
     batch.forEach((r) => {

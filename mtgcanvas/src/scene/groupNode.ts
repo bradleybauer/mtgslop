@@ -53,7 +53,6 @@ let BODY_BG_COLLAPSED = 0x181e22;
 let HEADER_TEXT_COLOR = 0xffffff;
 let COUNT_TEXT_COLOR = 0xb5c7d1;
 let PRICE_TEXT_COLOR = 0xd9f0ff;
-let RESIZE_TRI_COLOR = 0x2c3942;
 function hexFromCSS(varName: string, fallback: number) {
   try {
     const v = getComputedStyle(document.documentElement)
@@ -87,7 +86,6 @@ export function applyGroupTheme() {
   HEADER_TEXT_COLOR = hexFromCSS("--panel-fg", 0xffffff);
   COUNT_TEXT_COLOR = hexFromCSS("--panel-fg-dim", 0xb5c7d1);
   PRICE_TEXT_COLOR = HEADER_TEXT_COLOR;
-  RESIZE_TRI_COLOR = hexFromCSS("--menu-hover-bg", 0x2c3942);
 }
 // Initial sample (safe if executed before DOM ready; will be resampled on first theme ensure anyway)
 try {
@@ -529,8 +527,6 @@ export function layoutFaceted(
       }
     });
     const rows = Math.ceil(arr.length / cols);
-    const sectionH =
-      LABEL_H + 4 + (rows ? rows * CARD_H + Math.max(0, rows - 1) * GAP_Y : 0);
     cursorY =
       gridTop +
       (rows ? rows * CARD_H + Math.max(0, rows - 1) * GAP_Y : 0) +
@@ -725,7 +721,6 @@ export function placeCardInGroup(
     gv.h = snap(gv.h + added);
     gv._expandedH = gv.h;
     // New inner bottom
-    const newTop = gv.gfx.y + HEADER_HEIGHT + PAD_Y;
     const newBottom = snap(gv.gfx.y + gv.h - PAD_BOTTOM_EXTRA - CARD_H);
     // Scan left->right for first fit in new bottom row
     for (let x = snap(left); x <= right - CARD_W; x += step) {
@@ -1065,7 +1060,6 @@ export function updateGroupZoomPresentation(
   if (overlayActive !== prevOverlayActive && nowTs - lastToggle < 250) {
     overlayActive = prevOverlayActive;
   }
-  const lastScale: any = (gv as any).__lastOverlayScale ?? -1;
   (gv as any).__lastOverlayScale = worldScale;
   gv._lastZoomPhase = overlayActive ? 1 : 0;
   const overlay = gv._zoomLabel;

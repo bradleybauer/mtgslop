@@ -114,9 +114,6 @@ async function putEntry(meta: CacheEntryMeta) {
 }
 
 // Eviction disabled: keep function placeholders for compatibility.
-async function computeTotalAndMaybeEvict(_log = false) {
-  /* no-op in unlimited mode */
-}
 export async function enforceCacheBudget() {
   /* no-op */
 }

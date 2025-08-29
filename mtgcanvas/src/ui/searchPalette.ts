@@ -3,7 +3,6 @@
 // Future: upgrade to SQLite FTS when persistence/importer active.
 
 import type { CardSprite } from "../scene/cardNode";
-import { HEADER_HEIGHT } from "../scene/groupNode";
 import { parseScryfallQuery } from "../search/scryfallQuery";
 
 export interface SearchPaletteOptions {
@@ -350,7 +349,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       !/[A-Za-z_][A-Za-z0-9_]*:/.test(q) &&
       !/\bOR\b/i.test(q) &&
       !/[()]/.test(q) &&
-      !/^\-/.test(q);
+    !/^-/.test(q);
     const tk = adv ? null : tokenize(q);
     const sprites = getSprites();
     // const MAX = 800; // safety cap
@@ -391,9 +390,9 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     }
     // Refresh nav controls
     if (typeof window !== "undefined") {
-      const evt = (window as any).requestAnimationFrame
-        ? (window as any).requestAnimationFrame
-        : (fn: Function) => setTimeout(fn, 0);
+      const evt: (cb: () => void) => any = (window as any).requestAnimationFrame
+        ? (window as any).requestAnimationFrame.bind(window)
+        : (cb: () => void) => setTimeout(cb, 0);
       evt(() => {
         const total = currentMatches.length;
         if (counterEl)
@@ -404,10 +403,10 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       });
     }
     if (typeof window !== "undefined") {
-      const evt = (window as any).requestAnimationFrame
-        ? (window as any).requestAnimationFrame
-        : (fn: Function) => setTimeout(fn, 0);
-      evt(() => {
+      const evt2: (cb: () => void) => any = (window as any).requestAnimationFrame
+        ? (window as any).requestAnimationFrame.bind(window)
+        : (cb: () => void) => setTimeout(cb, 0);
+      evt2(() => {
         const total = currentMatches.length;
         if (counterEl)
           counterEl.textContent = total ? `${cursor + 1} / ${total}` : "0 / 0";

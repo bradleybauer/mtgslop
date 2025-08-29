@@ -67,10 +67,13 @@ export async function fetchCardUniverse(): Promise<any[]> {
           const decoder = new TextDecoder();
           let buf = "";
           const out: any[] = [];
-          let linesParsed = 0;
-          while (true) {
+          let reading = true;
+          while (reading) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+              reading = false;
+              break;
+            }
             buf += decoder.decode(value, { stream: true });
             let nl;
             while ((nl = buf.indexOf("\n")) >= 0) {
@@ -85,7 +88,6 @@ export async function fetchCardUniverse(): Promise<any[]> {
               } catch {
                 /* ignore */
               }
-              linesParsed++;
               if (out.length && out.length % 5000 === 0)
                 console.log("[largeDataset] streaming parsed", out.length);
             }
@@ -184,7 +186,7 @@ export async function spawnLargeSet(
   const total = Math.min(opts.count, cards.length || opts.count);
   const batchSize = opts.batchSize ?? 250;
   let produced = 0;
-  let nextIdBase = Date.now();
+  const nextIdBase = Date.now();
   // Card dimensions 100x140; choose minimal gaps that preserve grid alignment for GRID_SIZE=8.
   // Need (100+gapX) % 8 === 0 and (140+gapY) % 8 === 0 with smallest >0 -> gapX=4, gapY=4.
   const GAP_X = 4,
@@ -194,7 +196,6 @@ export async function spawnLargeSet(
   const cols = Math.ceil(Math.sqrt(total));
   return new Promise<void>((resolve) => {
     function step() {
-      const start = performance.now();
       for (let i = 0; i < batchSize && produced < total; i++) {
         const idx = produced;
         const col = idx % cols;

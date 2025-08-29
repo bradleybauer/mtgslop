@@ -8,7 +8,6 @@ import {
   type CardSprite,
   ensureCardImage,
   updateCardTextureForScale,
-  preloadCardQuality,
   getHiResQueueLength,
   getInflightTextureCount,
   enforceGpuBudgetForSprites,
@@ -20,7 +19,6 @@ import {
 import { configureTextureSettings } from "./config/rendering";
 import {
   getImageCacheStats,
-  hasCachedURL,
   getCacheUsage,
   enableImageCacheDebug,
 } from "./services/imageCache";
@@ -31,7 +29,6 @@ import {
   type GroupVisual,
   HEADER_HEIGHT,
   /* setGroupCollapsed removed */ autoPackGroup,
-  insertionIndexForPoint,
   addCardToGroupOrdered,
   removeCardFromGroup,
   updateGroupTextQuality,
@@ -60,7 +57,7 @@ import {
   spawnLargeSet,
   parseUniverseText,
 } from "./services/largeDataset";
-import { DATASET_PREFERRED, DATASET_FALLBACK } from "./config/dataset";
+// Dataset constants referenced in logs only in dataset service; no usage here
 import {
   ensureThemeToggleButton,
   ensureThemeStyles,
@@ -224,16 +221,6 @@ const splashEl = document.getElementById("splash");
   const LS_IMPORTED_KEY = "mtgcanvas_imported_cards_v1"; // legacy fallback
   // Suppress any local save side effects (used when clearing data to avoid races that re-save)
   let SUPPRESS_SAVES = false;
-  // One-time flag to skip universe loading and any rehydration after a Clear Data action
-  const START_EMPTY = (() => {
-    try {
-      const v = sessionStorage.getItem("mtgcanvas_start_empty_once") === "1";
-      if (v) sessionStorage.removeItem("mtgcanvas_start_empty_once");
-      return v;
-    } catch {
-      return false;
-    }
-  })();
   let memoryGroupsData: any = null;
   let groupsRestored = false;
   if (PERSIST_MODE === "memory") {
@@ -242,18 +229,7 @@ const splashEl = document.getElementById("splash");
       if (raw) memoryGroupsData = JSON.parse(raw);
     } catch {}
   }
-  // Pre-parse stored layout (memory mode) so we can spawn at correct positions without flicker
-  let storedLayoutByIndex: { x: number; y: number }[] | null = null;
-  if (PERSIST_MODE === "memory") {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const obj = JSON.parse(raw);
-        if (obj && Array.isArray(obj.byIndex))
-          storedLayoutByIndex = obj.byIndex;
-      }
-    } catch {}
-  }
+  // (index-based pre-parse removed; id-based restore applies in applyStoredPositionsMemory)
   function applyStoredPositionsMemory() {
     if (PERSIST_MODE !== "memory") return;
     try {
@@ -731,7 +707,6 @@ const splashEl = document.getElementById("splash");
     const global = new PIXI.Point(gv.gfx.x, gv.gfx.y);
     const pt = world.toGlobal(global);
     const scale = world.scale.x; // approximate uniform scale
-    const headerHeight = HEADER_HEIGHT * scale; // retained for potential future use
     input.style.position = "fixed";
     input.style.left = `${bounds.left + pt.x + 6}px`;
     input.style.top = `${bounds.top + pt.y + 4}px`;
@@ -768,66 +743,6 @@ const splashEl = document.getElementById("splash");
     input.addEventListener("blur", () => commit(true));
   }
 
-  // ---- Inline rename affordance (non-modal design) ----
-  const renameButtons = new Map<number, HTMLButtonElement>();
-  function ensureRenameButton(gv: GroupVisual) {
-    let btn = renameButtons.get(gv.id);
-    if (!btn) {
-      btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = "✎";
-      btn.title = "Rename group (R)";
-      btn.style.cssText =
-        "position:fixed;z-index:10000;padding:0 4px;min-width:20px;height:18px;font:11px var(--panel-font);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0.85;";
-      btn.className = "ui-btn";
-      btn.style.fontSize = "11px";
-      btn.style.lineHeight = "16px";
-      btn.onmouseenter = () => (btn!.style.opacity = "1");
-      btn.onmouseleave = () => (btn!.style.opacity = "0.85");
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        startGroupRename(gv);
-      };
-      document.body.appendChild(btn);
-      renameButtons.set(gv.id, btn);
-    }
-    return btn;
-  }
-  function removeRenameButton(id: number) {
-    const btn = renameButtons.get(id);
-    if (btn) {
-      btn.remove();
-      renameButtons.delete(id);
-    }
-  }
-  function updateRenameButtonsVisibility() {
-    const selected = new Set(SelectionStore.getGroups());
-    // Remove buttons for unselected
-    [...renameButtons.keys()].forEach((id) => {
-      if (!selected.has(id)) removeRenameButton(id);
-    });
-    selected.forEach((id) => {
-      const gv = groups.get(id);
-      if (gv) ensureRenameButton(gv);
-    });
-  }
-  function repositionRenameButtons() {
-    if (!renameButtons.size) return;
-    const bounds = app.renderer.canvas.getBoundingClientRect();
-    renameButtons.forEach((btn, id) => {
-      const gv = groups.get(id);
-      if (!gv) {
-        btn.remove();
-        renameButtons.delete(id);
-        return;
-      }
-      const px = gv.gfx.x + gv.w - 24;
-      const py = gv.gfx.y + 4;
-      const global = world.toGlobal(new PIXI.Point(px, py));
-      btn.style.left = `${bounds.left + global.x}px`;
-      btn.style.top = `${bounds.top + global.y}px`;
-    });
-  }
 
   // ---- Side Group Info Panel (replaces floating rename buttons) ----
   let groupInfoPanel: HTMLDivElement | null = null;
@@ -1814,7 +1729,6 @@ const splashEl = document.getElementById("splash");
 
   // ---- Group context menu (Groups V2) ----
   let groupMenu: HTMLDivElement | null = null;
-  let menuTarget: GroupVisual | null = null;
   const PALETTE = [
     0x2d3e53, 0x444444, 0x554433, 0x224433, 0x333355, 0x553355, 0x335555,
     0x4a284a, 0x3c4a28, 0x284a4a,
@@ -1834,7 +1748,6 @@ const splashEl = document.getElementById("splash");
   function hideGroupMenu() {
     if (groupMenu) {
       groupMenu.style.display = "none";
-      menuTarget = null;
     }
   }
   window.addEventListener("pointerdown", (e) => {
@@ -1844,7 +1757,6 @@ const splashEl = document.getElementById("splash");
   });
   function showGroupContextMenu(gv: GroupVisual, globalPt: PIXI.Point) {
     const el = ensureGroupMenu();
-    menuTarget = gv;
     el.innerHTML = "";
     function addItem(label: string, action: () => void) {
       const it = document.createElement("div");
@@ -1944,7 +1856,6 @@ const splashEl = document.getElementById("splash");
 
   // ---- Card context menu (Add to open group) ----
   let cardMenu: HTMLDivElement | null = null;
-  let cardMenuTarget: CardSprite | null = null;
   function ensureCardMenu() {
     if (cardMenu) return cardMenu;
     const el = document.createElement("div");
@@ -1959,7 +1870,6 @@ const splashEl = document.getElementById("splash");
   function hideCardMenu() {
     if (cardMenu) {
       cardMenu.style.display = "none";
-      cardMenuTarget = null;
     }
   }
   window.addEventListener("pointerdown", (e) => {
@@ -1969,7 +1879,6 @@ const splashEl = document.getElementById("splash");
   });
   function showCardContextMenu(card: CardSprite, globalPt: PIXI.Point) {
     const el = ensureCardMenu();
-    cardMenuTarget = card;
     el.innerHTML = "";
     const header = document.createElement("div");
     header.textContent = "Add to Group";
@@ -2407,7 +2316,6 @@ const splashEl = document.getElementById("splash");
           return;
         }
         const target = 3000; // adjustable
-        const startCount = sprites.length;
         spawnLargeSet(
           cards,
           (inst) => {
@@ -2422,7 +2330,7 @@ const splashEl = document.getElementById("splash");
                   `[largeDataset] spawned ${total} cards (total now ${sprites.length})`,
                 );
               }
-              if (done % 800 === 0 || done === total) updatePerf(0);
+              if (done % 800 === 0 || done === total) updatePerf();
             },
           },
         ).then(() => {
@@ -2925,7 +2833,6 @@ const splashEl = document.getElementById("splash");
   let texResLine = "Res ?";
   let hiResPendingLine = "GlobalPending ?";
   let qualLine = "Qual ?";
-  let queueLine = "Q ?";
   let decodeQLine = "DecodeQ ?";
   let hiResDiagLine = "HiResDiag ?";
   let decodeDiagLine = "DecodeDiag ?";
@@ -2974,7 +2881,6 @@ const splashEl = document.getElementById("splash");
     texResLine = `TexRes low:${low} med:${med} hi:${hi}`;
     hiResPendingLine = `GlobalPending ${pending}`;
     qualLine = `Qual q0:${q0} q1:${q1} q2:${q2} load:${loading}`;
-    queueLine = `HiQ len:${getHiResQueueLength()} inflight:${getInflightTextureCount()}`;
     try {
       decodeQLine = `DecodeQ ${getDecodeQueueSize()}`;
       const dqs = getDecodeQueueStats?.();
@@ -2993,7 +2899,7 @@ const splashEl = document.getElementById("splash");
     }
     texLine = `Tex ~${(bytes / 1048576).toFixed(1)} MB`;
   }
-  function updatePerf(dt: number) {
+  function updatePerf() {
     frameCount++;
     const now = performance.now();
     if (now - lastFpsTime > 500) {
@@ -4507,7 +4413,7 @@ const splashEl = document.getElementById("splash");
       updateGroupTextQuality(gv, world.scale.x);
       updateGroupZoomPresentation(gv, world.scale.x, sprites);
     });
-    updatePerf(dt);
+    updatePerf();
   });
   // Periodically ensure any new sprites have context listeners
   setInterval(() => {

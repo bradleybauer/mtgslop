@@ -143,7 +143,7 @@ export async function searchScryfall(
   }
 
   // First page sequentially (establish total + initial results)
-  let firstUrl = makeUrl();
+  const firstUrl = makeUrl();
   const first = await fetchWithRetry(firstUrl);
   if (typeof first.total_cards === "number") total = first.total_cards;
 
