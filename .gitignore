@@ -1,5 +1,8 @@
 # Root ignores for MTGCards project
 
+combos
+.cache
+
 # Python artifacts
 __pycache__/
 *.py[cod]
