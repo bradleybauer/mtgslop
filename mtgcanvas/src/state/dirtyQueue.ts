@@ -1,6 +1,10 @@
-import { InstancesRepo } from '../data/repositories';
+import { InstancesRepo } from "../data/repositories";
 
-interface DirtyPos { id:number; x:number; y:number; }
+interface DirtyPos {
+  id: number;
+  x: number;
+  y: number;
+}
 const dirty = new Map<number, DirtyPos>();
 let timer: any = null;
 
@@ -13,7 +17,7 @@ function flush() {
   console.log(`Flushed ${batch.length} instances`);
 }
 
-export function markDirtyPosition(id:number, x:number, y:number) {
-  dirty.set(id, {id,x,y});
+export function markDirtyPosition(id: number, x: number, y: number) {
+  dirty.set(id, { id, x, y });
   if (!timer) timer = setTimeout(flush, 400);
 }

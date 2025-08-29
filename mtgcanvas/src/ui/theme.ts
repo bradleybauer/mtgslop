@@ -1,16 +1,25 @@
 // Central UI theming helpers for floating panels / overlays.
 // Provides consistent palette, typography, borders, scrollbar styling.
 
-export interface PanelOptions { width?: string; maxHeight?: string; scroll?: boolean; pointer?: boolean; }
+export interface PanelOptions {
+  width?: string;
+  maxHeight?: string;
+  scroll?: boolean;
+  pointer?: boolean;
+}
 
 let injected = false;
-let currentTheme: 'dark' | 'light' = 'dark';
-type ThemeListener = (theme: 'dark' | 'light') => void;
+let currentTheme: "dark" | "light" = "dark";
+type ThemeListener = (theme: "dark" | "light") => void;
 const listeners: ThemeListener[] = [];
-export function registerThemeListener(cb: ThemeListener){ if (!listeners.includes(cb)) listeners.push(cb); }
-export function ensureThemeStyles(){
-  if (injected) return; injected = true;
-  const style = document.createElement('style'); style.id='app-theme-panels';
+export function registerThemeListener(cb: ThemeListener) {
+  if (!listeners.includes(cb)) listeners.push(cb);
+}
+export function ensureThemeStyles() {
+  if (injected) return;
+  injected = true;
+  const style = document.createElement("style");
+  style.id = "app-theme-panels";
   style.textContent = `
   :root { --panel-font:'Inter',system-ui,monospace; }
   /* DARK THEME */
@@ -80,63 +89,80 @@ export function ensureThemeStyles(){
   .theme-toggle-btn{ position:fixed; bottom:14px; left:14px; width:46px; height:46px; border-radius:50%; background:var(--panel-fab-bg); color:#fff; font:22px/46px var(--panel-font); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:0 2px 6px rgba(0,0,0,0.35); transition:background .25s; }
   .theme-toggle-btn:hover{ filter:brightness(1.15); }
   body{ background:var(--canvas-bg); color:var(--panel-fg); }
-  `; document.head.appendChild(style);
+  `;
+  document.head.appendChild(style);
   // Restore persisted theme
-  const stored = localStorage.getItem('appTheme');
-  if (stored==='light'||stored==='dark') { setTheme(stored as any); }
-  else { document.documentElement.classList.add('theme-dark'); }
+  const stored = localStorage.getItem("appTheme");
+  if (stored === "light" || stored === "dark") {
+    setTheme(stored as any);
+  } else {
+    document.documentElement.classList.add("theme-dark");
+  }
 }
 
-export function setTheme(t:'dark'|'light'){
+export function setTheme(t: "dark" | "light") {
   currentTheme = t;
-  document.documentElement.classList.remove('theme-dark','theme-light');
-  document.body.classList.remove('theme-dark','theme-light');
-  document.documentElement.classList.add('theme-'+t);
-  document.body.classList.add('theme-'+t);
-  document.documentElement.setAttribute('data-theme', t);
-  localStorage.setItem('appTheme', t);
-  listeners.forEach(l=> { try { l(t); } catch {} });
+  document.documentElement.classList.remove("theme-dark", "theme-light");
+  document.body.classList.remove("theme-dark", "theme-light");
+  document.documentElement.classList.add("theme-" + t);
+  document.body.classList.add("theme-" + t);
+  document.documentElement.setAttribute("data-theme", t);
+  localStorage.setItem("appTheme", t);
+  listeners.forEach((l) => {
+    try {
+      l(t);
+    } catch {}
+  });
 }
-export function toggleTheme(){ setTheme(currentTheme==='dark'?'light':'dark'); }
+export function toggleTheme() {
+  setTheme(currentTheme === "dark" ? "light" : "dark");
+}
 
 // Deprecated FAB toggle (removed by user request). Keeping function as no-op to avoid import errors.
-export function ensureThemeToggleButton(){
+export function ensureThemeToggleButton() {
   ensureThemeStyles();
-  if (document.getElementById('theme-toggle-btn')) return;
-  const btn = document.createElement('button');
-  btn.id = 'theme-toggle-btn';
+  if (document.getElementById("theme-toggle-btn")) return;
+  const btn = document.createElement("button");
+  btn.id = "theme-toggle-btn";
   // Flat, modern small pill toggle bottom-left
-  btn.className = 'ui-btn';
-  btn.style.position='fixed';
-  btn.style.bottom='12px';
-  btn.style.left='12px';
-  btn.style.zIndex='10040';
-  btn.style.display='flex';
-  btn.style.alignItems='center';
-  btn.style.gap='6px';
-  btn.style.fontSize='12px';
-  btn.style.padding='6px 10px';
-  btn.style.borderRadius='18px';
-  btn.style.boxShadow='0 2px 6px rgba(0,0,0,0.25)';
-  btn.style.backdropFilter='blur(6px)';
+  btn.className = "ui-btn";
+  btn.style.position = "fixed";
+  btn.style.bottom = "12px";
+  btn.style.left = "12px";
+  btn.style.zIndex = "10040";
+  btn.style.display = "flex";
+  btn.style.alignItems = "center";
+  btn.style.gap = "6px";
+  btn.style.fontSize = "12px";
+  btn.style.padding = "6px 10px";
+  btn.style.borderRadius = "18px";
+  btn.style.boxShadow = "0 2px 6px rgba(0,0,0,0.25)";
+  btn.style.backdropFilter = "blur(6px)";
   // vendor prefix via setProperty to satisfy TS
-  btn.style.setProperty('-webkit-backdrop-filter','blur(6px)');
-  const sun = '☀️';
-  const moon = '🌙';
-  function updateLabel(){ btn.textContent = currentTheme==='dark'? sun+' Day':' '+moon+' Night'; }
+  btn.style.setProperty("-webkit-backdrop-filter", "blur(6px)");
+  const sun = "☀️";
+  const moon = "🌙";
+  function updateLabel() {
+    btn.textContent =
+      currentTheme === "dark" ? sun + " Day" : " " + moon + " Night";
+  }
   updateLabel();
-  btn.title='Toggle day/night (theme)';
-  btn.onclick=()=> { toggleTheme(); updateLabel(); };
+  btn.title = "Toggle day/night (theme)";
+  btn.onclick = () => {
+    toggleTheme();
+    updateLabel();
+  };
   document.body.appendChild(btn);
 }
 
-export function createPanel(opts:PanelOptions = {}): HTMLDivElement {
+export function createPanel(opts: PanelOptions = {}): HTMLDivElement {
   ensureThemeStyles();
-  const el = document.createElement('div');
-  el.className = 'ui-panel'+(opts.scroll? ' ui-panel-scroll':'');
-  el.style.position='fixed';
-  if (opts.width) el.style.width = opts.width; else el.style.minWidth='260px';
+  const el = document.createElement("div");
+  el.className = "ui-panel" + (opts.scroll ? " ui-panel-scroll" : "");
+  el.style.position = "fixed";
+  if (opts.width) el.style.width = opts.width;
+  else el.style.minWidth = "260px";
   if (opts.maxHeight) el.style.maxHeight = opts.maxHeight;
-  if (!opts.pointer) el.style.pointerEvents='none';
+  if (!opts.pointer) el.style.pointerEvents = "none";
   return el;
 }
