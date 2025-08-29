@@ -19,17 +19,32 @@ function scheduleEnforceTextureBudget(){
 // Central decode queue to throttle createImageBitmap to avoid main thread jank during large zoom transitions.
 // We allow a small number of parallel decodes; others queue FIFO.
 let activeDecodes = 0;
-const decodeQueue: { blob: Blob; url: string; resolve: (t:PIXI.Texture)=>void; reject:(e:any)=>void; priority?: number; }[] = [];
+const DECODE_QUEUE_MAX = 2000; // hard cap to prevent runaway memory during massive bursts
+type DecodeTask = { blob: Blob; url: string; resolve: (t:PIXI.Texture)=>void; reject:(e:any)=>void; priority?: number; enqAt: number };
+const decodeQueue: DecodeTask[] = [];
 // Small helper to get current limit (adaptive or UI-defined)
 function currentDecodeLimit(){ return settings.decodeParallelLimit; }
 
 function scheduleDecode(blob:Blob, url:string, priority=0): Promise<PIXI.Texture> {
   return new Promise((resolve,reject)=> {
-  decodeQueue.push({ blob, url, resolve, reject, priority });
+  decodeQueue.push({ blob, url, resolve, reject, priority, enqAt: performance.now() });
+    // If queue too large, drop a lowest-priority task (largest priority number)
+    if (decodeQueue.length > DECODE_QUEUE_MAX) {
+      let dropIdx = -1; let worst = -Infinity;
+      for (let i=0;i<decodeQueue.length;i++){
+        const p = decodeQueue[i].priority ?? 0;
+        // prefer dropping low-priority (higher numeric value); never drop top-priority negatives if avoidable
+        if (p > worst) { worst = p; dropIdx = i; }
+      }
+      if (dropIdx>=0) {
+        const dropped = decodeQueue.splice(dropIdx, 1)[0];
+        try { dropped.reject(new Error('decode queue overflow')); } catch {}
+      }
+    }
     pumpDecodeQueue();
   });
 }
-async function runDecodeTask(task:{blob:Blob; url:string; resolve:(t:PIXI.Texture)=>void; reject:(e:any)=>void;}) {
+async function runDecodeTask(task: DecodeTask) {
   activeDecodes++;
   try {
     const canBitmap = typeof (window as any).createImageBitmap === 'function';
@@ -56,7 +71,42 @@ function pumpDecodeQueue(){
   }
 }
 
-export async function loadTextureFromCachedURL(url:string): Promise<PIXI.Texture> {
+export function getDecodeQueueSize(){ return decodeQueue.length + activeDecodes; }
+
+export function getDecodeQueueStats(){
+  const now = performance.now();
+  const qLen = decodeQueue.length;
+  let oldestWait = 0;
+  let totalWait = 0;
+  for (let i=0;i<qLen;i++){
+    const w = now - (decodeQueue[i].enqAt || now);
+    if (w > oldestWait) oldestWait = w;
+    totalWait += w;
+  }
+  const avgWait = qLen ? (totalWait / qLen) : 0;
+  return { active: activeDecodes, queued: qLen, oldestWaitMs: oldestWait, avgWaitMs: avgWait };
+}
+
+function shouldThrottle(priority:number){
+  const q = getDecodeQueueSize();
+  // When queue is very full, only allow very high-priority work through
+  if (q > 600) return priority > -30; // only center/visible/hi-tier proceed
+  if (q > 400) return priority > -10;
+  return false;
+}
+
+function priorityForSprite(s: CardSprite | null, desiredLevel:number): number {
+  // Lower numbers == higher priority
+  let p = 0;
+  if (s && s.visible) p -= 50; // on-screen work first
+  if (desiredLevel >= 2) p -= 10; // bias hi-tier slightly
+  // Recent hide grace: do not prioritize if just hidden
+  const hidAt: number | undefined = (s as any)?.__hiddenAt;
+  if (hidAt && performance.now() - hidAt < 800) p += 5;
+  return p;
+}
+
+export async function loadTextureFromCachedURL(url:string, priority=0): Promise<PIXI.Texture> {
   if (textureCache.has(url)) return textureCache.get(url)!.tex;
   if (inflightTex.has(url)) return inflightTex.get(url)!;
   const p = (async ()=> {
@@ -68,7 +118,7 @@ export async function loadTextureFromCachedURL(url:string): Promise<PIXI.Texture
       const resp = await fetch(ci.objectURL);
       blob = await resp.blob();
     }
-  const tex = await scheduleDecode(blob, url, 0);
+  const tex = await scheduleDecode(blob, url, priority);
   const bytes = estimateTextureBytes(tex);
   textureCache.set(url, { tex, level: 0, refs: 0, bytes, lastUsed: performance.now(), url });
   totalTextureBytes += bytes;
@@ -140,6 +190,7 @@ function enforceTextureBudget(){
     textureCache.delete(ent.url);
     totalTextureBytes -= ent.bytes;
   }
+  try { compactHiResQueue(); } catch {}
 }
 
 function markTextureUsed(url:string){ const ent = textureCache.get(url); if (ent) ent.lastUsed = performance.now(); }
@@ -155,8 +206,11 @@ function demoteSpriteTextureToPlaceholder(s: CardSprite){
     (s as any).__currentTexUrl = undefined;
   }
   s.__imgLoaded = false; s.__imgLoading = false; s.__qualityLevel = 0;
+  s.__hiResLoaded = false; s.__hiResUrl = undefined; s.__hiResAt = undefined;
   // Switch to placeholder visuals based on selection/grouping
   try { updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id)); } catch {}
+  // Keep tracking clean
+  try { compactHiResQueue(); } catch {}
 }
 
 // Public: reduce GPU usage by demoting offscreen sprites until under budget.
@@ -206,7 +260,9 @@ export function ensureCardImage(sprite: CardSprite) {
   const url = face?.image_uris?.small || card.image_uris?.small || face?.image_uris?.normal || card.image_uris?.normal;
   if (!url) return;
   sprite.__imgUrl = url; sprite.__imgLoading = true;
-  loadTextureFromCachedURL(url).then(tex=> {
+  const prio = priorityForSprite(sprite, 0);
+  if (shouldThrottle(prio)) { sprite.__imgLoading=false; return; }
+  loadTextureFromCachedURL(url, prio).then(tex=> {
     if (!tex) { sprite.__imgLoading=false; return; }
     // Stale load guard (face flipped or generation advanced)
     if (((sprite as any).__loadGen ?? 0) !== myGen) { sprite.__imgLoading=false; return; }
@@ -240,9 +296,50 @@ function evictHiResIfNeeded() {
     }
   }
 }
+// Periodically compact the hi-res queue to drop stale entries
+function compactHiResQueue(){
+  if (!hiResQueue.length) return;
+  let write = 0;
+  const now = performance.now();
+  let recentMs = 5*60*1000;
+  try { const v = Number(localStorage.getItem('hiResRecentMs')||''); if (Number.isFinite(v) && v>=0) recentMs = v; } catch {}
+  for (let i=0;i<hiResQueue.length;i++){
+    const s = hiResQueue[i];
+    if (!s || (s as any)._destroyed) continue;
+    const stillHi = !!s.__hiResLoaded && !!s.__hiResUrl && ((s as any).__currentTexUrl === s.__hiResUrl);
+    const recent = !!s.__hiResAt && (now - (s.__hiResAt||0) < recentMs);
+    if (stillHi && recent) { if (write!==i) hiResQueue[write]=s; write++; }
+  }
+  if (write < hiResQueue.length) hiResQueue.length = write;
+}
+
+export function getHiResQueueDiagnostics(){
+  const now = performance.now();
+  let loaded=0, loading=0, stale=0, visible=0;
+  let oldest=0, newest=0;
+  const sample: any[] = [];
+  for (let i=0;i<hiResQueue.length;i++){
+    const s = hiResQueue[i]; if (!s) continue;
+    const curUrl:any = (s as any).__currentTexUrl;
+    const isLoaded = !!s.__hiResLoaded && !!s.__hiResUrl && curUrl === s.__hiResUrl;
+    const isLoading = !!s.__hiResLoading;
+    const age = s.__hiResAt ? (now - (s.__hiResAt||0)) : Number.NaN;
+    if (oldest===0 || (age>oldest && isFinite(age))) oldest = age;
+    if (age>0 && (newest===0 || age<newest)) newest = age;
+    if (isLoaded) loaded++; else if (isLoading) loading++; else stale++;
+    if (s.visible) visible++;
+    if (sample.length < 10){
+      sample.push({ id: s.__id, q: s.__qualityLevel, vis: s.visible, ageMs: Math.round(age||0), inflightLevel: (s as any).__inflightLevel||0, pendingLevel: (s as any).__pendingLevel||0, url: (''+(s.__hiResUrl||'')).slice(-48), cur: (''+(curUrl||'')).slice(-48) });
+    }
+  }
+  return { length: hiResQueue.length, loaded, loading, stale, visible, oldestMs: oldest, newestMs: newest, sample };
+}
+
+export function forceCompactHiResQueue(){ compactHiResQueue(); }
 
 // Multi-tier quality loader: 0=small,1=normal/large,2=png (highest)
 export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
+  if ((sprite as any).__groupOverlayActive) return;
   if (!sprite.__card) return;
   const myGen = (sprite as any).__loadGen ?? 0;
   // Estimate on-screen pixel height
@@ -279,7 +376,9 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   // mark inflight for this desired tier
   (sprite as any).__inflightLevel = desired;
   sprite.__hiResLoading = true; sprite.__hiResUrl = url;
-  loadTextureFromCachedURL(url)
+  const prio = priorityForSprite(sprite, desired);
+  if (shouldThrottle(prio)) { sprite.__hiResLoading=false; (sprite as any).__inflightLevel = 0; return; }
+  loadTextureFromCachedURL(url, prio)
     .then(tex=> {
       // Clear inflight flag for this level
       if (((sprite as any).__inflightLevel ?? 0) === desired) (sprite as any).__inflightLevel = 0;

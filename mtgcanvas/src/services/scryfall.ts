@@ -19,6 +19,12 @@ export interface SearchOptions {
   dir?: 'asc' | 'desc';
   onProgress?: (fetched: number, total?: number) => void;
   signal?: AbortSignal;
+  // Performance controls
+  concurrency?: number; // parallel page fetches; preserves order in output
+  throttleMs?: number; // optional tiny delay between page fetches
+  cache?: RequestCache; // fetch cache mode; default browser behavior
+  maxRetries?: number; // retries for 429/5xx
+  backoffBaseMs?: number; // base backoff
 }
 
 interface ScryfallList {
@@ -38,7 +44,7 @@ export async function searchScryfall(
   opts: SearchOptions = {}
 ): Promise<ScryfallCard[]> {
   const {
-  maxCards = Number.POSITIVE_INFINITY,
+    maxCards = Number.POSITIVE_INFINITY,
     unique = 'cards',
     includeExtras = false,
     includeMultilingual = false,
@@ -46,6 +52,11 @@ export async function searchScryfall(
     dir = 'desc',
     onProgress,
     signal,
+    concurrency = 3,
+    throttleMs = 0,
+    cache = 'default',
+    maxRetries = 4,
+    backoffBaseMs = 250,
   } = opts;
 
   const out: ScryfallCard[] = [];
@@ -63,32 +74,122 @@ export async function searchScryfall(
     return base.toString();
   }
 
-  let nextUrl: string | undefined = makeUrl();
-  // A tiny delay between pages to be polite
+  // Support cooperative cancellation
+  const ctrl = new AbortController();
+  const abort = (reason?: any) => { try { ctrl.abort(reason); } catch { /* no-op */ } };
+  if (signal) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    signal.addEventListener('abort', () => abort(signal.reason), { once: true });
+  }
+
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  while (nextUrl) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const res = await fetch(nextUrl, { signal, cache: 'no-store' });
-    if (!res.ok) {
-      const text = await safeText(res);
-      throw new Error(`Scryfall error ${res.status}: ${text || res.statusText}`);
-    }
-  const json = (await res.json()) as ScryfallList | any;
-    if (!json || json.object !== 'list' || !Array.isArray(json.data)) {
-      throw new Error('Unexpected Scryfall response');
-    }
-  if (typeof json.total_cards === 'number') total = json.total_cards;
-    for (const card of json.data) {
-      out.push(card);
-      if (onProgress) onProgress(out.length, total);
-      if (out.length >= maxCards) return out;
-    }
-    if (json.has_more && json.next_page) nextUrl = json.next_page;
-    else break;
-    // brief backoff before next page
-    await delay(120);
+  function pageFromUrl(url: string | undefined): number {
+    if (!url) return NaN;
+    try {
+      const u = new URL(url);
+      const p = u.searchParams.get('page');
+      return p ? parseInt(p, 10) : 1;
+    } catch { return NaN; }
   }
+
+  async function fetchWithRetry(url: string, attempt = 0): Promise<ScryfallList> {
+    // Optional throttle to avoid bursting
+    if (throttleMs > 0) await delay(throttleMs);
+    const res = await fetch(url, { signal: ctrl.signal, cache });
+    if (res.ok) {
+      const json = (await res.json()) as ScryfallList | any;
+      if (!json || json.object !== 'list' || !Array.isArray(json.data)) throw new Error('Unexpected Scryfall response');
+      return json as ScryfallList;
+    }
+    // Retry on 429/5xx
+    if ((res.status === 429 || (res.status >= 500 && res.status < 600)) && attempt < maxRetries) {
+      const ra = res.headers.get('Retry-After');
+      let waitMs = ra ? Math.max(0, Math.floor(parseFloat(ra) * 1000)) : Math.floor(backoffBaseMs * Math.pow(2, attempt));
+      // jitter
+      waitMs += Math.floor(Math.random() * 100);
+      await delay(waitMs);
+      return fetchWithRetry(url, attempt + 1);
+    }
+    const text = await safeText(res);
+    throw new Error(`Scryfall error ${res.status}: ${text || res.statusText}`);
+  }
+
+  // First page sequentially (establish total + initial results)
+  let firstUrl = makeUrl();
+  const first = await fetchWithRetry(firstUrl);
+  if (typeof first.total_cards === 'number') total = first.total_cards;
+
+  // Page buffers keyed by page number to preserve order
+  const pages = new Map<number, ScryfallCard[]>();
+  const firstPageNum = pageFromUrl(firstUrl) || 1;
+  pages.set(firstPageNum, first.data);
+
+  // Emit pages in order as they become available
+  let nextEmit = firstPageNum;
+  const flush = () => {
+    while (pages.has(nextEmit)) {
+      const cards = pages.get(nextEmit)!;
+      pages.delete(nextEmit);
+      for (const card of cards) {
+        out.push(card);
+        if (onProgress) onProgress(out.length, total);
+        if (out.length >= maxCards) {
+          abort();
+          return;
+        }
+      }
+      nextEmit++;
+    }
+  };
+  flush();
+  if (out.length >= maxCards) return out;
+
+  // Work queue of next_page URLs
+  type Job = { url: string; page: number };
+  const queue: Job[] = [];
+  const seen = new Set<string>();
+  const pushJob = (url: string | undefined) => {
+    if (!url) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    queue.push({ url, page: pageFromUrl(url) || (nextEmit + queue.length + 1) });
+  };
+  pushJob(first.next_page);
+
+  let done = false;
+  const workers: Promise<void>[] = [];
+
+  async function worker() {
+    while (!done) {
+      if (ctrl.signal.aborted) return;
+      const job = queue.shift();
+      if (!job) break;
+      try {
+        const json = await fetchWithRetry(job.url);
+        pages.set(job.page, json.data);
+        // If there's a next page, enqueue it with incremented page number
+        if (json.has_more && json.next_page) pushJob(json.next_page);
+        flush();
+        if ((json.has_more === false || !json.next_page) && queue.length === 0) {
+          // Last page observed and no more work queued
+          done = true;
+        }
+        if (out.length >= maxCards) { done = true; abort(); return; }
+      } catch (e) {
+        // If aborted, just exit; else rethrow
+        if ((e as any)?.name === 'AbortError') return;
+        throw e;
+      }
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(concurrency|0, 8));
+  for (let i = 0; i < workerCount; i++) workers.push(worker());
+  await Promise.allSettled(workers);
+
+  // Final flush in case anything remains
+  flush();
   return out;
 }
 

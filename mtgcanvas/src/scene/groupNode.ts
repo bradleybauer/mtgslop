@@ -581,8 +581,8 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
 // whole group becomes a readable info tile at macro scale.
 // Thresholds (world scale): below HIGH start fade; at/below LOW overlay fully active.
 // Hard-coded to "kick in sharply at zooms < 1" per request.
-export let ZOOM_OVERLAY_HIGH = 0.8; // start just under 1
-export let ZOOM_OVERLAY_LOW = 0.8;  // finish quickly
+export let ZOOM_OVERLAY_HIGH = 0.85; // deactivate when zooming in past this
+export let ZOOM_OVERLAY_LOW = 0.75;  // activate when zooming out past this
 export let ZOOM_OVERLAY_CURVE = 2.0; // >1 sharper, =1 linear
 
 // Developer override (e.g. via console) if future tuning desired; no persistence side effects.
@@ -624,10 +624,17 @@ export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, 
     if (gv._zoomLabel) { gv._zoomLabel.visible=false; gv._zoomLabel.alpha=0; }
     gv._lastZoomPhase = 0; return;
   }
-  // Hard step: if at or below threshold, overlay is active and cards are hidden; otherwise cards shown.
-  const overlayActive = worldScale <= ZOOM_OVERLAY_HIGH;
+  // Hysteresis: activate when worldScale <= LOW, deactivate when worldScale >= HIGH; in-between keep previous.
   const prevPhase = gv._lastZoomPhase ?? 0;
   const prevOverlayActive = prevPhase > 0;
+  let overlayActive: boolean;
+  if (prevOverlayActive) overlayActive = worldScale <= ZOOM_OVERLAY_HIGH; else overlayActive = worldScale <= ZOOM_OVERLAY_LOW;
+  // Cooldown to prevent rapid flapping on boundary due to momentum/rounding
+  const nowTs = performance.now();
+  const lastToggle: number = (gv as any).__overlayToggleAt ?? 0;
+  if (overlayActive !== prevOverlayActive && (nowTs - lastToggle) < 250) {
+    overlayActive = prevOverlayActive;
+  }
   const lastScale:any = (gv as any).__lastOverlayScale ?? -1;
   (gv as any).__lastOverlayScale = worldScale;
   gv._lastZoomPhase = overlayActive ? 1 : 0;
@@ -659,6 +666,8 @@ export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, 
   }
   // If the overlay active state didn't change since last frame, skip per-card work entirely.
   if (overlayActive === prevOverlayActive) return;
+  (gv as any).__overlayToggleAt = nowTs;
+  try { (window as any).__overlayToggles = ((window as any).__overlayToggles|0) + 1; } catch {}
   // Adjust member card sprite visibility/alpha
   const idToSprite: Map<number, CardSprite> | undefined = (window as any).__mtgIdToSprite;
   const now = performance.now();
