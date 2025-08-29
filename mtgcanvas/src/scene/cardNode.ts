@@ -157,7 +157,17 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]){
   const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
   if (!isFinite(budgetBytes) || totalTextureBytes <= budgetBytes) return;
   // Build candidate list: offscreen sprites holding a texture, prefer highest quality and least-recently-used textures
-  const candidates = sprites.filter(s=> !s.visible && (s as any).__currentTexUrl);
+  const now = performance.now();
+  const candidates = sprites.filter(s=> {
+    if (s.visible) return false;
+    if (!(s as any).__currentTexUrl) return false;
+    // Do not demote sprites hidden by group overlay; those flips are intentional and short-lived.
+    if ((s as any).__groupOverlayActive) return false;
+    // Grace period: if just hidden (e.g., due to scroll/zoom), give ~800ms before demotion to avoid churn.
+    const hidAt:number|undefined = (s as any).__hiddenAt;
+    if (hidAt && (now - hidAt) < 800) return false;
+    return true;
+  });
   // Sort by quality desc, then by texture lastUsed ascending (older first)
   candidates.sort((a,b)=> {
     const qa = a.__qualityLevel ?? 0; const qb = b.__qualityLevel ?? 0;
@@ -166,8 +176,14 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]){
     const ub = textureCache.get((b as any).__currentTexUrl || '')?.lastUsed ?? 0;
     return ua - ub;
   });
+  // Important: demoting doesn't immediately lower totalTextureBytes (we release refs first,
+  // destruction happens in enforceTextureBudget). Track an estimated freed byte count so we stop early.
+  let freedEstimate = 0;
   for (const s of candidates){
-    if (totalTextureBytes <= budgetBytes) break;
+    if (totalTextureBytes - freedEstimate <= budgetBytes) break;
+    const url:any = (s as any).__currentTexUrl;
+    const ent = url ? textureCache.get(url) : undefined;
+    if (ent) freedEstimate += ent.bytes;
     demoteSpriteTextureToPlaceholder(s);
   }
   // Final sweep of unreferenced textures (LRU) if still over
@@ -177,6 +193,7 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]){
 export function ensureCardImage(sprite: CardSprite) {
   if (sprite.__imgLoaded || sprite.__imgLoading) return;
   const card = sprite.__card; if (!card) return;
+  const myGen = (sprite as any).__loadGen ?? 0;
   const faceIdx = sprite.__faceIndex || 0;
   const face = (card.card_faces && card.card_faces[faceIdx]) || null;
   const url = face?.image_uris?.small || card.image_uris?.small || face?.image_uris?.normal || card.image_uris?.normal;
@@ -184,6 +201,8 @@ export function ensureCardImage(sprite: CardSprite) {
   sprite.__imgUrl = url; sprite.__imgLoading = true;
   loadTextureFromCachedURL(url).then(tex=> {
     if (!tex) { sprite.__imgLoading=false; return; }
+    // Stale load guard (face flipped or generation advanced)
+    if (((sprite as any).__loadGen ?? 0) !== myGen) { sprite.__imgLoading=false; return; }
     // Retain reference for base small texture
   try { const ent = textureCache.get(url); if (ent) { ent.refs++; ent.lastUsed = performance.now(); } (sprite as any).__currentTexUrl = url; } catch {}
     sprite.texture = tex; sprite.width = 100; sprite.height = 140;
@@ -218,6 +237,7 @@ function evictHiResIfNeeded() {
 // Multi-tier quality loader: 0=small,1=normal/large,2=png (highest)
 export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   if (!sprite.__card) return;
+  const myGen = (sprite as any).__loadGen ?? 0;
   // Estimate on-screen pixel height
   const deviceRatio = (globalThis.devicePixelRatio||1);
   const pxHeight = 140 * scale * deviceRatio;
@@ -247,7 +267,7 @@ export function updateCardTextureForScale(sprite: CardSprite, scale:number) {
   const prevLevel = sprite.__qualityLevel ?? 0;
   sprite.__hiResLoading = true; sprite.__hiResUrl = url;
   loadTextureFromCachedURL(url)
-    .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; try { const ent = textureCache.get(url); if (ent) { ent.refs++; ent.level = desired; ent.lastUsed = performance.now(); } (sprite as any).__currentTexUrl = url; if (prevUrl && prevUrl !== url) { const pe = textureCache.get(prevUrl); if (pe) { pe.refs = Math.max(0, pe.refs-1); if (pe.refs===0 && pe.level < desired) { try { pe.tex.destroy(true); totalTextureBytes -= pe.bytes; } catch {}; textureCache.delete(prevUrl); } } } } catch {}
+    .then(tex=> { sprite.__hiResLoading=false; if (!tex) return; if (((sprite as any).__loadGen ?? 0) !== myGen) return; try { const ent = textureCache.get(url); if (ent) { ent.refs++; ent.level = desired; ent.lastUsed = performance.now(); } (sprite as any).__currentTexUrl = url; if (prevUrl && prevUrl !== url) { const pe = textureCache.get(prevUrl); if (pe) { pe.refs = Math.max(0, pe.refs-1); if (pe.refs===0 && pe.level < desired) { try { pe.tex.destroy(true); totalTextureBytes -= pe.bytes; } catch {}; textureCache.delete(prevUrl); } } } } catch {}
       sprite.texture=tex; sprite.width=100; sprite.height=140; sprite.__qualityLevel=desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); hiResQueue.push(sprite); evictHiResIfNeeded(); } if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true); if (sprite.__card && isDoubleSided(sprite.__card)) ensureDoubleSidedBadge(sprite, true); else if (sprite.__doubleBadge) { sprite.__doubleBadge.destroy(); sprite.__doubleBadge = undefined; } })
     .catch(()=> { sprite.__hiResLoading=false; });
   enforceTextureBudget();
@@ -367,11 +387,35 @@ function flipCardFace(sprite: CardSprite){
   const card = sprite.__card; if (!card || !isDoubleSided(card)) return;
   const faces = card.card_faces; if (!Array.isArray(faces) || faces.length < 2) return;
   sprite.__faceIndex = sprite.__faceIndex ? 0 : 1;
+  // Bump generation to invalidate any in-flight loads for the previous face
+  (sprite as any).__loadGen = ((sprite as any).__loadGen ?? 0) + 1;
   // Reset state so fresh load occurs (ephemeral; no persistence)
   sprite.__hiResLoaded=false; sprite.__hiResUrl=undefined; sprite.__hiResLoading=false; sprite.__qualityLevel=0; sprite.__imgLoaded=false; sprite.__imgUrl=undefined;
-  ensureCardImage(sprite);
-  // After initial small loads, attempt hi-res for current zoom next frame
-  requestAnimationFrame(()=> { try { const scale = (sprite.parent?.parent as any)?.scale?.x || 1; updateCardTextureForScale(sprite, scale); } catch {} });
+  // Try to apply a cached higher-quality texture immediately for the new face based on current scale
+  try {
+    const scale = (sprite.parent as any)?.scale?.x || 1;
+    const faceIdx = sprite.__faceIndex || 0;
+    const face = (card.card_faces && card.card_faces[faceIdx]) || null;
+    const dpr = (globalThis.devicePixelRatio||1);
+    const pxHeight = 140 * scale * dpr;
+    let desired = 0; if (pxHeight > 140) desired = 2; else if (pxHeight > 90) desired = 1; if (settings.disablePngTier && desired===2) desired = 1;
+    const url = desired===2 ? (face?.image_uris?.png || card.image_uris?.png || face?.image_uris?.large || card.image_uris?.large)
+                : desired===1 ? (face?.image_uris?.normal || card.image_uris?.normal || face?.image_uris?.large || card.image_uris?.large)
+                : (face?.image_uris?.small || card.image_uris?.small || face?.image_uris?.normal || card.image_uris?.normal);
+    if (url && textureCache.has(url)) {
+      const ent = textureCache.get(url)!; ent.refs++; ent.lastUsed = performance.now(); ent.level = Math.max(ent.level, desired);
+      const prevUrl:any = (sprite as any).__currentTexUrl; if (prevUrl && prevUrl !== url) { const pe = textureCache.get(prevUrl); if (pe) pe.refs = Math.max(0, pe.refs-1); }
+      (sprite as any).__currentTexUrl = url;
+      sprite.texture = ent.tex; sprite.width=100; sprite.height=140; sprite.__imgLoaded=true; sprite.__qualityLevel = desired; if (desired>=1){ sprite.__hiResLoaded=true; sprite.__hiResAt=performance.now(); }
+    } else {
+      // Load small immediately, then promote without waiting an extra frame
+      ensureCardImage(sprite);
+      updateCardTextureForScale(sprite, scale);
+    }
+  } catch {
+    ensureCardImage(sprite);
+    requestAnimationFrame(()=> { try { const scale = (sprite.parent as any)?.scale?.x || 1; updateCardTextureForScale(sprite, scale); } catch {} });
+  }
   ensureDoubleSidedBadge(sprite, true); // reposition after flip
 }
 

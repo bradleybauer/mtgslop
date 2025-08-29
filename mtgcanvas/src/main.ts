@@ -129,9 +129,9 @@ const splashEl = document.getElementById('splash');
       if (!obj) return;
       // Primary: id-based
       if (Array.isArray(obj.instances)) {
-        const map = new Map<number,{x:number,y:number}>(); obj.instances.forEach((r:any)=> { if (typeof r.id==='number') map.set(r.id,{x:r.x,y:r.y}); });
+    const map = new Map<number,{x:number,y:number,group_id?:number|null,scryfall_id?:string|null}>(); obj.instances.forEach((r:any)=> { if (typeof r.id==='number') map.set(r.id,{x:r.x,y:r.y, group_id: r.group_id ?? null, scryfall_id: r.scryfall_id ?? null}); });
         let matched = 0;
-  sprites.forEach(s=> { const p = map.get(s.__id); if (p){ s.x = p.x; s.y = p.y; matched++; } });
+  sprites.forEach(s=> { const p = map.get(s.__id); if (p){ s.x = p.x; s.y = p.y; if (p.group_id!=null) (s as any).__groupId = p.group_id; if (p.scryfall_id) (s as any).__scryfallId = p.scryfall_id; matched++; } });
         // Fallback: index-based if few matched (likely ephemeral ids changed)
         if (matched < sprites.length * 0.5 && Array.isArray(obj.byIndex)) {
           obj.byIndex.forEach((p:any, idx:number)=> { const s = sprites[idx]; if (s && p && typeof p.x==='number' && typeof p.y==='number'){ s.x = p.x; s.y = p.y; } });
@@ -151,10 +151,40 @@ const splashEl = document.getElementById('splash');
       try { const raw = localStorage.getItem(LS_IMPORTED_KEY); if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) cards = arr; } } catch {}
     }
     if (!cards.length) return;
-    let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+    // Try to restore stable instance ids and group memberships from saved positions
+    let saved: any = null;
+    try { const raw = localStorage.getItem(LS_KEY) || localStorage.getItem('mtgcanvas_positions_v1'); if (raw) saved = JSON.parse(raw); } catch {}
+    const savedByScry: Map<string, { id:number; x:number; y:number; group_id:number|null }[]> = new Map();
+    if (saved && Array.isArray(saved.instances)) {
+      for (const r of saved.instances) {
+        const sid = r?.scryfall_id ? String(r.scryfall_id) : null;
+        if (!sid || typeof r.id !== 'number') continue;
+        const arr = savedByScry.get(sid) || [];
+        arr.push({ id: r.id, x: r.x ?? 0, y: r.y ?? 0, group_id: (r.group_id ?? null) });
+        savedByScry.set(sid, arr);
+      }
+      // Ensure deterministic usage order
+      savedByScry.forEach(list=> list.sort((a,b)=> a.id - b.id));
+    }
+    // Track max id to avoid collisions
+    let maxId = 0;
+    savedByScry.forEach(list=> list.forEach(e=> { if (e.id > maxId) maxId = e.id; }));
+    if (maxId>0) { try { (InstancesRepo as any).ensureNextId && (InstancesRepo as any).ensureNextId(maxId+1); } catch {} }
+    // Create sprites, attempting to reuse saved ids when possible
+    const usedSavedIds = new Set<number>();
     for (const card of cards) {
-      const x = 0, y = 0; let id:number; try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; }
+      const sid = String(card?.id || '');
+      const pool = sid && savedByScry.get(sid);
+      let x = 0, y = 0, gid: number | null = null, id: number = Number.NaN;
+      if (pool && pool.length) {
+        const entry = pool.shift()!; usedSavedIds.add(entry.id); id = entry.id; x = entry.x; y = entry.y; gid = entry.group_id;
+        try { id = (InstancesRepo as any).createWithId ? (InstancesRepo as any).createWithId({ id, card_id: 1, x, y, z: 0, group_id: gid }) : id; } catch { /* fallback below */ }
+      }
+      if (!Number.isFinite(id)) { try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; } }
       const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+      // Attach group id even if not yet added to a visual group (will be processed during group restore)
+      if (gid!=null) (sp as any).__groupId = gid;
+      (sp as any).__scryfallId = sid || null;
       ensureCardImage(sp);
     }
   }
@@ -164,7 +194,7 @@ const splashEl = document.getElementById('splash');
       if (raw) {
         const obj = JSON.parse(raw);
         if (obj && Array.isArray(obj.instances)) {
-          obj.instances.forEach((r:any)=> { const inst = loaded.instances.find(i=> i.id===r.id); if (inst){ inst.x = r.x; inst.y = r.y; } });
+          obj.instances.forEach((r:any)=> { const inst = loaded.instances.find(i=> i.id===r.id); if (inst){ inst.x = r.x; inst.y = r.y; (inst as any).group_id = r.group_id ?? inst.group_id ?? null; } });
         }
       }
     } catch {}
@@ -227,7 +257,10 @@ const splashEl = document.getElementById('splash');
   let lsGroupsTimer:any=null; function scheduleGroupSave(){ if (PERSIST_MODE!=='memory' || SUPPRESS_SAVES) return; if (lsGroupsTimer) return; lsGroupsTimer = setTimeout(persistLocalGroups, 400); }
   function persistLocalGroups(){ if (SUPPRESS_SAVES) { lsGroupsTimer=null; return; } lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, layoutMode: (gv as any).layoutMode || 'grid', facet: (gv as any).facet || null, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
   // (Older restoreMemoryGroups variant removed to avoid duplication; see final definition below.)
-  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; /* collapse retired: always load expanded */ gv.collapsed=false; if (gr.color) gv.color=gr.color; if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode; if (gr.facet) (gv as any).facet = gr.facet; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); }); groups.forEach(gv=> { ensureMembersZOrder(gv, sprites); ensureGroupEncapsulates(gv, sprites); if ((gv as any).layoutMode==='faceted' && (gv as any).facet) { layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } else { updateGroupMetrics(gv, sprites); drawGroup(gv, false); } });
+  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; /* collapse retired: always load expanded */ gv.collapsed=false; if (gr.color) gv.color=gr.color; if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode; if (gr.facet) (gv as any).facet = gr.facet; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); });
+    // Finally, reconcile using each instance's stored group_id as the source of truth
+    sprites.forEach(s=> { const gid = (s as any).__groupId; if (gid && groups.has(gid)) { const gv = groups.get(gid)!; if (!gv.items.has(s.__id)) { addCardToGroupOrdered(gv, s.__id, gv.order.length); } } });
+    groups.forEach(gv=> { ensureMembersZOrder(gv, sprites); ensureGroupEncapsulates(gv, sprites); if ((gv as any).layoutMode==='faceted' && (gv as any).facet) { layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } else { updateGroupMetrics(gv, sprites); drawGroup(gv, false); } });
     // Ensure new group creations won't collide with restored ids (memory only)
     try {
       const maxId = Math.max(...[...groups.keys(), 0]);
@@ -1292,7 +1325,7 @@ const splashEl = document.getElementById('splash');
   (window as any).__perfOverlay = perfEl;
   let frameCount=0; let lastFpsTime=performance.now(); let fps=0;
   let lsTimer:any=null; function scheduleLocalSave(){ if (PERSIST_MODE!=='memory' || SUPPRESS_SAVES) return; if (lsTimer) return; lsTimer = setTimeout(persistLocalPositions, 350); }
-  function persistLocalPositions(){ if (SUPPRESS_SAVES) { lsTimer=null; return; } lsTimer=null; try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+  function persistLocalPositions(){ if (SUPPRESS_SAVES) { lsTimer=null; return; } lsTimer=null; try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y, group_id: (s as any).__groupId ?? null, scryfall_id: ((s as any).__scryfallId) || ((s as any).__card?.id ?? null)})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
   let lastMemSample = 0; let jsHeapLine='JS ?'; let texLine='Tex ?';
   let texResLine='Res ?'; let hiResPendingLine='GlobalPending ?'; let qualLine='Qual ?'; let queueLine='Q ?';
   function sampleMemory(){
@@ -1458,7 +1491,7 @@ const splashEl = document.getElementById('splash');
             }
             const ungrouped = resolve(data.ungrouped);
             if (ungrouped.length){ let placed=0; const cols=10; let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0; for (const card of ungrouped){ const idx=placed++; const col=idx%cols; const row=Math.floor(idx/cols); const x = col*SPACING_X; const y = row*SPACING_Y; let id:number; try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; } const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card }); ensureCardImage(sp); imported++; } }
-            if (imported) { try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {} }
+            if (imported) { try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y, group_id:(s as any).__groupId ?? null, scryfall_id: ((s as any).__scryfallId) || ((s as any).__card?.id ?? null)})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {} }
             return;
           }
           // Otherwise, try Scryfall universe JSON (array/list/NDJSON)
@@ -1484,7 +1517,7 @@ const splashEl = document.getElementById('splash');
       const batch: {id:number,x:number,y:number}[] = [];
       sprites.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
       if (batch.length) { try { InstancesRepo.updatePositions(batch); } catch {} }
-  if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+  if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y, group_id:(s as any).__groupId ?? null, scryfall_id: ((s as any).__scryfallId) || ((s as any).__card?.id ?? null)})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
       if (!alreadyCleared) clearGroupsOnly();
     }
     function gridUngroupedCards(){
@@ -1499,7 +1532,7 @@ const splashEl = document.getElementById('splash');
       const batch: {id:number,x:number,y:number}[] = [];
       ungrouped.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = startY + row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
       if (batch.length) { try { InstancesRepo.updatePositions(batch); } catch {} }
-  if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+  if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y, group_id:(s as any).__groupId ?? null, scryfall_id: ((s as any).__scryfallId) || ((s as any).__card?.id ?? null)})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
     }
     ensureDebugPanel();
 
@@ -1659,7 +1692,7 @@ const splashEl = document.getElementById('splash');
         }
       } catch {}
       // Persist positions (memory mode)
-  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
+  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y, group_id:(s as any).__groupId ?? null, scryfall_id: ((s as any).__scryfallId) || ((s as any).__card?.id ?? null)})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
       return { imported, unknown };
     },
     importByNames: async (items)=> {
@@ -1727,7 +1760,7 @@ const splashEl = document.getElementById('splash');
       }
     }
   } catch {}
-  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
+  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y, group_id:(s as any).__groupId ?? null, scryfall_id: ((s as any).__scryfallId) || ((s as any).__card?.id ?? null)})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
       // Fit to newly added block if any
       if (created.length){
         const minX = Math.min(...created.map(s=> s.x));
@@ -2049,9 +2082,14 @@ const splashEl = document.getElementById('splash');
     const top = (-world.position.y) * invScale - margin;
     const right = left + vw * invScale + margin*2;
     const bottom = top + vh * invScale + margin*2;
+    const now = performance.now();
     for (const s of sprites){
       const vis = s.x+100 >= left && s.x <= right && s.y+140 >= top && s.y <= bottom;
-      s.renderable = vis; s.visible = vis; // toggle both for safety
+      if (vis !== s.visible) {
+        s.renderable = vis; s.visible = vis; // toggle both for safety
+        const anyS:any = s as any;
+        if (!vis) anyS.__hiddenAt = now; else if (anyS.__hiddenAt) anyS.__hiddenAt = undefined;
+      }
     }
   }
 

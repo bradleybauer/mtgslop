@@ -49,6 +49,31 @@ export const InstancesRepo = {
     mem.instances.push(inst);
     return inst.id;
   },
+  /** Memory-only: create an instance with an explicit id (used to restore stable ids). No-op override for DB. */
+  createWithId(row: { id: number; card_id: number; x: number; y: number; z?: number; rotation?: number; scale?: number; tags?: string | null; group_id?: number | null }) {
+    const db = getDbSafe();
+    if (db) {
+      // Fall back to normal create when using real DB (explicit ids not supported here)
+      const id = InstancesRepo.create(row.card_id, row.x, row.y);
+      return id;
+    }
+    warnOnce('[InstancesRepo] Using in-memory createWithId');
+    const inst: CardInstance = {
+      id: row.id,
+      card_id: row.card_id,
+      group_id: row.group_id ?? null,
+      x: row.x,
+      y: row.y,
+      z: row.z ?? 0,
+      rotation: row.rotation ?? 0,
+      scale: row.scale ?? 1,
+      tags: row.tags ?? null,
+    };
+    // Avoid id collisions on subsequent creates
+    if (row.id >= memInstanceId) memInstanceId = row.id + 1;
+    mem.instances.push(inst);
+    return inst.id;
+  },
   list() {
     const db = getDbSafe();
   if (db) return db.prepare('SELECT id, card_id, group_id, x, y, z, rotation, scale, tags FROM card_instances').all() as CardInstance[];
@@ -78,6 +103,13 @@ export const InstancesRepo = {
       const tx = db.transaction((rows: typeof batch)=>{ rows.forEach(r=> stmt.run(r.x ?? null, r.y ?? null, r.z ?? null, r.group_id === undefined ? null : r.group_id, r.id)); }); tx(batch); return;
     }
     batch.forEach(r=> { const inst = mem.instances.find(i=> i.id===r.id); if (inst){ if (r.x!==undefined) inst.x=r.x; if (r.y!==undefined) inst.y=r.y; if (r.z!==undefined) inst.z=r.z; if (r.group_id!==undefined) inst.group_id=r.group_id ?? null; } });
+  },
+  /** Memory-only: ensure the next generated instance id is at least `min`. */
+  ensureNextId(min:number){
+    const db = getDbSafe(); if (db) return;
+    if (typeof min === 'number' && isFinite(min)) {
+      if (min > memInstanceId) memInstanceId = min;
+    }
   }
 };
 

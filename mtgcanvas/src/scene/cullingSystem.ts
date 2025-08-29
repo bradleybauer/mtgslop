@@ -15,9 +15,14 @@ export class CullingSystem {
     const top = (-this.world.position.y) * inv - margin;
     const right = left + vw * inv + margin*2;
     const bottom = top + vh * inv + margin*2;
+    const now = performance.now();
     for (const s of this.getCards()) {
       const vis = s.x+100 >= left && s.x <= right && s.y+140 >= top && s.y <= bottom;
-      if (vis !== s.visible) { s.visible = vis; s.renderable = vis; }
+      if (vis !== s.visible) {
+        s.visible = vis; s.renderable = vis;
+        const anyS:any = s as any;
+        if (!vis) anyS.__hiddenAt = now; else if (anyS.__hiddenAt) anyS.__hiddenAt = undefined;
+      }
     }
   }
 }

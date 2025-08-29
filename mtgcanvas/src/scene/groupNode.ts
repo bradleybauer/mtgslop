@@ -661,6 +661,7 @@ export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, 
   if (overlayActive === prevOverlayActive) return;
   // Adjust member card sprite visibility/alpha
   const idToSprite: Map<number, CardSprite> | undefined = (window as any).__mtgIdToSprite;
+  const now = performance.now();
   for (const id of gv.items) {
     const sp = idToSprite ? idToSprite.get(id) : sprites.find(s=> s.__id===id); if (!sp) continue;
     // Flag overlay activity for interaction layer so card drags are suppressed when overlay intended for group drag.
@@ -671,11 +672,12 @@ export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, 
     if (overlayActive) {
       if (sp.cursor !== 'default') sp.cursor='default';
       if (sp.alpha !== 0) sp.alpha = 0;
-      if (sp.visible) { sp.visible = false; sp.renderable = false; }
+      if (sp.visible) { sp.visible = false; sp.renderable = false; (sp as any).__hiddenAt = now; }
     } else {
       if (sp.cursor !== 'pointer') sp.cursor='pointer';
       if (sp.alpha !== 1) sp.alpha = 1;
-      if (!sp.visible) sp.visible = true; if (!sp.renderable) sp.renderable = true;
+      if (!sp.visible) { sp.visible = true; (sp as any).__hiddenAt = undefined; }
+      if (!sp.renderable) sp.renderable = true;
     }
   }
   // Dim frame + header (keep subtle silhouette for spatial awareness)
