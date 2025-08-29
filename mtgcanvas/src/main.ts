@@ -350,22 +350,16 @@ const splashEl = document.getElementById("splash");
           (InstancesRepo as any).ensureNextId(maxId + 1);
       } catch {}
     }
-    // Create sprites, attempting to reuse saved ids when possible
-    const usedSavedIds = new Set<number>();
+    // Create sprites strictly based on saved positions per Scryfall id
     for (const card of cards) {
       const sid = String(card?.id || "");
       const pool = sid && savedByScry.get(sid);
-      let x = 0,
-        y = 0,
-        gid: number | null = null,
-        id: number = Number.NaN;
-      if (pool && pool.length) {
-        const entry = pool.shift()!;
-        usedSavedIds.add(entry.id);
-        id = entry.id;
-        x = entry.x;
-        y = entry.y;
-        gid = entry.group_id;
+      if (!pool || !pool.length) continue; // no saved instances -> don't recreate
+      for (const entry of pool) {
+        let id = entry.id;
+        let x = entry.x;
+        let y = entry.y;
+        const gid: number | null = entry.group_id;
         try {
           id = (InstancesRepo as any).createWithId
             ? (InstancesRepo as any).createWithId({
@@ -378,21 +372,17 @@ const splashEl = document.getElementById("splash");
               })
             : id;
         } catch {
-          /* fallback below */
+          try {
+            id = InstancesRepo.create(1, x, y);
+          } catch {
+            id = ++maxId;
+          }
         }
+        const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+        if (gid != null) (sp as any).__groupId = gid;
+        (sp as any).__scryfallId = sid || null;
+        ensureCardImage(sp);
       }
-      if (!Number.isFinite(id)) {
-        try {
-          id = InstancesRepo.create(1, x, y);
-        } catch {
-          id = ++maxId;
-        }
-      }
-      const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
-      // Attach group id even if not yet added to a visual group (will be processed during group restore)
-      if (gid != null) (sp as any).__groupId = gid;
-      (sp as any).__scryfallId = sid || null;
-      ensureCardImage(sp);
     }
   }
   if (PERSIST_MODE === "memory") {
@@ -2076,7 +2066,7 @@ const splashEl = document.getElementById("splash");
     return { minX, minY, maxX, maxY };
   }
 
-  window.addEventListener("keydown", (e) => {
+  window.addEventListener("keydown", async (e) => {
     // If focus is in a text-editing element, don't run canvas shortcuts (allows Ctrl+A, arrows, etc.)
     const ae = document.activeElement as HTMLElement | null;
     if (
@@ -2351,21 +2341,31 @@ const splashEl = document.getElementById("splash");
       const cardIds = SelectionStore.getCards();
       const groupIds = SelectionStore.getGroups();
       if (cardIds.length) {
+        // Track backing repo ids and scryfall ids for cleanup
+        const sfIds: string[] = [];
         const touchedGroups = new Set<number>();
         cardIds.forEach((id) => {
           const idx = sprites.findIndex((s) => s.__id === id);
           if (idx >= 0) {
             const s = sprites[idx];
+            const anyS: any = s as any;
             const gid = s.__groupId;
             if (gid) {
               const gv = groups.get(gid);
               gv && gv.items.delete(s.__id);
               touchedGroups.add(gid);
             }
+            // Collect Scryfall id for removal from imported store (memory mode)
+            const sid = anyS.__scryfallId || anyS.__card?.id;
+            if (sid) sfIds.push(String(sid));
             s.destroy();
             sprites.splice(idx, 1);
           }
         });
+        // Delete from repository so DB/memory won't restore
+        try {
+          if (cardIds.length) InstancesRepo.deleteMany(cardIds);
+        } catch {}
         touchedGroups.forEach((gid) => {
           const gv = groups.get(gid);
           if (gv) {
@@ -2373,6 +2373,23 @@ const splashEl = document.getElementById("splash");
           }
         });
         if (touchedGroups.size) scheduleGroupSave();
+        // Persist updated positions to reflect removals (memory mode)
+        try {
+          if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+            const data = {
+              instances: sprites.map((s) => ({
+                id: s.__id,
+                x: s.x,
+                y: s.y,
+                group_id: (s as any).__groupId ?? null,
+                scryfall_id:
+                  (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+              })),
+              byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+            };
+            localStorage.setItem(LS_KEY, JSON.stringify(data));
+          }
+        } catch {}
       }
       if (groupIds.length) {
         groupIds.forEach((id) => deleteGroupById(id));
