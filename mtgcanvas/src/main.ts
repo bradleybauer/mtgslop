@@ -1233,11 +1233,12 @@ const splashEl = document.getElementById('splash');
   let midPanning = false;       // active middle-button pan
   let lastX=0; let lastY=0;
   window.addEventListener('keydown', e => { if (e.code==='Space') { panning = true; document.body.style.cursor='grab'; }});
-  window.addEventListener('keyup', e => { if (e.code==='Space') { panning = false; if (!rightPanning && !midPanning) document.body.style.cursor='default'; }});
+  window.addEventListener('keyup', e => { if (e.code==='Space') { panning = false; camera.endPan(); if (!rightPanning && !midPanning) document.body.style.cursor='default'; }});
   app.stage.eventMode='static';
-  function beginPan(x:number,y:number){ lastX=x; lastY=y; document.body.style.cursor='grabbing'; }
-  function applyPan(e:PIXI.FederatedPointerEvent){ const dx = e.global.x - lastX; const dy = e.global.y - lastY; world.position.x += dx; world.position.y += dy; lastX = e.global.x; lastY = e.global.y; }
+  function beginPan(x:number,y:number){ lastX=x; lastY=y; document.body.style.cursor='grabbing'; camera.startPan(); }
+  function applyPan(e:PIXI.FederatedPointerEvent){ const dx = e.global.x - lastX; const dy = e.global.y - lastY; camera.panBy(dx, dy); lastX = e.global.x; lastY = e.global.y; }
   app.stage.on('pointerdown', e => {
+    try { camera.stopMomentum(); } catch {}
     const tgt: any = e.target;
     if (panning && e.button===0) beginPan(e.global.x, e.global.y);
     if (e.button===2) {
@@ -1255,12 +1256,14 @@ const splashEl = document.getElementById('splash');
   });
   const endPan = (e:PIXI.FederatedPointerEvent) => {
     if (e.button===2 && rightPanning) { rightPanning=false; if (!panning && !midPanning) document.body.style.cursor='default'; }
+    // End of any pan gesture -> let camera glide if velocity is sufficient
+    if (!(e.buttons & 1) && !(e.buttons & 2) && !(e.buttons & 4)) camera.endPan();
   };
   app.stage.on('pointerup', endPan); app.stage.on('pointerupoutside', endPan);
   // Middle button (direct on canvas element)
-  app.canvas.addEventListener('pointerdown', ev => { const pev=ev as PointerEvent; if (pev.button===1) { midPanning=true; beginPan(pev.clientX, pev.clientY); } });
-  app.canvas.addEventListener('pointerup', ev => { const pev=ev as PointerEvent; if (pev.button===1) { midPanning=false; if (!panning && !rightPanning) document.body.style.cursor='default'; } });
-  app.canvas.addEventListener('mouseleave', () => { if (midPanning || rightPanning) { midPanning=false; rightPanning=false; if (!panning) document.body.style.cursor='default'; } });
+  app.canvas.addEventListener('pointerdown', ev => { const pev=ev as PointerEvent; try { camera.stopMomentum(); } catch {} if (pev.button===1) { midPanning=true; beginPan(pev.clientX, pev.clientY); } });
+  app.canvas.addEventListener('pointerup', ev => { const pev=ev as PointerEvent; if (pev.button===1) { midPanning=false; camera.endPan(); if (!panning && !rightPanning) document.body.style.cursor='default'; } });
+  app.canvas.addEventListener('mouseleave', () => { if (midPanning || rightPanning) { midPanning=false; rightPanning=false; camera.endPan(); if (!panning) document.body.style.cursor='default'; } });
   app.canvas.addEventListener('contextmenu', ev => { ev.preventDefault(); });
 
   // Deselect when clicking empty space (ignore while panning via any mode)
