@@ -368,6 +368,17 @@ export function ensureGroupEncapsulates(gv: GroupVisual, sprites: CardSprite[]) 
   positionZoomOverlay(gv);
 }
 
+// Ensure all member sprites render above the group's own graphics (frame/header/overlay).
+// Useful after restoring membership from persistence where zIndex wasn't adjusted by layout.
+export function ensureMembersZOrder(gv: GroupVisual, sprites: CardSprite[]) {
+  const desired = (gv.gfx.zIndex ?? 0) + 1;
+  for (const id of gv.items) {
+    const s = sprites.find(sp=> sp.__id===id);
+    if (!s) continue;
+    if (s.zIndex < desired) { s.zIndex = desired; (s as any).__baseZ = desired; }
+  }
+}
+
 // Place a specific card inside the group at the first available slot near a preferred point.
 // If no space is available, grow the group's height to make room and place at the new bottom row.
 export function placeCardInGroup(
@@ -586,6 +597,11 @@ export function setGroupOverlayThresholds(high:number, low:number, curve?:number
   try { const all: any[] = (window as any).__mtgGroups || []; all.forEach(gv=> gv && (gv._lastZoomPhase = undefined)); } catch {}
 }
 
+// Convenience to force a true step function (no interpolation) at a threshold
+export function setGroupOverlayStep(threshold:number){
+  setGroupOverlayThresholds(threshold, threshold, 1);
+}
+
 function positionZoomOverlay(gv: GroupVisual){
   if (!gv._zoomLabel) return;
   const zl = gv._zoomLabel;
@@ -608,29 +624,24 @@ export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, 
     if (gv._zoomLabel) { gv._zoomLabel.visible=false; gv._zoomLabel.alpha=0; }
     gv._lastZoomPhase = 0; return;
   }
-  let phase = 0; // 0 cards visible, 1 overlay fully visible
-  if (worldScale <= ZOOM_OVERLAY_HIGH) {
-    if (worldScale <= ZOOM_OVERLAY_LOW) phase = 1; else {
-      const span = ZOOM_OVERLAY_HIGH - ZOOM_OVERLAY_LOW; const lin = 1 - ((worldScale - ZOOM_OVERLAY_LOW)/span); phase = Math.pow(lin, ZOOM_OVERLAY_CURVE); // curve sharpens
-    }
-  }
+  // Hard step: if at or below threshold, overlay is active and cards are hidden; otherwise cards shown.
+  const overlayActive = worldScale <= ZOOM_OVERLAY_HIGH;
   const prevPhase = gv._lastZoomPhase ?? 0;
+  const prevOverlayActive = prevPhase > 0;
   const lastScale:any = (gv as any).__lastOverlayScale ?? -1;
-  const scaleChanged = Math.abs(worldScale - lastScale) > 1e-4;
-  const minorPhase = Math.abs(phase - prevPhase) < 0.02;
   (gv as any).__lastOverlayScale = worldScale;
-  gv._lastZoomPhase = phase;
+  gv._lastZoomPhase = overlayActive ? 1 : 0;
   const overlay = gv._zoomLabel;
   if (overlay) {
-    if (phase > 0 && !overlay.visible) { overlay.visible=true; positionZoomOverlay(gv); }
-    overlay.alpha = phase;
-    if (phase === 0) overlay.visible = false;
-    else if (phase === 1) positionZoomOverlay(gv); // ensure centered after any dimension changes
+    if (overlayActive && !overlay.visible) { overlay.visible=true; positionZoomOverlay(gv); }
+    overlay.alpha = overlayActive ? 1 : 0;
+    if (!overlayActive) overlay.visible = false;
+    else positionZoomOverlay(gv); // ensure centered after any dimension changes
   }
   // Maintain a dedicated transparent drag surface with an inset hitArea so edges remain clickable.
   const dragSurf = gv._overlayDrag as PIXI.Graphics | undefined;
   if (dragSurf) {
-    if (phase > 0) {
+    if (overlayActive) {
       const EDGE_PX = 16; // must match main.ts EDGE_PX
       const scale = Math.max(0.0001, worldScale);
       const inset = Math.min(gv.w/2, Math.min(gv.h/2, EDGE_PX / scale));
@@ -646,29 +657,29 @@ export function updateGroupZoomPresentation(gv: GroupVisual, worldScale:number, 
       (dragSurf as any).hitArea = null as any;
     }
   }
-  // If only minor phase change and no scale change, we can skip heavier per-card updates.
-  if (minorPhase && !scaleChanged) return;
+  // If the overlay active state didn't change since last frame, skip per-card work entirely.
+  if (overlayActive === prevOverlayActive) return;
   // Adjust member card sprite visibility/alpha
+  const idToSprite: Map<number, CardSprite> | undefined = (window as any).__mtgIdToSprite;
   for (const id of gv.items) {
-    const sp = sprites.find(s=> s.__id===id); if (!sp) continue;
-  // Flag overlay activity for interaction layer so card drags are suppressed when overlay intended for group drag.
-  const overlayActive = phase > 0; // any visible phase suppresses card interactivity
-  (sp as any).__groupOverlayActive = overlayActive;
-  // Toggle eventMode so sibling overlay can receive pointer events (cards are siblings, not children of group)
-  const desiredMode = overlayActive ? 'none' : 'static';
-  if ((sp as any).eventMode !== desiredMode) (sp as any).eventMode = desiredMode as any;
-  if (overlayActive) { if (sp.cursor !== 'default') sp.cursor='default'; }
-  else { if (sp.cursor !== 'pointer') sp.cursor='pointer'; }
-    if (phase <= 0) {
-      if (sp.alpha !== 1) sp.alpha=1; if (!sp.visible) sp.visible=true; if (!sp.renderable) sp.renderable=true;
-    } else if (phase >= 1) {
-      if (sp.alpha !== 0) sp.alpha=0; if (sp.visible) { sp.visible=false; sp.renderable=false; }
+    const sp = idToSprite ? idToSprite.get(id) : sprites.find(s=> s.__id===id); if (!sp) continue;
+    // Flag overlay activity for interaction layer so card drags are suppressed when overlay intended for group drag.
+    (sp as any).__groupOverlayActive = overlayActive;
+    // Toggle eventMode so sibling overlay can receive pointer events (cards are siblings, not children of group)
+    const desiredMode = overlayActive ? 'none' : 'static';
+    if ((sp as any).eventMode !== desiredMode) (sp as any).eventMode = desiredMode as any;
+    if (overlayActive) {
+      if (sp.cursor !== 'default') sp.cursor='default';
+      if (sp.alpha !== 0) sp.alpha = 0;
+      if (sp.visible) { sp.visible = false; sp.renderable = false; }
     } else {
-      const a = 1 - phase; if (Math.abs(sp.alpha - a) > 0.05) sp.alpha = a; if (!sp.visible) sp.visible=true; if (!sp.renderable) sp.renderable=true;
+      if (sp.cursor !== 'pointer') sp.cursor='pointer';
+      if (sp.alpha !== 1) sp.alpha = 1;
+      if (!sp.visible) sp.visible = true; if (!sp.renderable) sp.renderable = true;
     }
   }
   // Dim frame + header (keep subtle silhouette for spatial awareness)
-  const dimAlpha = 1 - phase*0.6;
+  const dimAlpha = overlayActive ? 0.4 : 1.0;
   gv.frame.alpha = dimAlpha; gv.header.alpha = dimAlpha;
 }
 

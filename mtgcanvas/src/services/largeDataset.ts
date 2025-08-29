@@ -6,7 +6,7 @@
 interface SpawnOptions { count: number; batchSize?: number; onProgress?: (done:number,total:number)=>void; }
 import { DATASET_PREFERRED, DATASET_FALLBACK, datasetCandidatePaths } from '../config/dataset';
 
-function parseUniverseText(txt:string): any[] {
+export function parseUniverseText(txt:string): any[] {
   // Try standard JSON first
   try {
     const parsed = JSON.parse(txt);

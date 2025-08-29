@@ -4,7 +4,7 @@ import { Camera } from './scene/camera';
 import { createCardSprite, updateCardSpriteAppearance, attachCardInteractions, type CardSprite, ensureCardImage, updateCardTextureForScale, preloadCardQuality, getHiResQueueLength, getInflightTextureCount, enforceGpuBudgetForSprites } from './scene/cardNode';
 import { configureTextureSettings } from './config/rendering';
 import { getImageCacheStats, hasCachedURL, getCacheUsage } from './services/imageCache';
-import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics, updateGroupZoomPresentation, ensureGroupEncapsulates, placeCardInGroup, layoutFaceted, type FacetKind } from './scene/groupNode';
+import { createGroupVisual, drawGroup, layoutGroup, type GroupVisual, HEADER_HEIGHT, /* setGroupCollapsed removed */ autoPackGroup, insertionIndexForPoint, addCardToGroupOrdered, removeCardFromGroup, updateGroupTextQuality, updateGroupMetrics, updateGroupZoomPresentation, ensureGroupEncapsulates, ensureMembersZOrder, placeCardInGroup, layoutFaceted, type FacetKind } from './scene/groupNode';
 import { SpatialIndex } from './scene/SpatialIndex';
 import { MarqueeSystem } from './interaction/marquee';
 import { initHelp } from './ui/helpPanel';
@@ -12,10 +12,14 @@ import { installModeToggle } from './ui/modeToggle';
 import { UIState } from './state/uiState';
 import { loadAll, queuePosition, persistGroupTransform, /* persistGroupCollapsed removed */ persistGroupRename } from './services/persistenceService';
 import { InstancesRepo, GroupsRepo, hasRealDb } from './data/repositories';
-import { fetchCardUniverse, spawnLargeSet } from './services/largeDataset';
+import { fetchCardUniverse, spawnLargeSet, parseUniverseText } from './services/largeDataset';
 import { DATASET_PREFERRED, DATASET_FALLBACK } from './config/dataset';
 import { ensureThemeToggleButton, ensureThemeStyles, registerThemeListener } from './ui/theme';
 import { installSearchPalette } from './ui/searchPalette';
+import { installImportExport } from './ui/importExport';
+import { searchScryfall } from './services/scryfall';
+import { addImportedCards, getAllImportedCards, clearImportedCards } from './services/cardStore';
+import { clearImageCache } from './services/imageCache';
 
 // Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
 
@@ -53,6 +57,33 @@ const splashEl = document.getElementById('splash');
   app.stage.eventMode='static';
   app.stage.hitArea = new PIXI.Rectangle(-50000,-50000,100000,100000);
 
+  // Top-of-canvas banner: MTG Slop (fixed to screen, above world)
+  const bannerLayer = new PIXI.Container();
+  bannerLayer.zIndex = 1000000; // above everything
+  bannerLayer.eventMode = 'none'; // ignore pointer events
+  app.stage.addChild(bannerLayer);
+  // Ensure stage sorts by zIndex
+  (app.stage as any).sortableChildren = true;
+  const bannerText = new PIXI.Text('MTG Slop', {
+    fill: 0x88d1ff as any,
+    fontFamily: 'Inter, system-ui, sans-serif',
+    fontWeight: '800' as any,
+    fontSize: 64,
+    dropShadow: true,
+    dropShadowColor: 0x000000 as any,
+    dropShadowBlur: 1,
+    dropShadowDistance: 2,
+    align: 'left',
+  } as any);
+  bannerText.alpha = 0.9;
+  bannerLayer.addChild(bannerText);
+  function layoutBanner(){
+    const padX = 16; const padY = 12;
+    bannerText.x = padX; bannerText.y = padY;
+  }
+  layoutBanner();
+  window.addEventListener('resize', layoutBanner);
+
   // Camera abstraction
   const camera = new Camera({ world });
   const spatial = new SpatialIndex();
@@ -80,6 +111,11 @@ const splashEl = document.getElementById('splash');
   const PERSIST_MODE = hasRealDb()? 'sqlite' : 'memory';
   const LS_KEY = 'mtgcanvas_positions_v1';
   const LS_GROUPS_KEY = 'mtgcanvas_groups_v1';
+  const LS_IMPORTED_KEY = 'mtgcanvas_imported_cards_v1'; // legacy fallback
+  // Suppress any local save side effects (used when clearing data to avoid races that re-save)
+  let SUPPRESS_SAVES = false;
+  // One-time flag to skip universe loading and any rehydration after a Clear Data action
+  const START_EMPTY = (()=>{ try { const v = sessionStorage.getItem('mtgcanvas_start_empty_once')==='1'; if (v) sessionStorage.removeItem('mtgcanvas_start_empty_once'); return v; } catch { return false; } })();
   let memoryGroupsData:any=null; let groupsRestored=false;
   if (PERSIST_MODE==='memory') { try { const raw = localStorage.getItem(LS_GROUPS_KEY); if (raw) memoryGroupsData = JSON.parse(raw); } catch {} }
   // Pre-parse stored layout (memory mode) so we can spawn at correct positions without flicker
@@ -105,6 +141,23 @@ const splashEl = document.getElementById('splash');
       }
     } catch {}
   }
+  // Memory-mode: rehydrate previously imported Scryfall cards (raw JSON) and attach sprites
+  async function rehydrateImportedCards(){
+    if (PERSIST_MODE !== 'memory') return;
+    // Prefer IndexedDB store; fallback to localStorage legacy key
+    let cards:any[] = [];
+    try { cards = await getAllImportedCards(); } catch {}
+    if (!cards || !cards.length) {
+      try { const raw = localStorage.getItem(LS_IMPORTED_KEY); if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) cards = arr; } } catch {}
+    }
+    if (!cards.length) return;
+    let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+    for (const card of cards) {
+      const x = 0, y = 0; let id:number; try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; }
+      const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+      ensureCardImage(sp);
+    }
+  }
   if (PERSIST_MODE==='memory') {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -124,24 +177,19 @@ const splashEl = document.getElementById('splash');
     try { splashEl?.parentElement?.removeChild(splashEl); } catch {}
   }
 
+  // Disable automatic dataset JSON load: always start without spawning universe
+  console.log('[startup] dataset auto-load disabled; starting empty unless DB already has instances');
   if (!loaded.instances.length) {
-    (async ()=> {
-      const universe = await fetchCardUniverse();
-      if (universe.length) {
-  const TARGET = universe.length; // load entire provided dataset
-  console.log(`[startup] spawning FULL dataset (${DATASET_PREFERRED} | fallback ${DATASET_FALLBACK}) count=`, TARGET);
-  await spawnLargeSet(universe, inst=> {
-    if (storedLayoutByIndex && storedLayoutByIndex[inst.z]) { const p = storedLayoutByIndex[inst.z]; inst.x = p.x; inst.y = p.y; }
-    createSpriteForInstance(inst);
-  }, { count: TARGET, batchSize: 800, onProgress:(done,total)=> { if (done===total) { console.log('[startup] full spawn complete'); if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups(); fitAll(); finishStartup(); } } });
-      } else {
-  console.warn(`[startup] dataset (${DATASET_PREFERRED}/${DATASET_FALLBACK}) not found or empty; falling back to 200 dummy cards`);
-  for (let i=0;i<200;i++) { const x=(i%20)*SPACING_X, y=Math.floor(i/20)*SPACING_Y; const id = InstancesRepo.create(1, x, y); const pos = storedLayoutByIndex && storedLayoutByIndex[i]; createSpriteForInstance({ id, x: pos?pos.x:x, y: pos?pos.y:y, z:zCounter++ }); }
-  if (!storedLayoutByIndex) applyStoredPositionsMemory(); if (PERSIST_MODE==='memory') restoreMemoryGroups();
-  fitAll(); finishStartup();
-      }
-    })();
-  } else { loaded.instances.forEach((inst:any)=> createSpriteForInstance(inst)); applyStoredPositionsMemory(); }
+    // Rehydrate any previously imported cards (from IndexedDB/LS), then apply positions/groups
+    await rehydrateImportedCards();
+    applyStoredPositionsMemory();
+    finishStartup();
+  } else {
+    loaded.instances.forEach((inst:any)=> createSpriteForInstance(inst));
+    // Also add imported cards in memory mode even if repo returned instances (browser fallback only)
+    await rehydrateImportedCards();
+    applyStoredPositionsMemory();
+  }
 
   // Groups container + visuals
   const groups = new Map<number, GroupVisual>();
@@ -176,9 +224,10 @@ const splashEl = document.getElementById('splash');
     groups.delete(id);
   }
   // Memory mode group persistence helpers
-  let lsGroupsTimer:any=null; function scheduleGroupSave(){ if (PERSIST_MODE!=='memory') return; if (lsGroupsTimer) return; lsGroupsTimer = setTimeout(persistLocalGroups, 400); }
-  function persistLocalGroups(){ lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, layoutMode: (gv as any).layoutMode || 'grid', facet: (gv as any).facet || null, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
-  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; /* collapse retired: always load expanded */ gv.collapsed=false; if (gr.color) gv.color=gr.color; if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode; if (gr.facet) (gv as any).facet = gr.facet; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); }); groups.forEach(gv=> { ensureGroupEncapsulates(gv, sprites); if ((gv as any).layoutMode==='faceted' && (gv as any).facet) { layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } else { updateGroupMetrics(gv, sprites); drawGroup(gv, false); } });
+  let lsGroupsTimer:any=null; function scheduleGroupSave(){ if (PERSIST_MODE!=='memory' || SUPPRESS_SAVES) return; if (lsGroupsTimer) return; lsGroupsTimer = setTimeout(persistLocalGroups, 400); }
+  function persistLocalGroups(){ if (SUPPRESS_SAVES) { lsGroupsTimer=null; return; } lsGroupsTimer=null; try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, layoutMode: (gv as any).layoutMode || 'grid', facet: (gv as any).facet || null, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} }
+  // (Older restoreMemoryGroups variant removed to avoid duplication; see final definition below.)
+  function restoreMemoryGroups(){ if (groupsRestored) return; groupsRestored=true; if (PERSIST_MODE!=='memory') return; if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return; memoryGroupsData.groups.forEach((gr:any)=> { const gv = createGroupVisual(gr.id, gr.x??0, gr.y??0, gr.w??300, gr.h??300); if (gr.name) gv.name=gr.name; /* collapse retired: always load expanded */ gv.collapsed=false; if (gr.color) gv.color=gr.color; if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode; if (gr.facet) (gv as any).facet = gr.facet; groups.set(gv.id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv); }); memoryGroupsData.groups.forEach((gr:any)=> { const gv=groups.get(gr.id); if (!gv) return; let matched=0; if (Array.isArray(gr.membersById)) gr.membersById.forEach((cid:number)=> { const s = sprites.find(sp=> sp.__id===cid); if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; matched++; } }); if (matched<1 && Array.isArray(gr.membersByIndex)) gr.membersByIndex.forEach((idx:number)=> { const s = sprites[idx]; if (s) { addCardToGroupOrdered(gv, s.__id, gv.order.length); (s as any).__groupId = gv.id; } }); }); groups.forEach(gv=> { ensureMembersZOrder(gv, sprites); ensureGroupEncapsulates(gv, sprites); if ((gv as any).layoutMode==='faceted' && (gv as any).facet) { layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 })); } else { updateGroupMetrics(gv, sprites); drawGroup(gv, false); } });
     // Ensure new group creations won't collide with restored ids (memory only)
     try {
       const maxId = Math.max(...[...groups.keys(), 0]);
@@ -197,18 +246,18 @@ const splashEl = document.getElementById('splash');
     });
     // After groups exist, attach any sprites with stored group_id
     sprites.forEach(s=> { const gid = (s as any).__groupId; if (gid && groups.has(gid)) { const gv = groups.get(gid)!; gv.items.add(s.__id); gv.order.push(s.__id); } });
-    // Layout groups with their members
-  groups.forEach(gv=> { ensureGroupEncapsulates(gv, sprites); updateGroupMetrics(gv, sprites); drawGroup(gv, false); });
+  // Layout groups with their members and ensure z-order above frames
+  groups.forEach(gv=> { ensureMembersZOrder(gv, sprites); ensureGroupEncapsulates(gv, sprites); updateGroupMetrics(gv, sprites); drawGroup(gv, false); });
     // For safety, also bump the next id in memory fallback when DB is absent
     try {
       if (!hasRealDb()) { const maxId = Math.max(...[...groups.keys(), 0]); (GroupsRepo as any).ensureNextId && (GroupsRepo as any).ensureNextId(maxId + 1); }
     } catch {}
     finishStartup();
   } else if (PERSIST_MODE==='memory') {
-    if (loaded.instances.length) { restoreMemoryGroups(); finishStartup(); }
-    else {
-      // If there are no instances yet, the async spawn path above will call finishStartup
-    }
+    // If instances were present at load-time, restore groups from local storage immediately.
+    if (loaded.instances.length) { restoreMemoryGroups(); }
+    // If we started empty but rehydrated cards earlier, restore groups now that groups exist.
+    else if (sprites.length) { restoreMemoryGroups(); }
   } else {
     // No groups in DB, but instances already placed: we're ready
     finishStartup();
@@ -217,12 +266,13 @@ const splashEl = document.getElementById('splash');
   
   // Runtime texture/gpu settings (no localStorage). Tune here as needed.
   configureTextureSettings({
-    gpuBudgetMB: 4900,       // ~60% of 8GB
+    gpuBudgetMB: 5096,       // ~60% of 8GB
     allowEvict: true,        // reclaim unreferenced textures
     disablePngTier: true,    // keep medium-tier only for big boards; toggle off for small projects
-    decodeParallelLimit: 32  // balance between speed and FPS
+    decodeParallelLimit: 24, // lower parallel decodes to reduce peak memory during bursts
+    hiResLimit: 2000         // cap number of hi-res textures retained concurrently
   });
-  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); enforceGpuBudgetForSprites(sprites as unknown as CardSprite[]); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> updateGroupTextQuality(gv, world.scale.x)); updatePerf(dt); });
+  // (Ticker added later to include overlay presentation updates.)
 
   const help = initHelp(); (window as any).__helpAPI = help; // debug access
   function toggleHelp() { help.toggle(); }
@@ -699,6 +749,18 @@ const splashEl = document.getElementById('splash');
       drag = true; dx = local.x - g.x; dy = local.y - g.y;
       memberOffsets = [...gv.items].map(id=> { const s = sprites.find(sp=> sp.__id===id); return s? {sprite:s, ox:s.x - g.x, oy:s.y - g.y}: null; }).filter(Boolean) as any;
     });
+    // Click body (non-overlay zoom): select group without starting a drag
+    gv.frame.on('pointertap', (e:any)=> {
+      if (e.button===2) return; // ignore right-click here
+      // If overlay active, drag handler above already selected the group
+      if (gv._lastZoomPhase && gv._lastZoomPhase > 0.05) return;
+      // Do not handle if click targets the resize handle
+      if (e.target === gv.resize) return;
+      // Select/toggle group on simple click in body area
+      if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id)) SelectionStore.selectOnlyGroup(gv.id);
+      else if (e.shiftKey) SelectionStore.toggleGroup(gv.id);
+      e.stopPropagation();
+    });
     // Context menu (right-click)
     // Show context menu only if no significant right-drag (panning) occurred.
     gv.header.on('rightclick', (e:any)=> {
@@ -810,7 +872,9 @@ const splashEl = document.getElementById('splash');
       openGroups.sort((a,b)=> a.id - b.id).forEach(gv=> { const already = !!card.__groupId && card.__groupId===gv.id; const it = addItem(gv.name || `Group ${gv.id}`, ()=> {
         if (already) return; // no-op
         // Remove from previous group if any
-  if (card.__groupId){ const old = groups.get(card.__groupId); if (old){ removeCardFromGroup(old, card.__id); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); } }
+    if (card.__groupId){ const old = groups.get(card.__groupId); if (old){ removeCardFromGroup(old, card.__id); updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); }
+      // Ensure sprite reappears if group overlay had hidden it
+      (card as any).__groupOverlayActive = false; (card as any).eventMode = 'static'; card.cursor='pointer'; card.alpha = 1; card.visible = true; card.renderable = true; updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id)); }
   console.log('[cardMenu] add card', card.__id, 'to group', gv.id);
   addCardToGroupOrdered(gv, card.__id, gv.order.length); card.__groupId = gv.id; try { InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]); } catch {}
   placeCardInGroup(gv, card, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
@@ -823,7 +887,10 @@ const splashEl = document.getElementById('splash');
       const divider=document.createElement('div'); divider.style.cssText='height:1px;background:#1e323d;margin:6px 4px;'; el.appendChild(divider);
       addItem('Remove from current group', ()=> {
         const old = card.__groupId? groups.get(card.__groupId): null;
-  if (old){ console.log('[cardMenu] remove card', card.__id, 'from group', old.id); removeCardFromGroup(old, card.__id); card.__groupId=undefined; try { InstancesRepo.updateMany([{ id: card.__id, group_id: null }]); } catch {} updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id)); }
+      if (old){ console.log('[cardMenu] remove card', card.__id, 'from group', old.id); removeCardFromGroup(old, card.__id); card.__groupId=undefined; try { InstancesRepo.updateMany([{ id: card.__id, group_id: null }]); } catch {}
+        // Ensure sprite reappears and is interactive after removal
+        (card as any).__groupOverlayActive = false; (card as any).eventMode = 'static'; card.cursor='pointer'; card.alpha = 1; card.visible = true; card.renderable = true;
+        updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); updateCardSpriteAppearance(card, SelectionStore.state.cardIds.has(card.__id)); }
       });
     }
     const bounds = app.renderer.canvas.getBoundingClientRect();
@@ -1055,7 +1122,17 @@ const splashEl = document.getElementById('splash');
   if (layoutOld) { updateGroupMetrics(layoutOld, sprites); drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id)); }
   drawGroup(target, SelectionStore.state.groupIds.has(target.id));
     } else if (s.__groupId) {
-  const old = groups.get(s.__groupId); if (old){ removeCardFromGroup(old, s.__id); } s.__groupId = undefined; if (old) { updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); }
+  const old = groups.get(s.__groupId);
+  if (old){ removeCardFromGroup(old, s.__id); }
+  // Clear membership
+  s.__groupId = undefined as any;
+  // Ensure the sprite is visible and interactive again in case the group zoom overlay had hidden it
+  (s as any).__groupOverlayActive = false;
+  (s as any).eventMode = 'static';
+  s.cursor = 'pointer';
+  s.alpha = 1; s.visible = true; s.renderable = true;
+  updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
+  if (old) { updateGroupMetrics(old, sprites); drawGroup(old, SelectionStore.state.groupIds.has(old.id)); scheduleGroupSave(); }
   // Persist removal
   try { InstancesRepo.updateMany([{ id: s.__id, group_id: null }]); } catch {}
     }
@@ -1201,8 +1278,8 @@ const splashEl = document.getElementById('splash');
   // Use shared panel theme (ensure fixed positioning & stacking above canvas)
   perfEl.className='ui-panel perf-grid';
   perfEl.style.position='fixed';
-  perfEl.style.left='6px';
-  perfEl.style.top='6px';
+  perfEl.style.left='10px';
+  perfEl.style.bottom='10px';
   perfEl.style.zIndex='10002';
   perfEl.style.minWidth='280px';
   perfEl.style.padding='14px 16px';
@@ -1211,8 +1288,8 @@ const splashEl = document.getElementById('splash');
   document.body.appendChild(perfEl);
   (window as any).__perfOverlay = perfEl;
   let frameCount=0; let lastFpsTime=performance.now(); let fps=0;
-  let lsTimer:any=null; function scheduleLocalSave(){ if (PERSIST_MODE!=='memory') return; if (lsTimer) return; lsTimer = setTimeout(persistLocalPositions, 350); }
-  function persistLocalPositions(){ lsTimer=null; try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+  let lsTimer:any=null; function scheduleLocalSave(){ if (PERSIST_MODE!=='memory' || SUPPRESS_SAVES) return; if (lsTimer) return; lsTimer = setTimeout(persistLocalPositions, 350); }
+  function persistLocalPositions(){ if (SUPPRESS_SAVES) { lsTimer=null; return; } lsTimer=null; try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
   let lastMemSample = 0; let jsHeapLine='JS ?'; let texLine='Tex ?';
   let texResLine='Res ?'; let hiResPendingLine='GlobalPending ?'; let qualLine='Qual ?'; let queueLine='Q ?';
   function sampleMemory(){
@@ -1274,7 +1351,14 @@ const splashEl = document.getElementById('splash');
   el.innerHTML = '<div style="font-weight:600;font-size:20px;margin-bottom:6px;color:var(--panel-accent);">Debug</div>';
   function addBtn(label:string, handler:()=>void){ const b=document.createElement('button'); b.textContent=label; b.className='ui-btn'; b.style.fontSize='16px'; b.style.padding='10px 14px'; b.onclick=handler; el!.appendChild(b); }
   addBtn('Grid Ungrouped Cards', ()=> { gridUngroupedCards(); });
-  addBtn('Full Reset (Clear + Grid All)', ()=> { clearGroupsOnly(); resetLayout(true); });
+  addBtn('Grid Grouped Cards', ()=> { gridGroupedCards(); });
+  addBtn('Full Reset (Clear + Grid All)', ()=> {
+    const ok = window.confirm('Full Reset will clear all groups and re-grid every card. This cannot be undone. Proceed?');
+    if (!ok) return;
+    clearGroupsOnly();
+    resetLayout(true);
+  });
+  addBtn('Load Cards from JSON…', ()=> { loadFromJsonFile(); });
       document.body.appendChild(el);
       // Continuous sync each frame so it's always directly below perf overlay regardless of dynamic height changes
       const syncDebugPosition = ()=> {
@@ -1282,7 +1366,10 @@ const splashEl = document.getElementById('splash');
         if (!perf) return;
         const r = perf.getBoundingClientRect();
         const desiredLeft = r.left;
-        const desiredTop = r.bottom + 10; // margin
+        const viewportH = window.innerHeight;
+        const panelH = el!.getBoundingClientRect().height || 0;
+        // If perf overlay is in the top half, place panel below it; otherwise place above it.
+        const desiredTop = (r.top < viewportH/2) ? (r.bottom + 10) : Math.max(10, r.top - panelH - 10);
         if (el!.style.left !== desiredLeft + 'px') el!.style.left = desiredLeft + 'px';
         if (el!.style.top !== desiredTop + 'px') el!.style.top = desiredTop + 'px';
       };
@@ -1290,6 +1377,16 @@ const splashEl = document.getElementById('splash');
       try { (app.ticker as any).add(syncDebugPosition); } catch { requestAnimationFrame(function loop(){ syncDebugPosition(); requestAnimationFrame(loop); }); }
       syncDebugPosition();
       return el;
+    }
+    function gridGroupedCards(){
+      // Auto-pack each group into a tight grid based on current members and persist transforms
+      groups.forEach(gv=> {
+        autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+        // Persist group dimensions/position changes if any
+        try { persistGroupTransform(gv.id, { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h }); } catch {}
+      });
+      // Save (memory mode) after batch operation
+      try { scheduleGroupSave(); } catch {}
     }
     function clearGroupsOnly(){
       // Remove membership on sprites
@@ -1313,6 +1410,69 @@ const splashEl = document.getElementById('splash');
   // Clear persisted group transforms (memory mode) so they don't rehydrate
   if (PERSIST_MODE==='memory') { try { localStorage.removeItem(LS_GROUPS_KEY); } catch {} }
     }
+    // Load cards from a JSON file (debug)
+    function loadFromJsonFile(){
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = '.json,application/json';
+      inp.onchange = async ()=> {
+        const file = inp.files && inp.files[0]; if (!file) return;
+        try {
+          const txt = await file.text();
+          // Try simple groups export format first
+          const parsedGroups = (function parseGroupsText(text:string){
+            const lines = text.split(/\r?\n/);
+            let hasHeading = false;
+            const groups: { name: string; cards: string[] }[] = [];
+            const ungrouped: string[] = [];
+            let current: { name: string; cards: string[] } | null = null;
+            let inUngrouped = false;
+            for (const raw of lines) {
+              const line = raw.trim();
+              if (!line) continue;
+              if (line.startsWith('#')) { hasHeading = true; const name = line.replace(/^#+\s*/, '').trim(); if (!name) { current=null; inUngrouped=false; continue; } if (/^ungrouped$/i.test(name)) { current=null; inUngrouped=true; continue; } inUngrouped=false; current={name, cards:[]}; groups.push(current); continue; }
+              if (/^\((empty|none)\)$/i.test(line)) continue;
+              let name = line; const m = line.match(/^[-*]\s*(.+)$/); if (m) name = m[1].trim(); if (!name) continue;
+              if (inUngrouped) ungrouped.push(name); else if (current) current.cards.push(name); else ungrouped.push(name);
+            }
+            if (!hasHeading && !(ungrouped.length && groups.length===0)) return null; return { groups, ungrouped };
+          })(txt);
+          if (parsedGroups) {
+            // Use existing importGroups path via import/export API
+            const data = parsedGroups;
+            // Resolve names to currently available sprites or fetch universe
+            const byName = new Map<string, any>();
+            for (const s of sprites) { const c = (s as any).__card; if (!c) continue; const nm = (c.name||'').toLowerCase(); if (nm && !byName.has(nm)) byName.set(nm, c); }
+            const resolve = (names:string[])=> names.map(n=> byName.get((n||'').toLowerCase())).filter(Boolean);
+            // If missing, try to parse file as Scryfall list and spawn raw
+            let imported = 0;
+            for (const g of data.groups) {
+              const cards = resolve(g.cards);
+              if (!cards.length) continue;
+              const ids:number[]=[]; let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+              for (const card of cards) { let id:number; const x=0,y=0; try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; } const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card }); ensureCardImage(sp); ids.push(sp.__id); imported++; }
+              if (ids.length) (createGroupWithCardIds as any)(ids, g.name || 'Group');
+            }
+            const ungrouped = resolve(data.ungrouped);
+            if (ungrouped.length){ let placed=0; const cols=10; let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0; for (const card of ungrouped){ const idx=placed++; const col=idx%cols; const row=Math.floor(idx/cols); const x = col*SPACING_X; const y = row*SPACING_Y; let id:number; try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; } const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card }); ensureCardImage(sp); imported++; } }
+            if (imported) { try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {} }
+            return;
+          }
+          // Otherwise, try Scryfall universe JSON (array/list/NDJSON)
+          const arr = parseUniverseText(txt);
+          if (Array.isArray(arr) && arr.length) {
+            const TARGET = arr.length;
+            await spawnLargeSet(arr, inst=> { createSpriteForInstance(inst); }, { count: TARGET, batchSize: 800 });
+            sprites.forEach(s=> ensureCardImage(s));
+          } else {
+            alert('Unrecognized JSON format. Expected groups export or Scryfall card array/NDJSON.');
+          }
+        } catch (e:any) {
+          alert('Failed to load JSON: '+(e?.message||String(e)));
+        }
+      };
+      inp.click();
+    }
     function resetLayout(alreadyCleared:boolean){
       // Assign default grid positions based on current sprite order
   // Ensure all sprites are interactive/visible (in case reset called while overlays active)
@@ -1321,7 +1481,7 @@ const splashEl = document.getElementById('splash');
       const batch: {id:number,x:number,y:number}[] = [];
       sprites.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
       if (batch.length) { try { InstancesRepo.updatePositions(batch); } catch {} }
-      if (PERSIST_MODE==='memory') { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+  if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
       if (!alreadyCleared) clearGroupsOnly();
     }
     function gridUngroupedCards(){
@@ -1336,7 +1496,7 @@ const splashEl = document.getElementById('splash');
       const batch: {id:number,x:number,y:number}[] = [];
       ungrouped.forEach((s, idx)=> { const col = idx % cols; const row = Math.floor(idx/cols); const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL); const y = startY + row * (CARD_H_GLOBAL + GAP_Y_GLOBAL); s.x = x; s.y = y; spatial.update({ id:s.__id, minX:x, minY:y, maxX:x+100, maxY:y+140 }); batch.push({id:s.__id,x,y}); });
       if (batch.length) { try { InstancesRepo.updatePositions(batch); } catch {} }
-      if (PERSIST_MODE==='memory') { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
+  if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { try { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {} }
     }
     ensureDebugPanel();
 
@@ -1397,6 +1557,287 @@ const splashEl = document.getElementById('splash');
   });
 
   installModeToggle();
+  // Import/Export decklists (basic)
+  const importExportUI = installImportExport({
+    getAllNames: ()=> sprites.map(s=> (s as any).__card?.name || ''),
+    getSelectedNames: ()=> SelectionStore.getCards().map(id=> sprites.find(s=> s.__id===id)).filter(Boolean).map(s=> (s as any).__card?.name || ''),
+    getGroupsExport: ()=> {
+      // Build groups lines
+      const lines: string[] = [];
+      const grouped = [...groups.values()].sort((a,b)=> a.id - b.id);
+      grouped.forEach(gv=> {
+        const title = gv.name || `Group ${gv.id}`;
+        lines.push(`# ${title}`);
+        // Members in current order by id
+        const names = gv.order
+          .map(cid=> sprites.find(s=> s.__id===cid))
+          .filter(Boolean)
+          .map(s=> ((s as any).__card?.name || '').trim())
+          .filter(n=> n);
+        if (!names.length) lines.push('(empty)');
+        else names.forEach(n=> lines.push(`- ${n}`));
+        lines.push('');
+      });
+      // Ungrouped
+      const ungrouped = sprites.filter(s=> !(s as any).__groupId);
+      lines.push('# Ungrouped');
+      if (!ungrouped.length) lines.push('(none)');
+      else ungrouped.forEach(s=> { const n = ((s as any).__card?.name || '').trim(); if (n) lines.push(`- ${n}`); });
+      return lines.join('\n');
+    },
+    importGroups: async (data)=> {
+      // Build lookup by lowercase name from currently loaded universe; extend by fetching if needed.
+      const byName = new Map<string, any>();
+      for (const s of sprites) { const c = (s as any).__card; if (!c) continue; const nm = (c.name||'').toLowerCase(); if (nm && !byName.has(nm)) byName.set(nm, c); }
+      const wantNames = new Set<string>();
+      data.groups.forEach(g=> g.cards.forEach(n=> wantNames.add((n||'').toLowerCase())));
+      data.ungrouped.forEach(n=> wantNames.add((n||'').toLowerCase()));
+      // Try to resolve missing names by loading the universe
+      let unknown: string[] = [];
+      const unresolved = [...wantNames].filter(nm=> !byName.has(nm));
+      if (unresolved.length) {
+        try {
+          const uni = await fetchCardUniverse();
+          if (uni && uni.length) {
+            for (const u of uni) { const nm = (u.name||'').toLowerCase(); if (nm && !byName.has(nm)) byName.set(nm, u); }
+          }
+        } catch {}
+      }
+      // Helper to create instances for a list of names
+      function resolveCards(names:string[]): any[] { return names.map(n=> byName.get((n||'').toLowerCase())).filter(Boolean); }
+  const groupDefs = data.groups.map(g=> ({ name: g.name || 'Group', cards: resolveCards(g.cards) }));
+  const ungroupedCards = resolveCards(data.ungrouped);
+      // Compute unknowns
+      const allInput = [...data.groups.flatMap(g=> g.cards), ...data.ungrouped];
+      unknown = allInput.filter(n=> !byName.has((n||'').toLowerCase()));
+      let imported = 0;
+  // Create groups with cards
+    for (const g of groupDefs) {
+        if (!g.cards.length) continue;
+        // Create instances for these cards; leverage existing placement/group helper
+        const ids: number[] = [];
+        let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+        // Place temporarily at origin (they’ll be moved by group placement helper)
+        for (const card of g.cards) {
+      let id: number; const x = 0, y = 0;
+      try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; }
+      const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+      ensureCardImage(sp); ids.push(sp.__id); imported++;
+        }
+        try { if (ids.length) (createGroupWithCardIds as any)(ids, g.name); } catch {}
+      }
+      // Place ungrouped cards in a grid near current view
+      if (ungroupedCards.length) {
+        const inv = 1 / world.scale.x; const startX = snap(((-world.position.x) * inv) + 40); const startY = snap(((-world.position.y) * inv) + 40);
+        const cols = 10; let placed = 0; let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+        for (const card of ungroupedCards) {
+          const idx = placed++; const col = idx % cols; const row = Math.floor(idx/cols);
+          const x = startX + col * (SPACING_X); const y = startY + row * (SPACING_Y);
+          let id: number; try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; }
+          const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+          ensureCardImage(sp); imported++;
+        }
+      }
+      // Persist raw imported cards for rehydration (memory mode)
+      try {
+        if (PERSIST_MODE==='memory') {
+          const allCards:any[] = [...groupDefs.flatMap(g=> g.cards), ...ungroupedCards];
+          if (allCards.length) {
+            await addImportedCards(allCards);
+            if (!SUPPRESS_SAVES) {
+              try {
+                const prev = localStorage.getItem(LS_IMPORTED_KEY);
+                const arr = prev ? (JSON.parse(prev)||[]) : [];
+                const next = Array.isArray(arr) ? arr.concat(allCards) : allCards;
+                localStorage.setItem(LS_IMPORTED_KEY, JSON.stringify(next));
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+      // Persist positions (memory mode)
+  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
+      return { imported, unknown };
+    },
+    importByNames: async (items)=> {
+      // Build lookup from currently loaded card universe (sprites) by lowercase name -> card object
+      const byName = new Map<string, any>();
+      for (const s of sprites) { const c = (s as any).__card; if (!c) continue; const nm = (c.name||'').toLowerCase(); if (nm && !byName.has(nm)) byName.set(nm, c); }
+      let unknown: string[] = [];
+      // Placement grid near current viewport
+      const inv = 1 / world.scale.x;
+      const startX = snap(((-world.position.x) * inv) + 40);
+      const startY = snap(((-world.position.y) * inv) + 40);
+      const cols = 10; let placed = 0; let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+      const created: CardSprite[] = [];
+      const toPlace: { card:any; count:number }[] = [];
+      for (const it of items) {
+        const card = byName.get((it.name||'').toLowerCase());
+        if (!card) { unknown.push(it.name); continue; }
+        toPlace.push({ card, count: Math.max(1, Math.min(999, it.count|0)) });
+      }
+      // If unknowns exist, try to load universe and resolve
+      if (unknown.length) {
+        try {
+          const uni = await fetchCardUniverse();
+          if (uni && uni.length) {
+            for (const u of uni) { const nm = (u.name||'').toLowerCase(); if (nm && !byName.has(nm)) byName.set(nm, u); }
+            const stillUnknown: string[] = [];
+            const origUnknown = unknown.slice(); unknown = [];
+            for (const nm of origUnknown) {
+              const card = byName.get((nm||'').toLowerCase());
+              if (card) { toPlace.push({ card, count: 1 }); }
+              else { stillUnknown.push(nm); }
+            }
+            unknown = stillUnknown;
+          }
+        } catch {}
+      }
+      // Place all resolved cards
+      const persistedCards:any[] = [];
+      for (const pl of toPlace) {
+        for (let i=0;i<pl.count;i++){
+          const idx = placed++;
+          const col = idx % cols; const row = Math.floor(idx/cols);
+          const x = startX + col * (SPACING_X);
+          const y = startY + row * (SPACING_Y);
+          let id: number;
+          try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; }
+      const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card: pl.card });
+      created.push(sp);
+      persistedCards.push(pl.card);
+        }
+      }
+      // Ensure images kick off and persist local positions (memory mode)
+    created.forEach(s=> ensureCardImage(s));
+  // Persist raw imported cards so they rehydrate on reload
+  try {
+    if (PERSIST_MODE==='memory' && persistedCards.length) {
+      await addImportedCards(persistedCards);
+      if (!SUPPRESS_SAVES) {
+        try {
+          const prev = localStorage.getItem(LS_IMPORTED_KEY);
+          const arr = prev ? (JSON.parse(prev)||[]) : [];
+          const next = Array.isArray(arr) ? arr.concat(persistedCards) : persistedCards;
+          localStorage.setItem(LS_IMPORTED_KEY, JSON.stringify(next));
+        } catch {}
+      }
+    }
+  } catch {}
+  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
+      // Fit to newly added block if any
+      if (created.length){
+        const minX = Math.min(...created.map(s=> s.x));
+        const minY = Math.min(...created.map(s=> s.y));
+        const maxX = Math.max(...created.map(s=> s.x+100));
+        const maxY = Math.max(...created.map(s=> s.y+140));
+        camera.fitBounds({ x: minX, y: minY, w: maxX-minX, h: maxY-minY }, { w: window.innerWidth, h: window.innerHeight });
+        // Also create a new group for all newly imported cards
+        try {
+          const ids = created.map(s=> s.__id);
+          if (ids.length) {
+            // Reuse helper that auto-packs and places the group
+            (createGroupWithCardIds as any)(ids, 'Imported Deck');
+          }
+        } catch {}
+      }
+      return { imported: created.length, unknown };
+    },
+    scryfallSearchAndPlace: async (query, opt)=> {
+      // Prevent overlapping runs at the backend level as well
+      const anyWin = window as any;
+      if (anyWin.__mtg_scry_inflight) {
+        return { imported: 0, error: 'Another Scryfall import is already in progress.' };
+      }
+      try {
+        anyWin.__mtg_scry_inflight = true;
+        // Fetch cards from Scryfall with paging
+        const cards = await searchScryfall(query, { maxCards: opt.maxCards, signal: (opt as any).signal, onProgress: (n,total)=> {
+          opt.onProgress?.(n,total);
+          if ((n % 60)===0) console.log('[scryfall] fetched', n, total?`/ ${total}`:'');
+        } });
+        if (!cards.length) return { imported: 0 };
+        // Create sprites for results
+        const created: CardSprite[] = [];
+        let maxId = sprites.length? Math.max(...sprites.map(s=> s.__id)) : 0;
+        // Place at origin initially; group helper will auto-pack and place near viewport
+        for (const card of cards) {
+          const x = 0, y = 0; let id: number;
+          try { id = InstancesRepo.create(1, x, y); } catch { id = ++maxId; }
+          const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+          created.push(sp);
+        }
+        // Kick off images
+        created.forEach(s=> ensureCardImage(s));
+        // Persist raw imported cards in memory mode so they rehydrate on reload
+        try {
+          if (PERSIST_MODE==='memory') {
+            // Save to IndexedDB store for scalability; also append to legacy LS for backward compatibility
+            await addImportedCards(cards);
+            try {
+              if (SUPPRESS_SAVES) { /* skip legacy LS append during clear */ }
+              else { const prev = localStorage.getItem(LS_IMPORTED_KEY);
+              const arr = prev ? (JSON.parse(prev)||[]) : [];
+              const toAdd = cards.map(c=> c && typeof c==='object' ? c : null).filter(Boolean);
+              const next = Array.isArray(arr) ? arr.concat(toAdd) : toAdd;
+              localStorage.setItem(LS_IMPORTED_KEY, JSON.stringify(next)); }
+            } catch {}
+          }
+        } catch {}
+        // Persist (memory mode)
+  try { if (PERSIST_MODE==='memory' && !SUPPRESS_SAVES) { const data = { instances: sprites.map(s=> ({id:s.__id,x:s.x,y:s.y})), byIndex: sprites.map(s=> ({x:s.x,y:s.y})) }; localStorage.setItem(LS_KEY, JSON.stringify(data)); } } catch {}
+        // Group
+        try {
+          const ids = created.map(s=> s.__id);
+          if (ids.length) {
+            (createGroupWithCardIds as any)(ids, opt.groupName || query);
+          }
+        } catch {}
+        try { scheduleGroupSave(); } catch {}
+        // Fit to new items
+        if (created.length){
+          const minX = Math.min(...created.map(s=> s.x));
+          const minY = Math.min(...created.map(s=> s.y));
+          const maxX = Math.max(...created.map(s=> s.x+100));
+          const maxY = Math.max(...created.map(s=> s.y+140));
+          camera.fitBounds({ x: minX, y: minY, w: maxX-minX, h: maxY-minY }, { w: window.innerWidth, h: window.innerHeight });
+        }
+        return { imported: created.length };
+      } catch (e:any) {
+        console.warn('[scryfall] search failed', e);
+        return { imported: 0, error: e?.message || String(e) };
+      } finally {
+        const anyWin2 = window as any; delete anyWin2.__mtg_scry_inflight;
+      }
+    }
+    ,
+    clearPersistedData: async ()=> {
+      // Clear persisted artifacts
+  SUPPRESS_SAVES = true;
+  // Cancel any scheduled local save timers to avoid races
+  try { if (lsTimer) { clearTimeout(lsTimer); lsTimer = null; } } catch {}
+  try { if (lsGroupsTimer) { clearTimeout(lsGroupsTimer); lsGroupsTimer = null; } } catch {}
+      try { await clearImageCache(); } catch {}
+      try { await clearImportedCards(); } catch {}
+      try { localStorage.removeItem(LS_IMPORTED_KEY); } catch {}
+      try { localStorage.removeItem(LS_KEY); } catch {}
+      try { localStorage.removeItem(LS_GROUPS_KEY); } catch {}
+      // Best-effort: drop the imported_cards and image cache databases themselves
+      try { (window as any).indexedDB?.deleteDatabase?.('mtgCanvas'); } catch {}
+      try { (window as any).indexedDB?.deleteDatabase?.('mtgImageCache'); } catch {}
+      // If running with a real DB (desktop), clear tables
+      try {
+        if (hasRealDb()) {
+          const instIds = (InstancesRepo.list() || []).map((r:any)=> r.id).filter((n:any)=> typeof n==='number');
+          if (instIds.length) InstancesRepo.deleteMany(instIds);
+          const grpIds = (GroupsRepo.list() || []).map((g:any)=> g.id).filter((n:any)=> typeof n==='number');
+          if (grpIds.length) GroupsRepo.deleteMany(grpIds);
+        }
+      } catch {}
+  // Ensure the next load starts empty (skip universe restore once)
+  try { sessionStorage.setItem('mtgcanvas_start_empty_once', '1'); } catch {}
+    }
+  });
   // Search palette setup
   const searchUI = installSearchPalette({
     getSprites: ()=> sprites,
@@ -1484,6 +1925,108 @@ const splashEl = document.getElementById('splash');
     }
   });
 
+  // --- Utility: create a new group from a list of card names ---
+  function normalizeName(s: string){ return (s||'').trim().toLowerCase(); }
+  function createGroupWithCardIds(ids:number[], name:string){
+    if (!ids.length) return;
+    let id = groups.size ? Math.max(...groups.keys())+1 : 1;
+    try { id = (GroupsRepo as any).create ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300) : id; } catch {}
+    const gv = createGroupVisual(id, 0, 0, 300, 300);
+    gv.name = name;
+    groups.set(id, gv); world.addChild(gv.gfx); attachResizeHandle(gv); attachGroupInteractions(gv);
+    const touchedOld = new Set<number>();
+    ids.forEach(cid=> {
+      const s = sprites.find(sp=> sp.__id===cid);
+      if (!s) return;
+      if (s.__groupId && s.__groupId !== gv.id) {
+        const old = groups.get(s.__groupId);
+        if (old) { removeCardFromGroup(old, s.__id); touchedOld.add(old.id); }
+      }
+      addCardToGroupOrdered(gv, cid, gv.order.length);
+      (s as any).__groupId = gv.id;
+    });
+    try { InstancesRepo.updateMany(ids.map(cid=> ({id: cid, group_id: gv.id}))); } catch {}
+  // Try to place the group near top-left of current view without overlap first
+    (function placeGroup(){
+      const pad = 16;
+      const invScale = 1 / world.scale.x;
+      const viewLeft = (-world.position.x) * invScale;
+      const viewTop = (-world.position.y) * invScale;
+      const startX = snap(viewLeft + 40);
+      const startY = snap(viewTop + 40);
+      function collides(x:number,y:number): boolean {
+        const gx1 = x - pad, gy1 = y - pad, gx2 = x + gv.w + pad, gy2 = y + gv.h + pad;
+        for (const eg of groups.values()) {
+          if (eg.id===gv.id) continue;
+          const x1 = eg.gfx.x - pad, y1 = eg.gfx.y - pad, x2 = eg.gfx.x + eg.w + pad, y2 = eg.gfx.y + eg.h + pad;
+          if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+        }
+        for (const s of sprites){
+          if ((s as any).__groupId === gv.id) continue;
+          const x1 = s.x - 4, y1 = s.y - 4, x2 = s.x + 100 + 4, y2 = s.y + 140 + 4;
+          if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+        }
+        return false;
+      }
+      let placed = false;
+      for (let dy=0; dy<40 && !placed; dy++){
+        for (let dx=0; dx<40 && !placed; dx++){
+          const x = startX + dx * (gv.w + 24);
+          const y = startY + dy * (gv.h + 24);
+          if (!collides(x,y)) { gv.gfx.x = x; gv.gfx.y = y; placed = true; }
+        }
+      }
+      if (!placed) { gv.gfx.x = startX; gv.gfx.y = startY; }
+    })();
+
+  // Now size and layout the group at its final position
+  autoPackGroup(gv, sprites, s=> spatial.update({ id:s.__id, minX:s.x, minY:s.y, maxX:s.x+100, maxY:s.y+140 }));
+  touchedOld.forEach(gid=> { const og = groups.get(gid); if (!og) return; ensureGroupEncapsulates(og, sprites); updateGroupMetrics(og, sprites); drawGroup(og, SelectionStore.state.groupIds.has(og.id)); });
+  updateGroupMetrics(gv, sprites); drawGroup(gv, false);
+  }
+
+  async function createGroupFromNames(names:string[], groupName='Max Combo Deck'){
+    const wanted = names.map(normalizeName);
+    const index = new Map<string, number[]>();
+    sprites.forEach(s=> {
+      const nm = normalizeName((s as any).__card?.name || '');
+      if (!nm) return; const arr = index.get(nm); if (arr) arr.push(s.__id); else index.set(nm, [s.__id]);
+    });
+    const chosenIds: number[] = [];
+    const used = new Set<number>();
+    for (const n of wanted){
+      const arr = index.get(n);
+      if (!arr || !arr.length) continue;
+      const cid = arr.find(id=> !used.has(id));
+      if (cid!=null){ chosenIds.push(cid); used.add(cid); }
+    }
+    if (!chosenIds.length) return;
+    createGroupWithCardIds(chosenIds, groupName);
+  }
+
+  async function createGroupFromJsonDeck(url:string, groupName='Max Combo Deck'){
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const names: string[] = Array.isArray(data?.deck) ? data.deck : (Array.isArray(data?.cards) ? data.cards : []);
+      if (!names.length) return;
+      await createGroupFromNames(names, groupName);
+    } catch {/* ignore */}
+  }
+
+  // Expose helpers for console use
+  (window as any).createGroupFromNames = createGroupFromNames;
+  (window as any).createGroupFromJsonDeck = createGroupFromJsonDeck;
+
+  // Auto-load a deck JSON placed in public as /max_combo_deck.json when query flag is set
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.get('autogroup') === 'max-deck') {
+      createGroupFromJsonDeck('/max_combo_deck.json', params.get('group') || 'Max Combo Deck');
+    }
+  } catch {}
+
   // Table mode stub container
   const tableEl = document.createElement('div');
   tableEl.id='table-mode';
@@ -1533,22 +2076,36 @@ const splashEl = document.getElementById('splash');
     }
   }
 
-  app.ticker.add(()=> { const now = performance.now(); const dt = now - last; last = now; camera.update(dt); runCulling(); loadVisibleImages(); upgradeVisibleHiRes(); groups.forEach(gv=> { updateGroupTextQuality(gv, world.scale.x); updateGroupZoomPresentation(gv, world.scale.x, sprites); }); updatePerf(dt); });
+  app.ticker.add(()=> {
+    const now = performance.now(); const dt = now - last; last = now;
+    camera.update(dt); runCulling(); loadVisibleImages(); upgradeVisibleHiRes();
+    // Build a per-frame id->sprite map to avoid repeated array scans in hot paths
+    const idToSprite: Map<number, CardSprite> = new Map();
+    for (const s of sprites) idToSprite.set(s.__id, s);
+    // Monkey-patch a hidden reference used by groupNode to speed lookups (fallback to array if absent)
+    (window as any).__mtgIdToSprite = idToSprite;
+    // Enforce GPU budget by demoting offscreen sprites when over the cap
+    try { enforceGpuBudgetForSprites(sprites); } catch {}
+    groups.forEach(gv=> { updateGroupTextQuality(gv, world.scale.x); updateGroupZoomPresentation(gv, world.scale.x, sprites); });
+    updatePerf(dt);
+  });
   // Periodically ensure any new sprites have context listeners
   setInterval(()=> { try { ensureCardContextListeners(); } catch {} }, 2000);
   if (PERSIST_MODE==='memory') {
     window.addEventListener('beforeunload', ()=> {
-      try { persistLocalPositions(); } catch {}
+      try { if (!SUPPRESS_SAVES) persistLocalPositions(); } catch {}
       try { // flush any pending group save immediately
         const anyWin:any = window; if (anyWin.lsGroupsTimer) { clearTimeout(anyWin.lsGroupsTimer); }
-        // direct call ensures groups saved even if debounce pending
-        (function(){ try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} })();
+        // direct call ensures groups saved even if debounce pending (unless suppressed)
+        if (!SUPPRESS_SAVES) (function(){ try { const data = { groups: [...groups.values()].map(gv=> ({ id: gv.id, x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h, name: gv.name, collapsed: gv.collapsed, color: gv.color, membersById: gv.order.slice(), membersByIndex: gv.order.map(cid=> sprites.findIndex(s=> s.__id===cid)).filter(i=> i>=0) })) }; localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data)); } catch {} })();
       } catch {}
     });
   }
 
   // Fallback global hotkey listener (capture) to ensure Help toggles even if earlier handler failed.
   window.addEventListener('keydown', (e)=> {
+  // Ctrl+I to open Import/Export
+  if ((e.ctrlKey || e.metaKey) && (e.key==='i' || e.key==='I')) { e.preventDefault(); (importExportUI as any).show(); return; }
     if (e.key==='h' || e.key==='H' || e.key==='?') {
       if ((e as any).__helpHandled) return; // primary handler already ran
       if (e.repeat) return;

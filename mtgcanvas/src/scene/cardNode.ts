@@ -124,8 +124,11 @@ function enforceTextureBudget(){
   textureCache.forEach(ent=> { if (ent.refs===0) candidates.push(ent); });
   if (!candidates.length) return;
   candidates.sort((a,b)=> a.lastUsed - b.lastUsed);
+  const now = performance.now();
   for (const ent of candidates){
     if (totalTextureBytes <= budgetBytes) break;
+    // Safety: only evict entries that have been idle long enough to avoid races
+    if (now - ent.lastUsed < 1200) continue;
     try { ent.tex.destroy(true); } catch {}
     textureCache.delete(ent.url);
     totalTextureBytes -= ent.bytes;
@@ -141,7 +144,7 @@ function demoteSpriteTextureToPlaceholder(s: CardSprite){
   const prevUrl: string | undefined = (s as any).__currentTexUrl;
   if (prevUrl){
     const pe = textureCache.get(prevUrl);
-    if (pe){ pe.refs = Math.max(0, pe.refs-1); if (pe.refs===0){ try { pe.tex.destroy(true); totalTextureBytes -= pe.bytes; } catch{}; textureCache.delete(prevUrl); } }
+  if (pe){ pe.refs = Math.max(0, pe.refs-1); /* defer actual destroy to global budget pass to avoid mid-frame races */ }
     (s as any).__currentTexUrl = undefined;
   }
   s.__imgLoaded = false; s.__imgLoading = false; s.__qualityLevel = 0;
@@ -188,6 +191,8 @@ export function ensureCardImage(sprite: CardSprite) {
     if (sprite.__qualityLevel===undefined) sprite.__qualityLevel = 0;
     if (SelectionStore.state.cardIds.has(sprite.__id)) updateCardSpriteAppearance(sprite, true);
     if (isDoubleSided(card)) ensureDoubleSidedBadge(sprite, true);
+    // Enforce GPU texture budget after loading a new base texture
+    enforceTextureBudget();
   }).catch(()=> { sprite.__imgLoading=false; });
 }
 
@@ -290,28 +295,10 @@ export function getInflightTextureCount(){ return inflightTex.size; }
 export function updateCardSpriteAppearance(s: CardSprite, selected:boolean) {
   if (!cachedTextures) return; // should exist after first card
   if (s.__imgLoaded) {
-    // Maintain image texture; toggle outline overlay for selection.
-    if (!s.__outline) {
-      const g = new PIXI.Graphics();
-      const tex: any = s.texture;
-      const ow = tex?.orig?.width || tex?.baseTexture?.width || 100;
-      const oh = tex?.orig?.height || tex?.baseTexture?.height || 140;
-      g.rect(0,0,ow,oh).stroke({color:0x00aaff,width:4});
-      g.visible = false;
-      s.addChild(g);
-      s.__outline = g;
-    }
-    else if (selected) {
-      // Ensure outline matches current texture intrinsic size
-      const tex: any = s.texture; const g = s.__outline;
-      const ow = tex?.orig?.width || tex?.baseTexture?.width || 100;
-      const oh = tex?.orig?.height || tex?.baseTexture?.height || 140;
-      if ((g as any).__ow !== ow || (g as any).__oh !== oh) {
-        g.clear(); g.rect(0,0,ow,oh).stroke({color:0x00aaff,width:4});
-        (g as any).__ow = ow; (g as any).__oh = oh;
-      }
-    }
-    if (s.__outline) s.__outline.visible = selected;
+    // Simpler selection styling to avoid nested Graphics on Sprites in Pixi v8: tint when selected
+    (s as any).tint = selected ? 0xbfeeff : 0xffffff;
+    // Hide legacy outline if present
+    if (s.__outline) { try { s.__outline.visible = false; } catch {} }
     return;
   }
   const inGroup = !!s.__groupId;

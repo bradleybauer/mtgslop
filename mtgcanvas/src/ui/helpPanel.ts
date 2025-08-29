@@ -5,7 +5,7 @@ const HELP_SECTIONS = [
   { title:'Selection', items:[ ['Single','Click'], ['Add / Toggle','Shift+Click'], ['Marquee','Drag empty space (Shift = additive)'], ['Select All / Clear','Ctrl+A / Esc'] ]},
   { title:'Cards', items:[ ['Move','Drag'], ['Nudge','Arrow Keys (Shift = 5×)'] ]},
   { title:'Groups', items:[ ['Create','G (around selection) or empty at center'], ['Move','Drag header'], ['Resize','Drag bottom-right handle'], ['Rename','Double-click header or F2'], ['Delete','Del (cards or groups)'], ['Layout','Grid auto-layout'] ]},
-  { title:'Help & Misc', items:[ ['Toggle Help','H or ?'], ['Help FAB','Hover / click “?” bottom-right'], ['Recover View','Press F if you get lost'] ]}
+  { title:'Help & Misc', items:[ ['Toggle Help','H or ?'], ['Import / Export','Ctrl+I'], ['Help FAB','Hover / click “?” bottom-right'], ['Recover View','Press F if you get lost'] ]}
 ];
 
 function buildHelpHTML(){ return `<div class="help-root">${HELP_SECTIONS.map(sec=> `\n      <section><h2>${sec.title}</h2><ul>${sec.items.map(i=> `<li><b>${i[0]}:</b> <span>${i[1]}</span></li>`).join('')}</ul></section>`).join('')}\n      <section class="tips"><h2>Tips</h2><ul><li>Alt disables snapping temporarily.</li><li>Shift while marquee adds to selection.</li><li>Use Fit Selection (Z) to zoom to current work.</li></ul></section>\n    </div>`; }
