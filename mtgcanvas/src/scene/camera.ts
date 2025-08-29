@@ -1,4 +1,4 @@
-import * as PIXI from "pixi.js";
+import type * as PIXI from "pixi.js";
 
 export interface CameraOptions {
   world: PIXI.Container;

@@ -406,7 +406,6 @@ function parse(tokens: LexToken[]): Node {
   return ast;
 }
 
-
 function buildTokenPredicate(
   raw: string,
   neg: boolean,
@@ -677,7 +676,6 @@ function evalNode(node: Node, card: CardLike): boolean {
 }
 
 // -------------------- Helpers & extended predicates --------------------
-
 
 function facesConcat(
   card: CardLike,

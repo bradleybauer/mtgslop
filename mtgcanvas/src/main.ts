@@ -743,7 +743,6 @@ const splashEl = document.getElementById("splash");
     input.addEventListener("blur", () => commit(true));
   }
 
-
   // ---- Side Group Info Panel (replaces floating rename buttons) ----
   let groupInfoPanel: HTMLDivElement | null = null;
   let groupInfoNameInput: HTMLInputElement | null = null;

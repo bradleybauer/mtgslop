@@ -22,23 +22,16 @@ module.exports = {
     "node_modules/",
   ],
   rules: {
-//     // Keep noise low; prefer gradual tightening.
+    // Keep noise low; prefer gradual tightening.
     "@typescript-eslint/no-explicit-any": "off",
-//   "no-console": ["warn", { allow: ["warn", "error"] }],
-  "no-empty": ["warn", { allowEmptyCatch: true }],
-//     "@typescript-eslint/consistent-type-imports": ["warn", { prefer: "type-imports" }],
-//     "eqeqeq": ["warn", "smart"],
-//   "prefer-const": "warn",
-//   "no-constant-condition": "warn",
-//   "no-inner-declarations": "warn",
-//     "no-unused-vars": "off",
-//     "@typescript-eslint/no-unused-vars": [
-//       "warn",
-//       { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
-//     ],
-//   // Allow safe regex escapes until we refactor
-//   "no-useless-escape": "warn",
-//   // Style-only nits as warnings for now
-//   "@typescript-eslint/ban-types": "warn",
+    // "no-console": ["warn", { allow: ["warn", "error"] }],
+    "no-empty": ["warn", { allowEmptyCatch: true }],
+    "@typescript-eslint/consistent-type-imports": ["warn", { prefer: "type-imports" }],
+    "eqeqeq": ["warn", "smart"],
+    "prefer-const": "warn",
+    "no-constant-condition": "warn",
+    "no-inner-declarations": "warn",
+    "no-useless-escape": "warn",
+    "@typescript-eslint/ban-types": "warn",
   },
 };

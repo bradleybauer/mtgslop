@@ -1,5 +1,5 @@
 import type { CardSprite } from "./cardNode";
-import * as PIXI from "pixi.js";
+import type * as PIXI from "pixi.js";
 
 /**
  * Simple view-based culling. Expand later with spatial index integration.

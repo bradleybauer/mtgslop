@@ -220,7 +220,7 @@ export function installImportExport(
     const importBtn = el.querySelector("#ie-import-btn") as HTMLButtonElement;
     const scryPane = el.querySelector("#ie-scry-pane") as HTMLDivElement | null;
 
-  const refreshExport = () => {
+    const refreshExport = () => {
       const fmt = formatSel?.value || "counts";
       if (fmt === "groups" && opts.getGroupsExport) {
         if (exportArea) exportArea.value = opts.getGroupsExport();
@@ -229,7 +229,7 @@ export function installImportExport(
       const names = scopeAll ? opts.getAllNames() : opts.getSelectedNames();
       const items = groupCounts(names);
       if (exportArea) exportArea.value = countsToText(items);
-  };
+    };
 
     scopeAllEl.onchange = () => {
       scopeAll = true;
@@ -324,7 +324,7 @@ export function installImportExport(
           runBtn.textContent = busy ? "Cancel" : "Import";
         }
       };
-        const runOrCancel = async () => {
+      const runOrCancel = async () => {
         if (scryInFlight) {
           // Treat click as cancel
           try {
@@ -371,7 +371,7 @@ export function installImportExport(
           setScryBusy(false);
           scryAbort = null;
         }
-        };
+      };
       runBtn?.addEventListener("click", runOrCancel);
       qEl?.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" && !ev.shiftKey) {
