@@ -148,6 +148,108 @@ const splashEl = document.getElementById("splash");
   layoutBanner();
   window.addEventListener("resize", layoutBanner);
 
+  // Controls helper overlay (on-canvas) — shown whenever there are zero cards & zero groups
+  let ctrlsOverlay: PIXI.Container | null = null;
+  let ctrlsOverlayW = 0;
+  function createCtrlsOverlay(): PIXI.Container {
+    const layer = new PIXI.Container();
+    layer.zIndex = 999999; // below banner but above world
+    layer.eventMode = "none";
+    const padX = 36;
+    const padY = 28;
+    const lineGap = 12;
+    const bodyStyle = {
+      fill: 0xffffff,
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: 30,
+      lineHeight: 28,
+    } as any;
+    const title = new PIXI.Text({
+      text: "Controls",
+      style: {
+        fill: 0xffffff,
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontWeight: "700" as any,
+        fontSize: 60,
+        lineHeight: 36,
+      },
+    });
+    const lines: PIXI.Text[] = [
+      new PIXI.Text({ text: "Import cards: Ctrl+I", style: bodyStyle }),
+      new PIXI.Text({
+        text: "Zoom: Mouse Wheel (cursor focus)",
+        style: bodyStyle,
+      }),
+      new PIXI.Text({
+        text: "Pan: Right-Click+Drag or Space+Drag",
+        style: bodyStyle,
+      }),
+    ];
+    // Measure
+    let maxW = title.width;
+    let totalH = title.height;
+    for (const t of lines) {
+      if (t.width > maxW) maxW = t.width;
+      totalH += lineGap + t.height;
+    }
+    const w = Math.ceil(maxW + padX * 2);
+    const h = Math.ceil(totalH + padY * 2);
+    ctrlsOverlayW = w;
+    // Background
+    const bg = new PIXI.Graphics();
+    const borderColor = 0x33bbff;
+    const fillColor = 0x0f1418;
+    bg.roundRect(0, 0, w, h, 12)
+      .fill({ color: fillColor, alpha: 0.92 })
+      .stroke({ color: borderColor, width: 4 });
+    layer.addChild(bg);
+    // Position text
+    let y = padY;
+    title.x = padX;
+    title.y = y;
+    layer.addChild(title);
+    y += title.height + lineGap;
+    for (const t of lines) {
+      t.x = padX;
+      t.y = y;
+      layer.addChild(t);
+      y += t.height + lineGap;
+    }
+    return layer;
+  }
+  function layoutCtrlsOverlay() {
+    if (!ctrlsOverlay) return;
+    const cx = Math.round(window.innerWidth / 2 - ctrlsOverlayW / 2);
+    const cy = Math.round(window.innerHeight * 0.18);
+    ctrlsOverlay.x = Math.max(8, cx);
+    ctrlsOverlay.y = Math.max(8, cy);
+  }
+  function showCtrlsOverlayIfNeeded() {
+    try {
+      if (ctrlsOverlay) return;
+      ctrlsOverlay = createCtrlsOverlay();
+      app.stage.addChild(ctrlsOverlay);
+      layoutCtrlsOverlay();
+    } catch {}
+  }
+  function hideCtrlsOverlay() {
+    if (!ctrlsOverlay) return;
+    try {
+      ctrlsOverlay.destroy({ children: true });
+    } catch {}
+    ctrlsOverlay = null;
+  }
+  function updateEmptyStateOverlay() {
+    // Note: relies on groups being initialized before this is called
+    try {
+      // Show overlay iff there are no cards on the canvas
+      const isEmpty = sprites.length === 0;
+      if (isEmpty) showCtrlsOverlayIfNeeded();
+      else hideCtrlsOverlay();
+    } catch {}
+  }
+  window.addEventListener("resize", layoutCtrlsOverlay);
+
   // Camera abstraction
   const camera = new Camera({ world });
   const spatial = new SpatialIndex();
@@ -176,6 +278,8 @@ const splashEl = document.getElementById("splash");
     (s as any).__cardSprite = true;
     world.addChild(s);
     sprites.push(s);
+    // Any card addition should hide the overlay immediately
+    updateEmptyStateOverlay();
     spatial.insert({
       id: s.__id,
       minX: s.x,
@@ -208,6 +312,8 @@ const splashEl = document.getElementById("splash");
     try {
       (ensureCardContextListeners as any)();
     } catch {}
+    // Adding a sprite may end the empty state (safe before groups exist)
+    updateEmptyStateOverlay();
     return s;
   }
   const loaded = loadAll();
@@ -468,6 +574,7 @@ const splashEl = document.getElementById("splash");
       gv.gfx.destroy();
     } catch {}
     groups.delete(id);
+    updateEmptyStateOverlay();
   }
   // Memory mode group persistence helpers
   let lsGroupsTimer: any = null;
@@ -584,6 +691,7 @@ const splashEl = document.getElementById("splash");
         (GroupsRepo as any).ensureNextId(maxId + 1);
     } catch {}
     scheduleGroupSave();
+    updateEmptyStateOverlay();
   }
   // Rehydrate persisted groups
   if (loaded.groups && (loaded as any).groups.length) {
@@ -629,6 +737,7 @@ const splashEl = document.getElementById("splash");
         (GroupsRepo as any).ensureNextId(maxId + 1);
     } catch {}
     finishStartup();
+    updateEmptyStateOverlay();
   } else {
     // If instances were present at load-time, restore groups from local storage immediately.
     if (loaded.instances.length) {
@@ -653,9 +762,10 @@ const splashEl = document.getElementById("splash");
 
   const help = initHelp();
   (window as any).__helpAPI = help; // debug access
-  function toggleHelp() {
-    help.toggle();
-  }
+  // Use a top-right FAB instead of a keyboard shortcut
+  help.ensureFab();
+  // After help API exists, update empty-state once
+  updateEmptyStateOverlay();
 
   // Inline group renaming (kept local for now)
   function startGroupRename(gv: GroupVisual) {
@@ -2119,6 +2229,7 @@ const splashEl = document.getElementById("splash");
         scheduleGroupSave();
         SelectionStore.clear();
         SelectionStore.toggleGroup(id);
+        updateEmptyStateOverlay();
       } else {
         const center = new PIXI.Point(
           window.innerWidth / 2,
@@ -2151,6 +2262,7 @@ const splashEl = document.getElementById("splash");
         scheduleGroupSave();
         SelectionStore.clear();
         SelectionStore.toggleGroup(id);
+        updateEmptyStateOverlay();
       }
     }
 
@@ -2187,12 +2299,7 @@ const splashEl = document.getElementById("splash");
     if (e.key === "z" || e.key === "Z") {
       fitSelection();
     }
-    // Help overlay toggle (H or ?)
-    if (e.key === "h" || e.key === "H") {
-      if (e.repeat) return; // ignore auto-repeat
-      (e as any).__helpHandled = true;
-      toggleHelp();
-    }
+    // Help hotkey disabled in favor of FAB
     if (e.key === "Delete") {
       const cardIds = SelectionStore.getCards();
       const groupIds = SelectionStore.getGroups();
@@ -2229,6 +2336,8 @@ const splashEl = document.getElementById("splash");
           }
         });
         if (touchedGroups.size) scheduleGroupSave();
+        // If no cards and no groups remain, surface overlay
+        updateEmptyStateOverlay();
         // Persist updated positions to reflect removals
         try {
           if (!SUPPRESS_SAVES) {
@@ -2838,13 +2947,13 @@ const splashEl = document.getElementById("splash");
       b.onclick = handler;
       el!.appendChild(b);
     }
-    addBtn("Grid Ungrouped Cards", () => {
+    addBtn("Auto-Layout Ungrouped", () => {
       gridUngroupedCards();
     });
-    addBtn("Grid Grouped Cards", () => {
+    addBtn("Auto-Layout Grouped", () => {
       gridGroupedCards();
     });
-    addBtn("Full Reset (Clear + Grid All)", () => {
+    addBtn("Totally Reset Layout", () => {
       const ok = window.confirm(
         "Full Reset will clear all groups and re-grid every card. This cannot be undone. Proceed?",
       );
@@ -2852,7 +2961,7 @@ const splashEl = document.getElementById("splash");
       clearGroupsOnly();
       resetLayout(true);
     });
-    addBtn("Load Cards from JSON…", () => {
+    addBtn("Load Cards from JSON", () => {
       loadFromJsonFile();
     });
     document.body.appendChild(el);
@@ -3995,6 +4104,29 @@ const splashEl = document.getElementById("splash");
       } catch {}
     },
   });
+
+  // Global shortcut: Ctrl/Cmd+I opens Import/Export (ignore when typing in inputs)
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "i" || e.key === "I")) {
+        const target = e.target as HTMLElement | null;
+        if (
+          target &&
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.isContentEditable)
+        ) {
+          return;
+        }
+        e.preventDefault();
+        try {
+          (importExportUI as any).show();
+        } catch {}
+      }
+    },
+    { capture: true },
+  );
   // Search palette setup
   const searchUI = installSearchPalette({
     getSprites: () => sprites,
@@ -4281,33 +4413,5 @@ const splashEl = document.getElementById("splash");
     } catch {}
   });
 
-  // Global hotkey listener (capture) to ensure Help toggles even if earlier handler failed.
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      // Ctrl+I to open Import/Export
-      if ((e.ctrlKey || e.metaKey) && (e.key === "i" || e.key === "I")) {
-        e.preventDefault();
-        (importExportUI as any).show();
-        return;
-      }
-      if (e.key === "h" || e.key === "H" || e.key === "?") {
-        if ((e as any).__helpHandled) return; // primary handler already ran
-        if (e.repeat) return;
-        const target = e.target as HTMLElement | null;
-        if (
-          target &&
-          (target.tagName === "INPUT" ||
-            target.tagName === "TEXTAREA" ||
-            target.isContentEditable)
-        )
-          return;
-        if ((window as any).__helpAPI) {
-          console.log("[help] listener toggle");
-          (window as any).__helpAPI.toggle();
-        }
-      }
-    },
-    { capture: true },
-  );
+  // Global Help hotkey removed; keep Ctrl+I import/export intact elsewhere.
 })();

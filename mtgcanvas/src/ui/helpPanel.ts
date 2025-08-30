@@ -1,5 +1,8 @@
 export interface HelpAPI {
   toggle(): void;
+  show(): void;
+  hide(): void;
+  showCentered(): void;
   ensureFab(): void;
 }
 
@@ -7,8 +10,8 @@ const HELP_SECTIONS = [
   {
     title: "Navigation",
     items: [
-      ["Pan", "Space + Drag / Middle Mouse Drag"],
-      ["Zoom", "Wheel (cursor focus)"],
+      ["Pan", "Space+Drag / Middle Mouse Drag / Right Mouse Drag"],
+      ["Zoom", "Mouse Wheel"],
       ["Zoom In / Out", "Ctrl + (+ / -)"],
       ["Fit All", "F"],
       ["Fit Selection", "Shift+F or Z"],
@@ -22,32 +25,29 @@ const HELP_SECTIONS = [
       ["Add / Toggle", "Shift+Click"],
       ["Marquee", "Drag empty space (Shift = additive)"],
       ["Select All / Clear", "Ctrl+A / Esc"],
+      ["Delete", "Delete key"],
     ],
   },
   {
     title: "Cards",
-    items: [
-      ["Move", "Drag"],
-      ["Nudge", "Arrow Keys (Shift = 5×)"],
-    ],
+    items: [["Move", "Drag"]],
   },
   {
     title: "Groups",
     items: [
       ["Create", "G (around selection) or empty at center"],
-      ["Move", "Drag header"],
-      ["Resize", "Drag bottom-right handle"],
-      ["Rename", "Double-click header or F2"],
-      ["Delete", "Del (cards or groups)"],
-      ["Layout", "Grid auto-layout"],
+      ["Delete", "Delete key"],
     ],
+  },
+  {
+    title: "Search",
+    items: [["Open Search", "Ctrl+F or /"]],
   },
   {
     title: "Help & Misc",
     items: [
-      ["Toggle Help", "H or ?"],
+      ["Help", "Click the “?” button (top-right)"],
       ["Import / Export", "Ctrl+I"],
-      ["Help FAB", "Hover / click “?” bottom-right"],
       ["Recover View", "Press F if you get lost"],
     ],
   },
@@ -61,7 +61,8 @@ function ensureHelpStyles() {
   if (document.getElementById("help-style")) return;
   const style = document.createElement("style");
   style.id = "help-style";
-  style.textContent = `.help-root{font:14px/1.55 var(--panel-font);padding:2px 0;} .help-root h2{margin:12px 0 4px;color:var(--panel-accent);} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 6px;padding:3px 0;border-bottom:1px solid color-mix(in srgb,var(--panel-fg) 12%, transparent);} .help-root li:last-child{border-bottom:none;} .help-root b{color:var(--panel-fg);font-weight:600;} .help-root span{color:var(--panel-fg-dim);} .help-root section{margin-bottom:8px;} .help-root .tips ul li{border-bottom:none;}`;
+  style.textContent = `.help-root{font:14px/1.55 var(--panel-font);padding:2px 0;text-align:left;} .help-root h2{margin:12px 0 4px;color:var(--panel-accent);} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 6px;padding:3px 0;border-bottom:1px solid color-mix(in srgb,var(--panel-fg) 12%, transparent);} .help-root li:last-child{border-bottom:none;} .help-root b{color:var(--panel-fg);font-weight:600;} .help-root span{color:var(--panel-fg-dim);} .help-root section{margin-bottom:8px;} .help-root .tips ul li{border-bottom:none;}
+  .ui-help-centered{position:fixed !important; left:50% !important; top:50% !important; right:auto !important; transform:translate(-50%, -50%); max-width:min(90vw, 720px) !important; width:auto !important; z-index:10000 !important;}`;
   document.head.appendChild(style);
 }
 
@@ -84,6 +85,20 @@ export function initHelp(): HelpAPI {
     helpEl.innerHTML = buildHelpHTML();
     document.body.appendChild(helpEl);
   }
+  function setVisible(v: boolean) {
+    if (!helpEl) createHelp();
+    helpVisible = v;
+    if (helpEl) {
+      helpEl.style.setProperty("display", v ? "block" : "none", "important");
+      if (v) helpEl.focus?.();
+    }
+  }
+  function setCentered(on: boolean) {
+    if (!helpEl) createHelp();
+    if (!helpEl) return;
+    if (on) helpEl.classList.add("ui-help-centered");
+    else helpEl.classList.remove("ui-help-centered");
+  }
   function toggle() {
     const now = performance.now();
     const last = (window as any).__lastHelpToggle || 0;
@@ -91,20 +106,15 @@ export function initHelp(): HelpAPI {
       return;
     } // debounce to prevent double handlers flipping twice
     (window as any).__lastHelpToggle = now;
-    if (!helpEl) createHelp();
-    helpVisible = !helpVisible;
-    if (helpEl) {
-      helpEl.style.setProperty(
-        "display",
-        helpVisible ? "block" : "none",
-        "important",
-      );
-      if (helpVisible) {
-        helpEl.focus?.();
-      }
-      console.log("[help] toggle -> visible=", helpVisible);
-    }
+    setVisible(!helpVisible);
+    console.log("[help] toggle -> visible=", helpVisible);
   }
+  const show = () => setVisible(true);
+  const hide = () => setVisible(false);
+  const showCentered = () => {
+    setCentered(true);
+    setVisible(true);
+  };
   function ensureFab() {
     if (document.getElementById("help-fab")) return;
     ensureThemeStyles();
@@ -112,14 +122,14 @@ export function initHelp(): HelpAPI {
     const fab = document.createElement("div");
     fab.id = "help-fab";
     fab.style.cssText =
-      "position:fixed;bottom:14px;right:14px;width:48px;height:48px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;font:26px/48px var(--panel-font);text-align:center;cursor:help;user-select:none;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+      "position:fixed;top:14px;right:14px;width:48px;height:48px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;font:26px/48px var(--panel-font);text-align:center;cursor:help;user-select:none;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
     fab.textContent = "?";
     fab.title = "Help";
     const panel = document.createElement("div");
     panel.id = "help-fab-panel";
     panel.className = "ui-panel ui-panel-scroll";
     panel.style.position = "absolute";
-    panel.style.bottom = "54px";
+    panel.style.top = "54px";
     panel.style.right = "0";
     panel.style.width = "480px";
     panel.style.maxHeight = "60vh";
@@ -167,5 +177,5 @@ export function initHelp(): HelpAPI {
     });
     document.body.appendChild(fab);
   }
-  return { toggle, ensureFab };
+  return { toggle, show, hide, showCentered, ensureFab };
 }
