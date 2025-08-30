@@ -168,39 +168,39 @@ export function installImportExport(
     el.style.transform = "translateX(-50%)";
     el.style.zIndex = "10030";
     el.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
-        <div style="font-size:26px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.9;">Import / Export</div>
-        <div style="margin-left:auto;display:flex;gap:6px;">
-      ${opts.clearPersistedData ? '<button type="button" id="ie-clear-data" class="ui-btn danger" title="Clear persisted data (debug)" style="font-size:14px;padding:6px 10px">Clear Data…</button>' : ""}
-          <button type="button" id="ie-close" class="ui-btn" title="Close" style="font-size:14px;padding:6px 10px">Close</button>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px;">
+        <div style="font-size:28px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.9;">Import / Export</div>
+        <div style="margin-left:auto;display:flex;gap:8px;">
+      ${opts.clearPersistedData ? '<button type="button" id="ie-clear-data" class="ui-btn danger" title="Clear persisted data (debug)" style="font-size:15px;padding:8px 12px">Clear Data…</button>' : ""}
+          <button type="button" id="ie-close" class="ui-btn" title="Close" style="font-size:15px;padding:8px 12px">Close</button>
         </div>
       </div>
       <div style="display:block;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;" id="ie-content">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start;" id="ie-content">
         <div>
           <h2>Export</h2>
-          <div style="display:flex;gap:10px;align-items:center;margin:6px 0 8px;">
+          <div style="display:flex;gap:12px;align-items:center;margin:8px 0 10px;">
             <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-all" type="radio" name="ie-scope" checked style="margin:0 6px 0 0"/> All</label>
             <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-sel" type="radio" name="ie-scope" style="margin:0 6px 0 0"/> Selection</label>
             <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
               <label style="opacity:.85;">Format:</label>
-              <select id="ie-format" class="ui-input" style="padding:4px 6px;">
+              <select id="ie-format" class="ui-input" style="padding:6px 8px;">
                 <option value="counts" selected>Counts (decklist)</option>
                 <option value="groups">Groups</option>
               </select>
               <button id="ie-refresh" class="ui-btn" type="button">Refresh</button>
             </div>
           </div>
-          <textarea id="ie-export" class="ui-input" style="width:100%;min-height:220px;white-space:pre;" readonly placeholder="Exported decklist will appear here"></textarea>
-          <div style="display:flex;gap:8px;margin-top:8px;">
+          <textarea id="ie-export" class="ui-input" style="width:100%;min-height:260px;white-space:pre;" readonly placeholder="Exported decklist will appear here"></textarea>
+          <div style="display:flex;gap:10px;margin-top:10px;">
             <button id="ie-copy" type="button" class="ui-btn">Copy</button>
             <button id="ie-download" type="button" class="ui-btn">Download .txt</button>
           </div>
         </div>
         <div>
           <h2>Import</h2>
-          <textarea id="ie-import" class="ui-input" style="width:100%;min-height:260px;white-space:pre;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
-          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+          <textarea id="ie-import" class="ui-input" style="width:100%;min-height:300px;white-space:pre;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
+          <div style="display:flex;gap:10px;margin-top:10px;align-items:center;">
             <button id="ie-import-btn" type="button" class="ui-btn">Add to Canvas</button>
             <div id="ie-status" style="opacity:.8;font-size:12px;"></div>
           </div>
@@ -210,8 +210,8 @@ export function installImportExport(
             ? `
         <div id="ie-scry-pane" style="grid-column:1 / span 2;">
           <h2>Import from Scryfall search</h2>
-          <div style="display:flex;gap:8px;align-items:center;margin:6px 0 8px;">
-            <input id="ie-scry-query" class="ui-input" style="flex:1;padding:8px 10px;" placeholder="Scryfall query (e.g., o:infect t:creature cmc<=3)"/>
+          <div style="display:flex;gap:10px;align-items:center;margin:8px 0 10px;">
+            <input id="ie-scry-query" class="ui-input" style="flex:1;padding:10px 12px;" placeholder="Scryfall query (e.g., o:infect t:creature cmc<=3)"/>
             <button id="ie-scry-run" class="ui-btn" type="button">Import</button>
           </div>
           <div id="ie-scry-status" style="opacity:.8;font-size:12px;"></div>
@@ -421,6 +421,24 @@ export function installImportExport(
   function show() {
     const elp = ensure();
     elp.style.display = "block"; // pre-populate export
+    // Position under the Import/Export FAB if present
+    try {
+      const fab = document.getElementById("ie-fab");
+      if (fab) {
+        const rect = fab.getBoundingClientRect();
+        elp.style.position = "fixed";
+        elp.style.left = "auto";
+        elp.style.right = "14px";
+        elp.style.top = `${Math.round(rect.bottom + 8)}px`;
+        elp.style.transform = "none";
+      } else {
+        // Fallback to centered position
+        elp.style.left = "50%";
+        elp.style.top = "10%";
+        elp.style.right = "auto";
+        elp.style.transform = "translateX(-50%)";
+      }
+    } catch {}
     // Use current format selection when showing
     const fmtSel = elp.querySelector("#ie-format") as HTMLSelectElement | null;
     const fmt = fmtSel?.value || "counts";

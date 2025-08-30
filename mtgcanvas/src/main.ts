@@ -4105,6 +4105,103 @@ const splashEl = document.getElementById("splash");
     },
   });
 
+  // Import/Export FAB (top-right, beneath Help FAB)
+  function ensureImportExportFab() {
+    if (document.getElementById("ie-fab")) return;
+    // Reuse the help FAB bar if present; otherwise create it
+    let bar = document.getElementById("top-fab-bar") as HTMLDivElement | null;
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "top-fab-bar";
+      bar.style.cssText =
+        "position:fixed;top:16px;right:16px;display:flex;flex-direction:row-reverse;gap:12px;align-items:center;z-index:9999;";
+      document.body.appendChild(bar);
+    }
+    const fab = document.createElement("div");
+    fab.id = "ie-fab";
+    fab.title = "Import / Export (Ctrl+I)";
+    fab.textContent = "⇄"; // simple icon-like glyph
+    fab.style.cssText =
+      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;font:28px/56px var(--panel-font);text-align:center;cursor:pointer;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+    fab.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pinned = !pinned;
+      if (pinned) {
+        try {
+          (importExportUI as any).show();
+        } catch {}
+      } else {
+        scheduleHide();
+      }
+    });
+    // Hover-to-open like help FAB
+    let hover = false;
+    let pinned = false;
+    let hideTimer: any = null;
+    let wiredPanel = false;
+    function scheduleHide() {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        if (!hover && !pinned) {
+          try {
+            (importExportUI as any).hide();
+          } catch {}
+        }
+      }, 250);
+    }
+    function wirePanelHover() {
+      if (wiredPanel) return;
+      const panel = document.getElementById(
+        "import-export-panel",
+      ) as HTMLDivElement | null;
+      if (!panel) return;
+      wiredPanel = true;
+      panel.addEventListener("mouseenter", () => {
+        hover = true;
+        try {
+          (importExportUI as any).show();
+        } catch {}
+      });
+      panel.addEventListener("mouseleave", () => {
+        hover = false;
+        scheduleHide();
+      });
+    }
+    fab.addEventListener("mouseenter", () => {
+      hover = true;
+      // Notify others to close
+      try {
+        window.dispatchEvent(
+          new CustomEvent("mtg:fabs:open", { detail: { id: "import" } }),
+        );
+      } catch {}
+      try {
+        (importExportUI as any).show();
+      } catch {}
+      // Ensure we wire hover handlers to the panel once it's in the DOM
+      setTimeout(wirePanelHover, 0);
+    });
+    fab.addEventListener("mouseleave", () => {
+      hover = false;
+      scheduleHide();
+    });
+    // Close when another FAB opens
+    window.addEventListener(
+      "mtg:fabs:open",
+      (ev: any) => {
+        if (!ev || ev.detail?.id === "import") return;
+        pinned = false;
+        hover = false;
+        try {
+          (importExportUI as any).hide();
+        } catch {}
+      },
+      { capture: true },
+    );
+    bar.appendChild(fab);
+  }
+  ensureImportExportFab();
+
   // Global shortcut: Ctrl/Cmd+I opens Import/Export (ignore when typing in inputs)
   window.addEventListener(
     "keydown",

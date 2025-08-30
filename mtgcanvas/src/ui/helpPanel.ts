@@ -46,7 +46,7 @@ const HELP_SECTIONS = [
   {
     title: "Help & Misc",
     items: [
-      ["Help", "Click the “?” button (top-right)"],
+      ["Help", "Hover the “?” button (top-right)"],
       ["Import / Export", "Ctrl+I"],
       ["Recover View", "Press F if you get lost"],
     ],
@@ -54,14 +54,14 @@ const HELP_SECTIONS = [
 ];
 
 function buildHelpHTML() {
-  return `<div class="help-root">${HELP_SECTIONS.map((sec) => `\n      <section><h2>${sec.title}</h2><ul>${sec.items.map((i) => `<li><b>${i[0]}:</b> <span>${i[1]}</span></li>`).join("")}</ul></section>`).join("")}\n      <section class="tips"><h2>Tips</h2><ul><li>Alt disables snapping temporarily.</li><li>Shift while marquee adds to selection.</li><li>Use Fit Selection (Z) to zoom to current work.</li></ul></section>\n    </div>`;
+  return `<div class="help-root">${HELP_SECTIONS.map((sec) => `\n      <section><h2>${sec.title}</h2><ul>${sec.items.map((i) => `<li><b>${i[0]}:</b> <span>${i[1]}</span></li>`).join("")}</ul></section>`).join("")}\n</div>`;
 }
 import { ensureThemeStyles } from "./theme";
 function ensureHelpStyles() {
   if (document.getElementById("help-style")) return;
   const style = document.createElement("style");
   style.id = "help-style";
-  style.textContent = `.help-root{font:14px/1.55 var(--panel-font);padding:2px 0;text-align:left;} .help-root h2{margin:12px 0 4px;color:var(--panel-accent);} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 6px;padding:3px 0;border-bottom:1px solid color-mix(in srgb,var(--panel-fg) 12%, transparent);} .help-root li:last-child{border-bottom:none;} .help-root b{color:var(--panel-fg);font-weight:600;} .help-root span{color:var(--panel-fg-dim);} .help-root section{margin-bottom:8px;} .help-root .tips ul li{border-bottom:none;}
+  style.textContent = `.help-root{font:16px/1.6 var(--panel-font);padding:4px 0;text-align:left;} .help-root h2{margin:14px 0 6px;color:var(--panel-accent);} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 8px;padding:4px 0;border-bottom:1px solid color-mix(in srgb,var(--panel-fg) 12%, transparent);} .help-root li:last-child{border-bottom:none;} .help-root b{color:var(--panel-fg);font-weight:600;} .help-root span{color:var(--panel-fg-dim);} .help-root section{margin-bottom:10px;} .help-root .tips ul li{border-bottom:none;}
   .ui-help-centered{position:fixed !important; left:50% !important; top:50% !important; right:auto !important; transform:translate(-50%, -50%); max-width:min(90vw, 720px) !important; width:auto !important; z-index:10000 !important;}`;
   document.head.appendChild(style);
 }
@@ -69,6 +69,17 @@ function ensureHelpStyles() {
 export function initHelp(): HelpAPI {
   let helpEl: HTMLDivElement | null = null;
   let helpVisible = false;
+  const FAB_BAR_ID = "top-fab-bar";
+  function ensureFabBar(): HTMLDivElement {
+    let bar = document.getElementById(FAB_BAR_ID) as HTMLDivElement | null;
+    if (bar) return bar;
+    bar = document.createElement("div");
+    bar.id = FAB_BAR_ID;
+    bar.style.cssText =
+      "position:fixed;top:16px;right:16px;display:flex;flex-direction:row-reverse;gap:12px;align-items:center;z-index:9999;";
+    document.body.appendChild(bar);
+    return bar;
+  }
   function createHelp() {
     console.log("[help] createHelp invoked");
     ensureThemeStyles();
@@ -76,9 +87,9 @@ export function initHelp(): HelpAPI {
     helpEl = document.createElement("div");
     helpEl.className = "ui-panel ui-panel-scroll";
     helpEl.style.position = "fixed";
-    helpEl.style.top = "10px";
-    helpEl.style.right = "10px";
-    helpEl.style.width = "480px";
+    helpEl.style.top = "12px";
+    helpEl.style.right = "12px";
+    helpEl.style.width = "560px";
     helpEl.style.maxHeight = "70vh";
     helpEl.style.zIndex = "9998";
     helpEl.style.border = "2px solid var(--panel-accent)";
@@ -119,26 +130,33 @@ export function initHelp(): HelpAPI {
     if (document.getElementById("help-fab")) return;
     ensureThemeStyles();
     ensureHelpStyles();
+    const bar = ensureFabBar();
     const fab = document.createElement("div");
     fab.id = "help-fab";
     fab.style.cssText =
-      "position:fixed;top:14px;right:14px;width:48px;height:48px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;font:26px/48px var(--panel-font);text-align:center;cursor:help;user-select:none;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;font:30px/56px var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
     fab.textContent = "?";
     fab.title = "Help";
     const panel = document.createElement("div");
     panel.id = "help-fab-panel";
     panel.className = "ui-panel ui-panel-scroll";
     panel.style.position = "absolute";
-    panel.style.top = "54px";
+    panel.style.top = "62px";
     panel.style.right = "0";
-    panel.style.width = "480px";
-    panel.style.maxHeight = "60vh";
+    panel.style.width = "560px";
+    panel.style.maxHeight = "70vh";
     panel.style.display = "none";
     panel.innerHTML = buildHelpHTML();
     fab.appendChild(panel);
     let hover = false;
     let hideTimer: any = null;
     function show() {
+      // Notify other FAB panels to close
+      try {
+        window.dispatchEvent(
+          new CustomEvent("mtg:fabs:open", { detail: { id: "help" } }),
+        );
+      } catch {}
       panel.style.display = "block";
     }
     function scheduleHide() {
@@ -175,7 +193,18 @@ export function initHelp(): HelpAPI {
         scheduleHide();
       }
     });
-    document.body.appendChild(fab);
+    // Close help FAB panel when another FAB opens
+    window.addEventListener(
+      "mtg:fabs:open",
+      (ev: any) => {
+        if (!ev || ev.detail?.id === "help") return;
+        pinned = false;
+        hover = false;
+        panel.style.display = "none";
+      },
+      { capture: true },
+    );
+    bar.appendChild(fab);
   }
   return { toggle, show, hide, showCentered, ensureFab };
 }
