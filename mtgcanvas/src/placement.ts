@@ -156,10 +156,10 @@ function bestFirstFreeSpot(
     const heap = new MinHeap<{ x: number; y: number }>();
     const seen = new Set<string>();
     const bLocal = b;
-    function key(x: number, y: number) {
+    const key = (x: number, y: number) => {
       return x + "," + y;
-    }
-    function push(x: number, y: number) {
+    };
+    const push = (x: number, y: number) => {
       let cx = snap(x, ctx.gridSize);
       let cy = snap(y, ctx.gridSize);
       cx = Math.min(Math.max(bLocal.x, cx), bLocal.x + bLocal.w - w);
@@ -170,7 +170,7 @@ function bestFirstFreeSpot(
       const dx = cx + w / 2 - centerX;
       const dy = cy + h / 2 - centerY;
       heap.push(dx * dx + dy * dy, { x: cx, y: cy });
-    }
+    };
     push(sx0, sy0);
     let expansions = 0;
     const maxExpansions = 20000;

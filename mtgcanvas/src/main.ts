@@ -193,6 +193,13 @@ const splashEl = document.getElementById("splash");
   } as any);
   bannerText.alpha = 0.9;
   bannerLayer.addChild(bannerText);
+  // Keep banner colors in sync with theme changes
+  registerThemeListener(() => {
+    try {
+      (bannerText.style as any).fill = Colors.bannerText() as any;
+      (bannerText.style as any).dropShadowColor = Colors.bannerShadow() as any;
+    } catch {}
+  });
   function layoutBanner() {
     const padX = 16;
     const padY = 12;
@@ -335,8 +342,7 @@ const splashEl = document.getElementById("splash");
       ensureBoundsMarker({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
   } catch {}
   // Redraw bounds marker on theme changes with a theme-aware color
-  registerThemeListener((t) => {
-    themeForBounds = t;
+  registerThemeListener(() => {
     if (lastBounds) ensureBoundsMarker(lastBounds);
   });
   // Keep camera min zoom accommodating full bounds on viewport resize

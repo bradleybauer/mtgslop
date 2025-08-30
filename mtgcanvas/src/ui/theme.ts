@@ -9,14 +9,15 @@ export interface PanelOptions {
 }
 
 let injected = false;
-let currentTheme: "dark" | "light" = "dark";
-type ThemeListener = (theme: "dark" | "light") => void;
+export type ThemeId = "dark" | "light" | "blackYellow";
+let currentTheme: ThemeId = "dark";
+type ThemeListener = (theme: ThemeId) => void;
 const listeners: ThemeListener[] = [];
 export function registerThemeListener(cb: ThemeListener) {
   if (!listeners.includes(cb)) listeners.push(cb);
 }
 // Theme palettes and Pixi numeric color helpers live here to avoid a separate colors.ts.
-export const ThemePalettes = {
+export const ThemePalettes: Record<ThemeId, any> = {
   dark: {
     canvasBg: "#1e1e1e",
     panelBg: "#101b24",
@@ -77,6 +78,37 @@ export const ThemePalettes = {
     panelShadow: "0 4px 20px -6px rgba(0,0,0,0.18)",
     fabHoverShadow: "0 4px 20px -6px rgba(0,0,0,0.35)",
   },
+  blackYellow: {
+    // High-contrast black + yellow scheme
+    canvasBg: "#0b0b0c",
+    panelBg: "#101010",
+    panelBgAlt: "#101010e6",
+    panelBorder: "#2a2a2a",
+    panelFg: "#f5f5f5",
+    panelFgDim: "#c8c8c8",
+    panelAccent: "#ffd400",
+    successAccent: "#9be564",
+    inputBg: "#141414",
+    inputBorder: "#ffd400",
+    inputFg: "#fafafa",
+    btnBg: "#121212",
+    btnBorder: "#2a2a2a",
+    btnFg: "#f2f2f2",
+    btnBgHover: "#1a1a1a",
+    dangerBg: "#2b1719",
+    dangerBorder: "#5a2b31",
+    menuHoverBg: "#1a1a1a",
+    menuDividerBg: "#242424",
+    pillBg: "#141414",
+    pillBorder: "#2a2a2a",
+    pillFg: "#f0f0f0",
+    pillActiveOutline: "#ffd400",
+    scrollbarThumb: "#2a2a2a",
+    badgeBg: "#171717",
+    badgeFg: "#ffd400",
+    panelShadow: "0 4px 18px -4px rgba(0,0,0,0.65)",
+    fabHoverShadow: "0 4px 20px -6px rgba(0,0,0,0.35)",
+  },
 };
 
 function hexToNum(hex: string): number {
@@ -84,15 +116,16 @@ function hexToNum(hex: string): number {
   const n = parseInt(s, 16);
   return Number.isFinite(n) ? n : 0x000000;
 }
+function getActiveThemeId(): ThemeId {
+  const t = (document.documentElement.getAttribute("data-theme") ||
+    currentTheme) as ThemeId;
+  return (t in ThemePalettes ? t : "dark") as ThemeId;
+}
 function isLightTheme(): boolean {
-  const el = document.documentElement;
-  return (
-    el.classList.contains("theme-light") ||
-    el.getAttribute("data-theme") === "light"
-  );
+  return getActiveThemeId() === "light";
 }
 function P() {
-  return isLightTheme() ? ThemePalettes.light : ThemePalettes.dark;
+  return ThemePalettes[getActiveThemeId()];
 }
 export const Colors = {
   canvasBg(): number {
@@ -188,6 +221,7 @@ export function ensureThemeStyles() {
   style.id = "app-theme-panels";
   const d = ThemePalettes.dark;
   const l = ThemePalettes.light;
+  const y = ThemePalettes.blackYellow;
   style.textContent = `
   :root { --panel-font:'Inter',system-ui,monospace; }
   /* DARK THEME */
@@ -232,6 +266,27 @@ export function ensureThemeStyles() {
     --menu-hover-bg:${l.menuHoverBg}; --menu-divider-bg:${l.menuDividerBg};
     --pill-bg:${l.pillBg}; --pill-border:${l.pillBorder}; --pill-fg:${l.pillFg}; --pill-active-outline:${l.pillActiveOutline};
   }
+  /* BLACK & YELLOW THEME */
+  .theme-blackYellow {
+    --canvas-bg:${y.canvasBg};
+    --panel-bg:${y.panelBg};
+    --panel-bg-alt:${y.panelBgAlt};
+    --panel-border:${y.panelBorder};
+    --panel-fg:${y.panelFg};
+    --panel-fg-dim:${y.panelFgDim};
+    --panel-accent:${y.panelAccent};
+    --panel-shadow:${y.panelShadow};
+    --success-accent:${y.successAccent};
+  /* Higher-contrast FABs for black/yellow */
+  --fab-bg: var(--panel-accent);
+  --fab-fg: #000000;
+  --fab-border: #806b00;
+    --input-bg:${y.inputBg}; --input-border:${y.inputBorder}; --input-fg:${y.inputFg};
+    --btn-bg:${y.btnBg}; --btn-border:${y.btnBorder}; --btn-fg:${y.btnFg}; --btn-bg-hover:${y.btnBgHover};
+    --danger-bg:${y.dangerBg}; --danger-border:${y.dangerBorder};
+    --menu-hover-bg:${y.menuHoverBg}; --menu-divider-bg:${y.menuDividerBg};
+    --pill-bg:${y.pillBg}; --pill-border:${y.pillBorder}; --pill-fg:${y.pillFg}; --pill-active-outline:${y.pillActiveOutline};
+  }
   /* Panels */
   .ui-panel { background:var(--panel-bg-alt); backdrop-filter:blur(6px) saturate(1.2); -webkit-backdrop-filter:blur(6px) saturate(1.2); color:var(--panel-fg); border:1px solid var(--panel-border); border-radius:var(--panel-radius); font:18px/1.7 var(--panel-font); box-shadow:var(--panel-shadow); padding:22px 24px; }
   .ui-panel h1,.ui-panel h2,.ui-panel h3{ font-weight:600; letter-spacing:.6px; text-transform:uppercase; font-size:17px; color:var(--panel-accent); margin:14px 0 10px; }
@@ -243,6 +298,7 @@ export function ensureThemeStyles() {
   /* Badges */
   .ui-badge{ display:inline-block; padding:4px 10px; border-radius:8px; font-size:13px; line-height:1.3; background:${d.badgeBg}; color:${d.badgeFg}; margin:0 6px 6px 0; }
   .theme-light .ui-badge{ background:${l.badgeBg}; color:${l.badgeFg}; }
+  .theme-blackYellow .ui-badge{ background:${y.badgeBg}; color:${y.badgeFg}; }
   /* Inputs */
   .ui-input{ background:var(--input-bg); border:1px solid var(--input-border); border-radius:10px; padding:12px 14px; font:18px var(--panel-font); color:var(--input-fg); outline:none; box-sizing:border-box; }
   .ui-input-lg{ font-size:32px; padding:16px 18px; }
@@ -268,17 +324,25 @@ export function ensureThemeStyles() {
   document.head.appendChild(style);
   // Restore persisted theme
   const stored = localStorage.getItem("appTheme");
-  if (stored === "light" || stored === "dark") {
+  if (stored === "light" || stored === "dark" || stored === "blackYellow") {
     setTheme(stored as any);
   } else {
     document.documentElement.classList.add("theme-dark");
   }
 }
 
-export function setTheme(t: "dark" | "light") {
+export function setTheme(t: ThemeId) {
   currentTheme = t;
-  document.documentElement.classList.remove("theme-dark", "theme-light");
-  document.body.classList.remove("theme-dark", "theme-light");
+  document.documentElement.classList.remove(
+    "theme-dark",
+    "theme-light",
+    "theme-blackYellow",
+  );
+  document.body.classList.remove(
+    "theme-dark",
+    "theme-light",
+    "theme-blackYellow",
+  );
   document.documentElement.classList.add("theme-" + t);
   document.body.classList.add("theme-" + t);
   document.documentElement.setAttribute("data-theme", t);
@@ -290,7 +354,11 @@ export function setTheme(t: "dark" | "light") {
   });
 }
 export function toggleTheme() {
-  setTheme(currentTheme === "dark" ? "light" : "dark");
+  // Cycle through available themes deterministically
+  const order: ThemeId[] = ["dark", "light", "blackYellow"];
+  const idx = order.indexOf(currentTheme);
+  const next = order[(idx + 1) % order.length];
+  setTheme(next);
 }
 
 // Deprecated FAB toggle (removed by user request). Keeping function as no-op to avoid import errors.
@@ -336,11 +404,16 @@ export function ensureThemeToggleButton() {
     <circle cx="16" cy="10" r="6.5" fill="var(--fab-bg)"/>\
   </svg>';
   const setIcon = () => {
-    // Show an icon matching the current theme
-    fab.innerHTML = currentTheme === "dark" ? moonSVG : sunSVG;
+    // Show moon for non-light themes (dark, blackYellow), sun for light
+    const isLight = currentTheme === "light";
+    fab.innerHTML = isLight ? sunSVG : moonSVG;
     fab.setAttribute(
       "aria-label",
-      currentTheme === "dark" ? "Dark theme" : "Light theme",
+      isLight
+        ? "Light theme"
+        : currentTheme === "blackYellow"
+          ? "Black & Yellow theme"
+          : "Dark theme",
     );
   };
   setIcon();
