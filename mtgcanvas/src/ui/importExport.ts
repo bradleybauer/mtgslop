@@ -107,18 +107,19 @@ function parseGroupsText(
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    // Headings like "# Group Name"; special heading "# Ungrouped"
+    // Headings like "# Group Name"; special sentinel heading "#ungrouped" (no space)
     if (line.startsWith("#")) {
       hasHeading = true;
+      // Explicit ungrouped sentinel: exactly "#ungrouped" (case-insensitive)
+      if (/^#ungrouped$/i.test(line)) {
+        current = null;
+        inUngrouped = true;
+        continue;
+      }
       const name = line.replace(/^#+\s*/, "").trim();
       if (!name) {
         current = null;
         inUngrouped = false;
-        continue;
-      }
-      if (/^ungrouped$/i.test(name)) {
-        current = null;
-        inUngrouped = true;
         continue;
       }
       inUngrouped = false;

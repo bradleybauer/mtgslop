@@ -2981,15 +2981,16 @@ const splashEl = document.getElementById("splash");
             if (!line) continue;
             if (line.startsWith("#")) {
               hasHeading = true;
+              // New sentinel: exactly "#ungrouped" (case-insensitive, no space)
+              if (/^#ungrouped$/i.test(line)) {
+                current = null;
+                inUngrouped = true;
+                continue;
+              }
               const name = line.replace(/^#+\s*/, "").trim();
               if (!name) {
                 current = null;
                 inUngrouped = false;
-                continue;
-              }
-              if (/^ungrouped$/i.test(name)) {
-                current = null;
-                inUngrouped = true;
                 continue;
               }
               inUngrouped = false;
@@ -3576,7 +3577,7 @@ const splashEl = document.getElementById("splash");
       });
       // Ungrouped
       const ungrouped = sprites.filter((s) => !(s as any).__groupId);
-      lines.push("# Ungrouped");
+  lines.push("#ungrouped");
       if (!ungrouped.length) lines.push("(none)");
       else
         ungrouped.forEach((s) => {
