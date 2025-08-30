@@ -3577,7 +3577,7 @@ const splashEl = document.getElementById("splash");
       });
       // Ungrouped
       const ungrouped = sprites.filter((s) => !(s as any).__groupId);
-  lines.push("#ungrouped");
+      lines.push("#ungrouped");
       if (!ungrouped.length) lines.push("(none)");
       else
         ungrouped.forEach((s) => {
