@@ -143,7 +143,7 @@ export function ensureThemeToggleButton() {
   fab.onmouseenter = () => (fab.style.filter = "brightness(1.08)");
   fab.onmouseleave = () => (fab.style.filter = "");
   const sunSVG =
-    '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">\
+    '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">\
     <circle cx="12" cy="12" r="5" fill="currentColor"/>\
     <line x1="12" y1="2" x2="12" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>\
     <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>\
@@ -155,7 +155,7 @@ export function ensureThemeToggleButton() {
     <line x1="17.24" y1="6.76" x2="19.07" y2="4.93" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>\
   </svg>';
   const moonSVG =
-    '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">\
+    '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">\
     <circle cx="12" cy="12" r="9" fill="currentColor"/>\
     <circle cx="16" cy="10" r="6.5" fill="var(--panel-fab-bg)"/>\
   </svg>';

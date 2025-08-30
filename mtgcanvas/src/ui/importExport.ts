@@ -12,6 +12,8 @@ export interface ImportExportOptions {
   ) => Promise<{ imported: number; unknown: string[] }>; // performs import, returns stats
   // Optional: provide a preformatted text export of groups and ungrouped cards
   getGroupsExport?: () => string;
+  // Optional: provide scoped grouped export, limited to 'all' or 'selection'
+  getGroupsExportScoped?: (scope: "all" | "selection") => string;
   // Optional: import the simple groups text format (headings + list items)
   importGroups?: (
     data: {
@@ -128,16 +130,28 @@ function parseGroupsText(
       continue;
     }
     if (/^\((empty|none)\)$/i.test(line)) continue; // ignore placeholders
-    // List items: "- Card Name" or "* Card Name"; also accept plain lines if within a section
-    let name = line;
+    // List items: plain lines are now the canonical format (no leading '-'/'*').
+    // For backward compatibility, also accept lines starting with '-' or '*'.
+    // Also allow an optional leading count: "3 Lightning Bolt" duplicates the entry 3 times.
+    let item = line;
     const m = line.match(/^[-*]\s*(.+)$/);
-    if (m) name = m[1].trim();
-    if (!name) continue;
-    if (inUngrouped) ungrouped.push(name);
-    else if (current) current.cards.push(name);
+    if (m) item = m[1].trim();
+    if (!item) continue;
+    let count = 1;
+    const cm = item.match(/^(\d+)\s+(.+)$/);
+    if (cm) {
+      count = Math.max(1, parseInt(cm[1], 10));
+      item = cm[2].trim();
+    }
+    if (!item) continue;
+    const pushMany = (arr: string[]) => {
+      for (let i = 0; i < count; i++) arr.push(item);
+    };
+    if (inUngrouped) pushMany(ungrouped);
+    else if (current) pushMany(current.cards);
     else {
       // No heading yet: treat as ungrouped list style
-      ungrouped.push(name);
+      pushMany(ungrouped);
     }
   }
   if (!hasHeading && !(ungrouped.length && groups.length === 0)) return null; // likely not a groups format
@@ -167,41 +181,31 @@ export function installImportExport(
     el.style.top = "10%";
     el.style.transform = "translateX(-50%)";
     el.style.zIndex = "10030";
+    // Use uniform padding around the panel edges
+    el.style.padding = "16px";
     el.innerHTML = `
-      <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px;">
-        <div style="font-size:28px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.9;">Import / Export</div>
-        <div style="margin-left:auto;display:flex;gap:8px;">
-      ${opts.clearPersistedData ? '<button type="button" id="ie-clear-data" class="ui-btn danger" title="Clear persisted data (debug)" style="font-size:15px;padding:8px 12px">Clear Data…</button>' : ""}
-          <button type="button" id="ie-close" class="ui-btn" title="Close" style="font-size:15px;padding:8px 12px">Close</button>
-        </div>
-      </div>
+      
       <div style="display:block;">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start;" id="ie-content">
         <div>
-          <h2>Export</h2>
-          <div style="display:flex;gap:12px;align-items:center;margin:8px 0 10px;">
-            <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-all" type="radio" name="ie-scope" checked style="margin:0 6px 0 0"/> All</label>
-            <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-sel" type="radio" name="ie-scope" style="margin:0 6px 0 0"/> Selection</label>
-            <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
-              <label style="opacity:.85;">Format:</label>
-              <select id="ie-format" class="ui-input" style="padding:6px 8px;">
-                <option value="counts" selected>Counts (decklist)</option>
-                <option value="groups">Groups</option>
-              </select>
-              <button id="ie-refresh" class="ui-btn" type="button">Refresh</button>
+          <h2 style="margin-top:0">Export</h2>
+          <textarea id="ie-export" class="ui-input" style="width:100%;min-height:300px;white-space:pre;resize:none;" readonly placeholder="Exported decklist will appear here"></textarea>
+          <div style="display:flex;align-items:center;justify-content:flex-start;margin-top:10px;gap:12px;">
+            <div style="display:flex;gap:10px;align-items:center;">
+              <button id="ie-copy" type="button" class="ui-btn">Copy</button>
+              <button id="ie-download" type="button" class="ui-btn">Download .txt</button>
             </div>
-          </div>
-          <textarea id="ie-export" class="ui-input" style="width:100%;min-height:260px;white-space:pre;" readonly placeholder="Exported decklist will appear here"></textarea>
-          <div style="display:flex;gap:10px;margin-top:10px;">
-            <button id="ie-copy" type="button" class="ui-btn">Copy</button>
-            <button id="ie-download" type="button" class="ui-btn">Download .txt</button>
+            <div style="display:flex;gap:12px;align-items:center;">
+              <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-all" type="radio" name="ie-scope" checked style="margin:0 6px 0 0"/> All</label>
+              <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-sel" type="radio" name="ie-scope" style="margin:0 6px 0 0"/> Selection</label>
+            </div>
           </div>
         </div>
         <div>
-          <h2>Import</h2>
-          <textarea id="ie-import" class="ui-input" style="width:100%;min-height:300px;white-space:pre;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
+          <h2 style="margin-top:0">Import</h2>
+          <textarea id="ie-import" class="ui-input" style="width:100%;min-height:300px;white-space:pre;resize:none;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
           <div style="display:flex;gap:10px;margin-top:10px;align-items:center;">
-            <button id="ie-import-btn" type="button" class="ui-btn">Add to Canvas</button>
+            <button id="ie-import-btn" type="button" class="ui-btn">Import</button>
             <div id="ie-status" style="opacity:.8;font-size:12px;"></div>
           </div>
         </div>
@@ -225,28 +229,24 @@ export function installImportExport(
     exportArea = el.querySelector("#ie-export") as HTMLTextAreaElement;
     importArea = el.querySelector("#ie-import") as HTMLTextAreaElement;
     statusEl = el.querySelector("#ie-status") as HTMLDivElement;
-    const closeBtn = el.querySelector("#ie-close") as HTMLButtonElement;
+    // no explicit close button; use Esc or moving cursor away from FAB area to hide
     const copyBtn = el.querySelector("#ie-copy") as HTMLButtonElement;
     const dlBtn = el.querySelector("#ie-download") as HTMLButtonElement;
-    const refreshBtn = el.querySelector("#ie-refresh") as HTMLButtonElement;
-    const formatSel = el.querySelector("#ie-format") as HTMLSelectElement;
-    const clearBtn = el.querySelector(
-      "#ie-clear-data",
-    ) as HTMLButtonElement | null;
+
+    const clearBtn = null as HTMLButtonElement | null;
     const scopeAllEl = el.querySelector("#ie-scope-all") as HTMLInputElement;
     const scopeSelEl = el.querySelector("#ie-scope-sel") as HTMLInputElement;
     const importBtn = el.querySelector("#ie-import-btn") as HTMLButtonElement;
     const scryPane = el.querySelector("#ie-scry-pane") as HTMLDivElement | null;
 
     const refreshExport = () => {
-      const fmt = formatSel?.value || "counts";
-      if (fmt === "groups" && opts.getGroupsExport) {
-        if (exportArea) exportArea.value = opts.getGroupsExport();
-        return;
-      }
-      const names = scopeAll ? opts.getAllNames() : opts.getSelectedNames();
-      const items = groupCounts(names);
-      if (exportArea) exportArea.value = countsToText(items);
+      const scope: "all" | "selection" = scopeAll ? "all" : "selection";
+      const txt = opts.getGroupsExportScoped
+        ? opts.getGroupsExportScoped(scope)
+        : opts.getGroupsExport
+          ? opts.getGroupsExport()
+          : "";
+      if (exportArea) exportArea.value = txt;
     };
 
     scopeAllEl.onchange = () => {
@@ -257,8 +257,8 @@ export function installImportExport(
       scopeAll = false;
       refreshExport();
     };
-    refreshBtn.onclick = () => refreshExport();
-    formatSel.onchange = () => refreshExport();
+
+    // no format selector; always output counts + groups
     copyBtn.onclick = async () => {
       if (!exportArea) return;
       try {
@@ -283,22 +283,8 @@ export function installImportExport(
         a.remove();
       }, 0);
     };
-    closeBtn.onclick = () => hide();
-    if (clearBtn && opts.clearPersistedData) {
-      clearBtn.onclick = async () => {
-        const ok = window.confirm(
-          "Clear persisted MTGCanvas data (positions, groups, imported cards)?\nThis will reload the page.",
-        );
-        if (!ok) return;
-        clearBtn.disabled = true;
-        clearBtn.textContent = "Clearing…";
-        try {
-          await opts.clearPersistedData!();
-        } catch {}
-        // Give the UI a moment to update then reload
-        setTimeout(() => location.reload(), 200);
-      };
-    }
+    // Panel can be closed via Esc key (handled below) or by FAB hover logic
+    // Clear Data moved to Debug panel
     importBtn.onclick = async () => {
       if (!importArea) return;
       const inputText = importArea.value;
@@ -439,15 +425,14 @@ export function installImportExport(
         elp.style.transform = "translateX(-50%)";
       }
     } catch {}
-    // Use current format selection when showing
-    const fmtSel = elp.querySelector("#ie-format") as HTMLSelectElement | null;
-    const fmt = fmtSel?.value || "counts";
-    if (fmt === "groups" && (opts as any).getGroupsExport) {
-      if (exportArea) exportArea.value = (opts as any).getGroupsExport();
-    } else {
-      const names = scopeAll ? opts.getAllNames() : opts.getSelectedNames();
-      if (exportArea) exportArea.value = countsToText(groupCounts(names));
-    }
+    // Use current scope selection when showing
+    const scope: "all" | "selection" = scopeAll ? "all" : "selection";
+    const txt = opts.getGroupsExportScoped
+      ? opts.getGroupsExportScoped(scope)
+      : opts.getGroupsExport
+        ? opts.getGroupsExport()
+        : "";
+    if (exportArea) exportArea.value = txt;
     // focus import area for quick paste
     setTimeout(() => importArea?.focus(), 0);
   }

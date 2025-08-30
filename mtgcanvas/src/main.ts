@@ -2614,6 +2614,16 @@ const splashEl = document.getElementById("splash");
   window.addEventListener(
     "wheel",
     (e) => {
+      // Ignore wheel when pointer is over UI panels/inputs so lists can scroll without zooming
+      try {
+        const t = e.target as HTMLElement | null;
+        if (t && t instanceof HTMLElement) {
+          const inUi = t.closest(
+            ".ui-panel, .ui-panel-scroll, .ui-menu, textarea, input, select",
+          );
+          if (inUi) return; // let the UI consume the wheel normally
+        }
+      } catch {}
       const mousePos = new PIXI.Point(
         app.renderer.events.pointer.global.x,
         app.renderer.events.pointer.global.y,
@@ -2936,33 +2946,46 @@ const splashEl = document.getElementById("splash");
     el.style.cssText =
       "position:fixed;left:6px;top:300px;z-index:10005;display:flex;flex-direction:column;gap:6px;min-width:220px;transition:top .08s linear;";
     el.className = "ui-panel";
-    el.innerHTML =
-      '<div style="font-weight:600;font-size:20px;margin-bottom:6px;color:var(--panel-accent);">Debug</div>';
-    function addBtn(label: string, handler: () => void) {
+    // No header; this panel serves general user tools
+    function addBtn(label: string, handler: (ev: MouseEvent) => void) {
       const b = document.createElement("button");
       b.textContent = label;
       b.className = "ui-btn";
       b.style.fontSize = "16px";
       b.style.padding = "10px 14px";
-      b.onclick = handler;
+      b.onclick = handler as any;
       el!.appendChild(b);
     }
-    addBtn("Auto-Layout Ungrouped", () => {
+    addBtn("Auto-Layout", () => {
       gridUngroupedCards();
-    });
-    addBtn("Auto-Layout Grouped", () => {
       gridGroupedCards();
     });
-    addBtn("Totally Reset Layout", () => {
+    addBtn("Reset Layout", () => {
       const ok = window.confirm(
-        "Full Reset will clear all groups and re-grid every card. This cannot be undone. Proceed?",
+        "Full Reset will clear all groups and auto-layout all card. This cannot be undone. Proceed?",
       );
       if (!ok) return;
       clearGroupsOnly();
       resetLayout(true);
     });
-    addBtn("Load Cards from JSON", () => {
-      loadFromJsonFile();
+    // Clear persisted data (moved from Import/Export panel)
+    addBtn("Clear All Data", async (ev) => {
+      const ok = window.confirm(
+        "Clear persisted MTGCanvas data (positions, groups, imported cards)?\nThis will reload the page.",
+      );
+      if (!ok) return;
+      const btn = ev?.currentTarget as HTMLButtonElement | null;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Clearing…";
+      }
+      try {
+        (importExportUI as any)?.hide?.();
+      } catch {}
+      try {
+        await clearAllData();
+      } catch {}
+      setTimeout(() => location.reload(), 200);
     });
     document.body.appendChild(el);
     // Continuous sync each frame so it's always directly below perf overlay regardless of dynamic height changes
@@ -3108,13 +3131,23 @@ const splashEl = document.getElementById("splash");
               continue;
             }
             if (/^\((empty|none)\)$/i.test(line)) continue;
-            let name = line;
+            let item = line;
             const m = line.match(/^[-*]\s*(.+)$/);
-            if (m) name = m[1].trim();
-            if (!name) continue;
-            if (inUngrouped) ungrouped.push(name);
-            else if (current) current.cards.push(name);
-            else ungrouped.push(name);
+            if (m) item = m[1].trim();
+            if (!item) continue;
+            let count = 1;
+            const cm = item.match(/^(\d+)\s+(.+)$/);
+            if (cm) {
+              count = Math.max(1, parseInt(cm[1], 10));
+              item = cm[2].trim();
+            }
+            if (!item) continue;
+            const pushMany = (arr: string[]) => {
+              for (let i = 0; i < count; i++) arr.push(item);
+            };
+            if (inUngrouped) pushMany(ungrouped);
+            else if (current) pushMany(current.cards);
+            else pushMany(ungrouped);
           }
           if (!hasHeading && !(ungrouped.length && groups.length === 0))
             return null;
@@ -3655,6 +3688,56 @@ const splashEl = document.getElementById("splash");
   });
 
   installModeToggle();
+
+  // Centralized clear function used by Debug and Import/Export integration
+  async function clearAllData(): Promise<void> {
+    // Clear persisted artifacts
+    SUPPRESS_SAVES = true;
+    try {
+      if (lsTimer) {
+        clearTimeout(lsTimer);
+        lsTimer = null;
+      }
+    } catch {}
+    try {
+      if (lsGroupsTimer) {
+        clearTimeout(lsGroupsTimer);
+        lsGroupsTimer = null;
+      }
+    } catch {}
+    try {
+      await clearImageCache();
+    } catch {}
+    try {
+      await clearImportedCards();
+    } catch {}
+    try {
+      localStorage.removeItem(LS_KEY);
+    } catch {}
+    try {
+      localStorage.removeItem(LS_GROUPS_KEY);
+    } catch {}
+    try {
+      (window as any).indexedDB?.deleteDatabase?.("mtgCanvas");
+    } catch {}
+    try {
+      (window as any).indexedDB?.deleteDatabase?.("mtgImageCache");
+    } catch {}
+    try {
+      const instIds = (InstancesRepo.list() || [])
+        .map((r: any) => r.id)
+        .filter((n: any) => typeof n === "number");
+      if (instIds.length) InstancesRepo.deleteMany(instIds);
+      const grpIds = (GroupsRepo.list() || [])
+        .map((g: any) => g.id)
+        .filter((n: any) => typeof n === "number");
+      if (grpIds.length) GroupsRepo.deleteMany(grpIds);
+    } catch {}
+    try {
+      sessionStorage.setItem("mtgcanvas_start_empty_once", "1");
+    } catch {}
+  }
+
   // Import/Export decklists (basic)
   const importExportUI = installImportExport({
     getAllNames: () => sprites.map((s) => (s as any).__card?.name || ""),
@@ -3663,6 +3746,70 @@ const splashEl = document.getElementById("splash");
         .map((id) => sprites.find((s) => s.__id === id))
         .filter(Boolean)
         .map((s) => (s as any).__card?.name || ""),
+    getGroupsExportScoped: (scope) => {
+      const considerAll = scope === "all";
+      const selected = new Set<number>(SelectionStore.getCards());
+      const isSel = (id: number) => considerAll || selected.has(id);
+      const lines: string[] = [];
+      const grouped = [...groups.values()].sort((a, b) => a.id - b.id);
+      let anyGroupPrinted = false;
+      for (const gv of grouped) {
+        // Collect names from selected members of this group (or all if scope=all)
+        const names = gv.order
+          .map((cid) =>
+            isSel(cid) ? sprites.find((s) => s.__id === cid) : null,
+          )
+          .filter(Boolean)
+          .map((s) => {
+            const raw = ((s as any).__card?.name || "").trim();
+            const i = raw.indexOf("//");
+            return i >= 0 ? raw.slice(0, i).trim() : raw;
+          })
+          .filter((n) => n);
+        if (!names.length) continue; // skip empty groups in selection scope
+        const title = gv.name || `Group ${gv.id}`;
+        lines.push(`# ${title}`);
+        // Aggregate counts preserving first-seen order
+        const order: string[] = [];
+        const counts = new Map<string, number>();
+        for (const n of names) {
+          if (!counts.has(n)) order.push(n);
+          counts.set(n, (counts.get(n) || 0) + 1);
+        }
+        for (const n of order) {
+          const c = counts.get(n) || 1;
+          lines.push(`${c} ${n}`);
+        }
+        lines.push("");
+        anyGroupPrinted = true;
+      }
+      // Ungrouped
+      const ungroupedNames: string[] = [];
+      for (const s of sprites) {
+        if ((s as any).__groupId) continue;
+        if (!isSel(s.__id)) continue;
+        const raw = ((s as any).__card?.name || "").trim();
+        const i = raw.indexOf("//");
+        const n = i >= 0 ? raw.slice(0, i).trim() : raw;
+        if (n) ungroupedNames.push(n);
+      }
+      // Aggregate counts preserving order
+      const orderU: string[] = [];
+      const countsU = new Map<string, number>();
+      for (const n of ungroupedNames) {
+        if (!countsU.has(n)) orderU.push(n);
+        countsU.set(n, (countsU.get(n) || 0) + 1);
+      }
+      const ungroupedLines = orderU.map((n) => `${countsU.get(n) || 1} ${n}`);
+      if (anyGroupPrinted) {
+        lines.push("#ungrouped");
+        if (!ungroupedLines.length) lines.push("(none)");
+        else lines.push(...ungroupedLines);
+      } else {
+        if (ungroupedLines.length) lines.push(...ungroupedLines);
+      }
+      return lines.join("\n");
+    },
     getGroupsExport: () => {
       // Build groups lines
       const lines: string[] = [];
@@ -3680,21 +3827,45 @@ const splashEl = document.getElementById("splash");
             return i >= 0 ? raw.slice(0, i).trim() : raw;
           })
           .filter((n) => n);
-        if (!names.length) lines.push("(empty)");
-        else names.forEach((n) => lines.push(`- ${n}`));
+        if (!names.length) {
+          lines.push("(empty)");
+        } else {
+          // Aggregate counts while preserving first-seen order
+          const order: string[] = [];
+          const counts = new Map<string, number>();
+          for (const n of names) {
+            if (!counts.has(n)) order.push(n);
+            counts.set(n, (counts.get(n) || 0) + 1);
+          }
+          for (const n of order) {
+            const c = counts.get(n) || 1;
+            lines.push(`${c} ${n}`);
+          }
+        }
         lines.push("");
       });
-      // Ungrouped
+      // Ungrouped (conditionally add header)
       const ungrouped = sprites.filter((s) => !(s as any).__groupId);
-      lines.push("#ungrouped");
-      if (!ungrouped.length) lines.push("(none)");
-      else
-        ungrouped.forEach((s) => {
-          const raw = ((s as any).__card?.name || "").trim();
-          const i = raw.indexOf("//");
-          const n = i >= 0 ? raw.slice(0, i).trim() : raw;
-          if (n) lines.push(`- ${n}`);
-        });
+      // Build name list and aggregate counts preserving order
+      const order: string[] = [];
+      const counts = new Map<string, number>();
+      for (const s of ungrouped) {
+        const raw = ((s as any).__card?.name || "").trim();
+        const i = raw.indexOf("//");
+        const n = i >= 0 ? raw.slice(0, i).trim() : raw;
+        if (!n) continue;
+        if (!counts.has(n)) order.push(n);
+        counts.set(n, (counts.get(n) || 0) + 1);
+      }
+      const ungroupedLines = order.map((n) => `${counts.get(n) || 1} ${n}`);
+      if (grouped.length > 0) {
+        lines.push("#ungrouped");
+        if (!ungroupedLines.length) lines.push("(none)");
+        else lines.push(...ungroupedLines);
+      } else {
+        // No groups: just output the ungrouped lines without a header
+        if (ungroupedLines.length) lines.push(...ungroupedLines);
+      }
       return lines.join("\n");
     },
     importGroups: async (data, opt) => {
@@ -4053,56 +4224,7 @@ const splashEl = document.getElementById("splash");
         delete anyWin2.__mtg_scry_inflight;
       }
     },
-    clearPersistedData: async () => {
-      // Clear persisted artifacts
-      SUPPRESS_SAVES = true;
-      // Cancel any scheduled local save timers to avoid races
-      try {
-        if (lsTimer) {
-          clearTimeout(lsTimer);
-          lsTimer = null;
-        }
-      } catch {}
-      try {
-        if (lsGroupsTimer) {
-          clearTimeout(lsGroupsTimer);
-          lsGroupsTimer = null;
-        }
-      } catch {}
-      try {
-        await clearImageCache();
-      } catch {}
-      try {
-        await clearImportedCards();
-      } catch {}
-      try {
-        localStorage.removeItem(LS_KEY);
-      } catch {}
-      try {
-        localStorage.removeItem(LS_GROUPS_KEY);
-      } catch {}
-      // Best-effort: drop the imported_cards and image cache databases themselves
-      try {
-        (window as any).indexedDB?.deleteDatabase?.("mtgCanvas");
-      } catch {}
-      try {
-        (window as any).indexedDB?.deleteDatabase?.("mtgImageCache");
-      } catch {}
-      try {
-        const instIds = (InstancesRepo.list() || [])
-          .map((r: any) => r.id)
-          .filter((n: any) => typeof n === "number");
-        if (instIds.length) InstancesRepo.deleteMany(instIds);
-        const grpIds = (GroupsRepo.list() || [])
-          .map((g: any) => g.id)
-          .filter((n: any) => typeof n === "number");
-        if (grpIds.length) GroupsRepo.deleteMany(grpIds);
-      } catch {}
-      // Ensure the next load starts empty (skip universe restore once)
-      try {
-        sessionStorage.setItem("mtgcanvas_start_empty_once", "1");
-      } catch {}
-    },
+    clearPersistedData: clearAllData,
   });
 
   // Import/Export FAB (top-right, beneath Help FAB)
@@ -4120,9 +4242,13 @@ const splashEl = document.getElementById("splash");
     const fab = document.createElement("div");
     fab.id = "ie-fab";
     fab.title = "Import / Export (Ctrl+I)";
-    fab.textContent = "⇄"; // simple icon-like glyph
+    // Rotated previous glyph; wrap in a flex box to ensure perfect centering, and bump size slightly
+    fab.innerHTML =
+      '<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;">\
+        <span style="display:inline-block;transform:rotate(90deg);transform-origin:50% 50%;font-size:32px;line-height:1;margin-left:3px;">⇄</span>\
+      </span>';
     fab.style.cssText =
-      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;font:28px/56px var(--panel-font);text-align:center;cursor:pointer;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;display:flex;align-items:center;justify-content:center;font:32px/1 var(--panel-font);text-align:center;cursor:pointer;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
     fab.addEventListener("click", (e) => {
       e.stopPropagation();
       pinned = !pinned;
