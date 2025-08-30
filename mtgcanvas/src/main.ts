@@ -1104,7 +1104,7 @@ const splashEl = document.getElementById("splash");
       );
       if (gr.name) gv.name = gr.name;
       /* collapse retired: always load expanded */ gv.collapsed = false;
-  // color retired; theme-driven only
+      // color retired; theme-driven only
       if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode;
       if (gr.facet) (gv as any).facet = gr.facet;
       if (typeof gr.z === "number") {
@@ -1387,9 +1387,9 @@ const splashEl = document.getElementById("splash");
       updateGroupInfoPanel();
     });
     deleteBtn.classList.add("danger");
-  actions.append(autoBtn, deleteBtn);
+    actions.append(autoBtn, deleteBtn);
     el.appendChild(actions);
-  // Color palette removed; colors are theme-driven now
+    // Color palette removed; colors are theme-driven now
     // Member list removed per requirements
     // Close button (optional)
     const closeBtn = document.createElement("button");
@@ -2378,10 +2378,6 @@ const splashEl = document.getElementById("splash");
 
   // ---- Group context menu (Groups V2) ----
   let groupMenu: HTMLDivElement | null = null;
-  const PALETTE = [
-    0x2d3e53, 0x444444, 0x554433, 0x224433, 0x333355, 0x553355, 0x335555,
-    0x4a284a, 0x3c4a28, 0x284a4a,
-  ];
   function ensureGroupMenu() {
     if (groupMenu) return groupMenu;
     const el = document.createElement("div");
@@ -2472,13 +2468,13 @@ const splashEl = document.getElementById("splash");
     gridBy.appendChild(facetBtn("Mana Value", "mv"));
     el.appendChild(gridBy);
     addItem("Rename", () => startGroupRename(gv));
-  // Recolor removed; theme-driven
+    // Recolor removed; theme-driven
     addItem("Delete", () => {
       deleteGroupById(gv.id);
       SelectionStore.clear();
       scheduleGroupSave();
     });
-  // Palette removed
+    // Palette removed
     const bounds = app.renderer.canvas.getBoundingClientRect();
     el.style.left = `${bounds.left + globalPt.x + 4}px`;
     el.style.top = `${bounds.top + globalPt.y + 4}px`;

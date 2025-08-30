@@ -310,7 +310,6 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   const innerW = Math.max(0, w - bw * 2);
   const innerH = Math.max(0, bodyH - bw * 2);
   const hh = Math.max(0, HEADER_HEIGHT - bw);
-  const overlayActive = !!(gv._lastZoomPhase && gv._lastZoomPhase > 0);
   if (innerW > 0 && innerH > 0) {
     // Always leave header area unfilled so it shows the border ring color
     const startY = bw + hh;
@@ -790,7 +789,7 @@ export function placeCardInGroup(
     gv.h = snap(gv.h + added);
     gv._expandedH = gv.h;
     // New inner bottom
-  const newBottom = snap(gv.gfx.y + gv.h - PAD_Y - PAD_BOTTOM_EXTRA - CARD_H);
+    const newBottom = snap(gv.gfx.y + gv.h - PAD_Y - PAD_BOTTOM_EXTRA - CARD_H);
     // Scan left->right for first fit in new bottom row
     for (let x = snap(left); x <= right - CARD_W; x += step) {
       if (fitsAt(x, newBottom)) {
