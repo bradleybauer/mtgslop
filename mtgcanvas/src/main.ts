@@ -52,11 +52,7 @@ import {
   persistGroupRename,
 } from "./services/persistenceService";
 import { InstancesRepo, GroupsRepo } from "./data/repositories";
-import {
-  fetchCardUniverse,
-  spawnLargeSet,
-  parseUniverseText,
-} from "./services/largeDataset";
+import { spawnLargeSet, parseUniverseText } from "./services/largeDataset";
 // Dataset constants referenced in logs only in dataset service; no usage here
 import {
   ensureThemeToggleButton,
@@ -65,7 +61,7 @@ import {
 } from "./ui/theme";
 import { installSearchPalette } from "./ui/searchPalette";
 import { installImportExport } from "./ui/importExport";
-import { searchScryfall } from "./services/scryfall";
+import { searchScryfall, fetchScryfallByNames } from "./services/scryfall";
 import {
   addImportedCards,
   getAllImportedCards,
@@ -3386,25 +3382,31 @@ const splashEl = document.getElementById("splash");
         const names = gv.order
           .map((cid) => sprites.find((s) => s.__id === cid))
           .filter(Boolean)
-          .map((s) => ((s as any).__card?.name || "").trim())
+          .map((s) => {
+            const raw = ((s as any).__card?.name || "").trim();
+            const i = raw.indexOf("//");
+            return i >= 0 ? raw.slice(0, i).trim() : raw;
+          })
           .filter((n) => n);
         if (!names.length) lines.push("(empty)");
         else names.forEach((n) => lines.push(`- ${n}`));
         lines.push("");
       });
       // Ungrouped
-      const ungrouped = sprites.filter((s) => !(s as any).__groupId);
+    const ungrouped = sprites.filter((s) => !(s as any).__groupId);
       lines.push("# Ungrouped");
       if (!ungrouped.length) lines.push("(none)");
       else
         ungrouped.forEach((s) => {
-          const n = ((s as any).__card?.name || "").trim();
+      const raw = ((s as any).__card?.name || "").trim();
+      const i = raw.indexOf("//");
+      const n = i >= 0 ? raw.slice(0, i).trim() : raw;
           if (n) lines.push(`- ${n}`);
         });
       return lines.join("\n");
     },
-    importGroups: async (data) => {
-      // Build lookup by lowercase name from currently loaded universe; extend by fetching if needed.
+  importGroups: async (data, opt) => {
+      // Build lookup by lowercase name from currently loaded sprites; extend by fetching from Scryfall if needed.
       const byName = new Map<string, any>();
       for (const s of sprites) {
         const c = (s as any).__card;
@@ -3412,24 +3414,36 @@ const splashEl = document.getElementById("splash");
         const nm = (c.name || "").toLowerCase();
         if (nm && !byName.has(nm)) byName.set(nm, c);
       }
-      const wantNames = new Set<string>();
-      data.groups.forEach((g) =>
-        g.cards.forEach((n) => wantNames.add((n || "").toLowerCase())),
-      );
-      data.ungrouped.forEach((n) => wantNames.add((n || "").toLowerCase()));
-      // Try to resolve missing names by loading the universe
+      // Collect original input names preserving user casing for better error messages
+      const allInputNames: string[] = [
+        ...data.groups.flatMap((g) => g.cards),
+        ...data.ungrouped,
+      ].filter((n) => typeof n === "string" && n.trim().length);
+      // Resolve missing names using Scryfall collection API
       let unknown: string[] = [];
-      const unresolved = [...wantNames].filter((nm) => !byName.has(nm));
-      if (unresolved.length) {
+      const unresolvedOriginal = allInputNames.filter(
+        (n) => !byName.has((n || "").toLowerCase()),
+      );
+      if (unresolvedOriginal.length) {
         try {
-          const uni = await fetchCardUniverse();
-          if (uni && uni.length) {
-            for (const u of uni) {
-              const nm = (u.name || "").toLowerCase();
-              if (nm && !byName.has(nm)) byName.set(nm, u);
-            }
-          }
-        } catch {}
+          const { byName: fetched, unknown: notFound } = await fetchScryfallByNames(
+            unresolvedOriginal,
+            { signal: (opt as any)?.signal, onProgress: opt?.onProgress },
+          );
+          // Merge into byName map
+          fetched.forEach((card, key) => {
+            if (!byName.has(key)) byName.set(key, card);
+          });
+          // Compute unknowns based on what remains unresolved
+          const notFoundSet = new Set<string>(notFound);
+          unknown = unresolvedOriginal.filter(
+            (n) => notFoundSet.has(n.toLowerCase()),
+          );
+        } catch (e) {
+          console.warn("[importGroups] scryfall collection failed", e);
+          // If the fetch failed entirely, mark all unresolved as unknown
+          unknown = unresolvedOriginal.slice();
+        }
       }
       // Helper to create instances for a list of names
       function resolveCards(names: string[]): any[] {
@@ -3442,12 +3456,7 @@ const splashEl = document.getElementById("splash");
         cards: resolveCards(g.cards),
       }));
       const ungroupedCards = resolveCards(data.ungrouped);
-      // Compute unknowns
-      const allInput = [
-        ...data.groups.flatMap((g) => g.cards),
-        ...data.ungrouped,
-      ];
-      unknown = allInput.filter((n) => !byName.has((n || "").toLowerCase()));
+  // unknown was already computed from Scryfall not_found (if any).
       let imported = 0;
       // Create groups with cards
       for (const g of groupDefs) {
@@ -3532,8 +3541,8 @@ const splashEl = document.getElementById("splash");
       } catch {}
       return { imported, unknown };
     },
-    importByNames: async (items) => {
-      // Build lookup from currently loaded card universe (sprites) by lowercase name -> card object
+  importByNames: async (items, opt) => {
+      // Build lookup from currently loaded sprites by lowercase name -> card object
       const byName = new Map<string, any>();
       for (const s of sprites) {
         const c = (s as any).__card;
@@ -3551,37 +3560,38 @@ const splashEl = document.getElementById("splash");
       let maxId = sprites.length ? Math.max(...sprites.map((s) => s.__id)) : 0;
       const created: CardSprite[] = [];
       const toPlace: { card: any; count: number }[] = [];
+      const originalUnknown: string[] = [];
       for (const it of items) {
         const card = byName.get((it.name || "").toLowerCase());
         if (!card) {
-          unknown.push(it.name);
+          originalUnknown.push(it.name);
           continue;
         }
         toPlace.push({ card, count: Math.max(1, Math.min(999, it.count | 0)) });
       }
-      // If unknowns exist, try to load universe and resolve
-      if (unknown.length) {
+      // If any names weren't found locally, fetch them from Scryfall
+      if (originalUnknown.length) {
         try {
-          const uni = await fetchCardUniverse();
-          if (uni && uni.length) {
-            for (const u of uni) {
-              const nm = (u.name || "").toLowerCase();
-              if (nm && !byName.has(nm)) byName.set(nm, u);
-            }
-            const stillUnknown: string[] = [];
-            const origUnknown = unknown.slice();
-            unknown = [];
-            for (const nm of origUnknown) {
-              const card = byName.get((nm || "").toLowerCase());
-              if (card) {
-                toPlace.push({ card, count: 1 });
-              } else {
-                stillUnknown.push(nm);
-              }
-            }
-            unknown = stillUnknown;
+          const { byName: fetched } = await fetchScryfallByNames(originalUnknown, {
+            signal: (opt as any)?.signal,
+            onProgress: opt?.onProgress,
+          });
+          fetched.forEach((card, key) => {
+            if (!byName.has(key)) byName.set(key, card);
+          });
+          // Re-check unresolved and enqueue for placement
+          for (const nm of originalUnknown) {
+            const card = byName.get((nm || "").toLowerCase());
+            if (card) toPlace.push({ card, count: 1 });
           }
-        } catch {}
+          // Now compute still-unknown by comparing items again
+          unknown = originalUnknown.filter(
+            (nm) => !byName.has((nm || "").toLowerCase()),
+          );
+        } catch (e) {
+          console.warn("[importByNames] scryfall collection failed", e);
+          unknown = originalUnknown.slice();
+        }
       }
       // Place all resolved cards
       const persistedCards: any[] = [];

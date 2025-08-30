@@ -1,5 +1,3 @@
-// In-memory repositories for card instances and groups.
-
 export interface CardInstance {
   id: number;
   card_id: number;
@@ -40,7 +38,7 @@ export const InstancesRepo = {
     mem.instances.push(inst);
     return inst.id;
   },
-  /** Memory-only: create an instance with an explicit id (used to restore stable ids). No-op override for DB. */
+  // Memory-only: create an instance with an explicit id (used to restore stable ids). No-op override for DB.
   createWithId(row: {
     id: number;
     card_id: number;
@@ -105,7 +103,7 @@ export const InstancesRepo = {
       }
     });
   },
-  /** Memory-only: ensure the next generated instance id is at least `min`. */
+  // Memory-only: ensure the next generated instance id is at least `min`
   ensureNextId(min: number) {
     if (typeof min === "number" && isFinite(min)) {
       if (min > memInstanceId) memInstanceId = min;
@@ -155,9 +153,7 @@ export const GroupsRepo = {
     const g = mem.groups.find((g) => g.id === id);
     if (g) g.name = name;
   },
-  /**
-   * Ensure the next generated group id is at least `min`.
-   */
+  // Ensure the next generated group id is at least `min`.
   ensureNextId(min: number) {
     if (typeof min === "number" && isFinite(min)) {
       // Bump the counter to avoid collisions with externally restored ids

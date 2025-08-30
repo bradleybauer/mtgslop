@@ -1,4 +1,6 @@
 // Lightweight Scryfall search client with paging and progress reporting.
+// Global concurrency for Scryfall requests (search + collection + named fallback)
+export const SCRYFALL_CONCURRENCY = 6;
 // Usage: searchScryfall('o:infect t:creature cmc<=3', { maxCards: 120, unique: 'cards' })
 
 export interface ScryfallCard {
@@ -25,7 +27,6 @@ export interface SearchOptions {
   onProgress?: (fetched: number, total?: number) => void;
   signal?: AbortSignal;
   // Performance controls
-  concurrency?: number; // parallel page fetches; preserves order in output
   throttleMs?: number; // optional tiny delay between page fetches
   cache?: RequestCache; // fetch cache mode; default browser behavior
   maxRetries?: number; // retries for 429/5xx
@@ -57,7 +58,6 @@ export async function searchScryfall(
     dir = "desc",
     onProgress,
     signal,
-    concurrency = 3,
     throttleMs = 0,
     cache = "default",
     maxRetries = 4,
@@ -218,13 +218,144 @@ export async function searchScryfall(
     }
   }
 
-  const workerCount = Math.max(1, Math.min(concurrency | 0, 8));
+  const workerCount = Math.max(1, Math.min(SCRYFALL_CONCURRENCY | 0, 8));
   for (let i = 0; i < workerCount; i++) workers.push(worker());
   await Promise.allSettled(workers);
 
   // Final flush in case anything remains
   flush();
   return out;
+}
+
+/**
+ * Fetch cards by exact names using Scryfall's /cards/collection endpoint.
+ * Names are matched exactly by Scryfall's standard name matching. Requests are
+ * batched to 75 identifiers per request (Scryfall limit).
+ * Returns a map of lowercase name -> card and the list of unknown names.
+ */
+export async function fetchScryfallByNames(
+  names: string[],
+  opts: { signal?: AbortSignal; onProgress?: (done: number, total?: number) => void } = {},
+): Promise<{ byName: Map<string, ScryfallCard>; unknown: string[] }> {
+  // Normalize and de-duplicate names while preserving a map to original casings
+  const norm = (s: string) => (s || "").trim();
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const n of names) {
+    const v = norm(n);
+    if (!v) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(v);
+  }
+  const byName = new Map<string, ScryfallCard>();
+  const notFound = new Set<string>();
+  const total = unique.length;
+  let done = 0;
+  const report = () => opts.onProgress?.(done, total);
+  // Chunk into batches of 75
+  const CHUNK = 75;
+  const batches: string[][] = [];
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    batches.push(unique.slice(i, i + CHUNK));
+  }
+  const queue = batches.slice();
+  const workers: Promise<void>[] = [];
+  const cc = Math.max(1, Math.min(SCRYFALL_CONCURRENCY, 8));
+  const controller = new AbortController();
+  const signal = opts.signal;
+  if (signal) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    signal.addEventListener("abort", () => controller.abort(signal.reason), {
+      once: true,
+    });
+  }
+  function indexCardNames(c: ScryfallCard) {
+    if (!c || !c.name) return;
+    const main = c.name.toLowerCase();
+    if (!byName.has(main)) byName.set(main, c);
+    const faces = Array.isArray(c.card_faces) ? c.card_faces : [];
+    for (const f of faces) {
+      const fn = (f?.name || "").toLowerCase();
+      if (fn && !byName.has(fn)) byName.set(fn, c);
+    }
+  }
+  async function runOne(batch: string[]) {
+    const body = { identifiers: batch.map((name) => ({ name })) } as any;
+    const res = await fetch("https://api.scryfall.com/cards/collection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await safeText(res);
+      throw new Error(
+        `Scryfall collection error ${res.status}: ${text || res.statusText}`,
+      );
+    }
+    const json = (await res.json()) as any;
+  const data = Array.isArray(json?.data) ? (json.data as ScryfallCard[]) : [];
+  for (const c of data) indexCardNames(c);
+    if (Array.isArray(json?.not_found)) {
+      for (const nf of json.not_found) {
+        const nm = (nf?.name || "").toString().toLowerCase();
+        if (nm) notFound.add(nm);
+      }
+    }
+    done += batch.length;
+    report();
+  }
+  async function worker() {
+    while (queue.length) {
+      const b = queue.shift();
+      if (!b) break;
+      await runOne(b);
+    }
+  }
+  for (let i = 0; i < cc; i++) workers.push(worker());
+  report();
+  await Promise.all(workers);
+  // Fallback: try fuzzy Named API for unresolved names (common for DFC face names)
+  if (notFound.size) {
+    const unresolved = [...notFound];
+    notFound.clear();
+    async function worker2() {
+      while (unresolved.length) {
+        const nm = unresolved.shift();
+        if (!nm) break;
+        try {
+          const url = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(nm)}`;
+          const res = await fetch(url, { signal: controller.signal });
+          if (!res.ok) {
+            if (res.status === 404) {
+              notFound.add(nm);
+              continue;
+            }
+            const text = await safeText(res);
+            throw new Error(`Scryfall named error ${res.status}: ${text || res.statusText}`);
+          }
+          const card = (await res.json()) as ScryfallCard;
+          indexCardNames(card);
+          done += 1;
+          report();
+        } catch (e: any) {
+          if (e?.name === "AbortError") return;
+          notFound.add(nm);
+        }
+      }
+    }
+  const workers2: Promise<void>[] = [];
+  for (let i = 0; i < cc; i++) workers2.push(worker2());
+    await Promise.all(workers2);
+  }
+  // Derive unknowns by comparing the unique set to resolved keys, union not_found
+  for (const n of unique) {
+    const key = n.toLowerCase();
+    if (!byName.has(key)) notFound.add(key);
+  }
+  return { byName, unknown: [...notFound] };
 }
 
 async function safeText(res: Response): Promise<string | null> {

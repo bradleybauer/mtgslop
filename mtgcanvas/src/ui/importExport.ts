@@ -5,14 +5,18 @@ export interface ImportExportOptions {
   getSelectedNames: () => string[]; // names for selected sprites
   importByNames: (
     items: { name: string; count: number }[],
+  opt?: { onProgress?: (done: number, total?: number) => void; signal?: AbortSignal },
   ) => Promise<{ imported: number; unknown: string[] }>; // performs import, returns stats
   // Optional: provide a preformatted text export of groups and ungrouped cards
   getGroupsExport?: () => string;
   // Optional: import the simple groups text format (headings + list items)
-  importGroups?: (data: {
-    groups: { name: string; cards: string[] }[];
-    ungrouped: string[];
-  }) => Promise<{ imported: number; unknown: string[] }>;
+  importGroups?: (
+    data: {
+      groups: { name: string; cards: string[] }[];
+      ungrouped: string[];
+    },
+    opt?: { onProgress?: (done: number, total?: number) => void; signal?: AbortSignal },
+  ) => Promise<{ imported: number; unknown: string[] }>;
   // Optional: Scryfall search integration – when provided, panel shows a Search tab
   scryfallSearchAndPlace?: (
     query: string,
@@ -32,10 +36,17 @@ export interface ImportExportAPI {
   hide(): void;
 }
 
+function frontFace(name: string): string {
+  const s = (name || "").trim();
+  if (!s) return s;
+  const i = s.indexOf("//");
+  return i >= 0 ? s.slice(0, i).trim() : s;
+}
+
 function groupCounts(names: string[]): { name: string; count: number }[] {
   const map = new Map<string, number>();
   for (const n of names) {
-    const key = (n || "").trim();
+    const key = frontFace(n);
     if (!key) continue;
     map.set(key, (map.get(key) || 0) + 1);
   }
@@ -288,7 +299,14 @@ export function installImportExport(
       const asGroups = parseGroupsText(inputText);
       if (asGroups && opts.importGroups) {
         if (statusEl) statusEl.textContent = "Importing groups…";
-        const res = await opts.importGroups(asGroups);
+  const res = await opts.importGroups(asGroups, {
+          onProgress: (done, total) => {
+            if (!statusEl) return;
+            if (typeof total === "number" && total > 0)
+              statusEl.textContent = `Resolving ${done}/${total}…`;
+            else statusEl.textContent = `Resolving ${done}…`;
+          },
+        });
         if (statusEl)
           statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
         return;
@@ -300,7 +318,14 @@ export function installImportExport(
         return;
       }
       if (statusEl) statusEl.textContent = "Importing…";
-      const res = await opts.importByNames(items);
+  const res = await opts.importByNames(items, {
+        onProgress: (done, total) => {
+          if (!statusEl) return;
+          if (typeof total === "number" && total > 0)
+            statusEl.textContent = `Resolving ${done}/${total}…`;
+          else statusEl.textContent = `Resolving ${done}…`;
+        },
+      });
       if (statusEl)
         statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
     };
@@ -387,10 +412,10 @@ export function installImportExport(
   }
 
   function show() {
-    const el = ensure();
-    el.style.display = "block"; // pre-populate export
+  const elp = ensure();
+  elp.style.display = "block"; // pre-populate export
     // Use current format selection when showing
-    const fmtSel = el.querySelector("#ie-format") as HTMLSelectElement | null;
+  const fmtSel = elp.querySelector("#ie-format") as HTMLSelectElement | null;
     const fmt = fmtSel?.value || "counts";
     if (fmt === "groups" && (opts as any).getGroupsExport) {
       if (exportArea) exportArea.value = (opts as any).getGroupsExport();
