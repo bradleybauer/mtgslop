@@ -3854,14 +3854,6 @@ const splashEl = document.getElementById("splash");
           { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
           { w: window.innerWidth, h: window.innerHeight },
         );
-        // Also create a new group for all newly imported cards
-        try {
-          const ids = created.map((s) => s.__id);
-          if (ids.length) {
-            // Reuse helper that auto-packs and places the group
-            (createGroupWithCardIds as any)(ids, "Imported Deck");
-          }
-        } catch {}
       }
       return { imported: created.length, unknown };
     },
@@ -3892,10 +3884,20 @@ const splashEl = document.getElementById("splash");
         let maxId = sprites.length
           ? Math.max(...sprites.map((s) => s.__id))
           : 0;
-        // Place at origin initially; group helper will auto-pack and place near viewport
-        for (const card of cards) {
-          const x = 0,
-            y = 0;
+        // Compute a grid near current view for placement
+        const total = cards.length;
+        const ratio = SPACING_Y / SPACING_X;
+        const cols = Math.max(4, Math.round(Math.sqrt(total * ratio)));
+        const rows = Math.max(1, Math.ceil(total / cols));
+        const blockW = cols * SPACING_X - GAP_X_GLOBAL;
+        const blockH = rows * SPACING_Y - GAP_Y_GLOBAL;
+        const anchor = findFreeSpotForBlock(blockW, blockH, { pad: 16 });
+        for (let i = 0; i < cards.length; i++) {
+          const card = cards[i];
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          const x = anchor.x + col * SPACING_X;
+          const y = anchor.y + row * SPACING_Y;
           let id: number;
           try {
             id = InstancesRepo.create(1, x, y);
@@ -3920,16 +3922,6 @@ const splashEl = document.getElementById("splash");
             };
             localStorage.setItem(LS_KEY, JSON.stringify(data));
           }
-        } catch {}
-        // Group
-        try {
-          const ids = created.map((s) => s.__id);
-          if (ids.length) {
-            (createGroupWithCardIds as any)(ids, opt.groupName || query);
-          }
-        } catch {}
-        try {
-          scheduleGroupSave();
         } catch {}
         // Fit to new items
         if (created.length) {
