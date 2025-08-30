@@ -1,4 +1,5 @@
 import * as PIXI from "pixi.js";
+import { Colors } from "../ui/theme";
 import type { CardSprite } from "../scene/cardNode";
 import { SelectionStore } from "../state/selectionStore";
 
@@ -57,8 +58,8 @@ export class MarqueeSystem {
     const g = this.state.rect;
     g.clear();
     g.rect(rx, ry, rw, rh)
-      .fill({ color: 0x0088ff, alpha: 0.08 })
-      .stroke({ color: 0x00aaff, width: 1, alpha: 0.9 });
+      .fill({ color: Colors.marqueeFill(), alpha: 0.08 })
+      .stroke({ color: Colors.marqueeStroke(), width: 1, alpha: 0.9 });
     (g as any).__lastRect = { x: rx, y: ry, w: rw, h: rh };
   }
   finish() {

@@ -2,6 +2,7 @@ import * as PIXI from "pixi.js";
 import { SelectionStore } from "../state/selectionStore";
 import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
+import { Colors } from "../ui/theme";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -254,15 +255,15 @@ function ensureCardTextures(renderer: PIXI.Renderer) {
     base: buildTexture(renderer, {
       w,
       h,
-      fill: 0xffffff,
-      stroke: 0x000000,
+      fill: Colors.cardPlaceholderFill(),
+      stroke: Colors.cardPlaceholderStroke(),
       strokeW: 2,
     }),
     selected: buildTexture(renderer, {
       w,
       h,
-      fill: 0xffffff,
-      stroke: 0x00aaff,
+      fill: Colors.cardPlaceholderFill(),
+      stroke: Colors.cardSelectedStroke(),
       strokeW: 4,
     }),
   };
@@ -773,7 +774,9 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
   if (!cachedTextures) return; // should exist after first card
   if (s.__imgLoaded) {
     // Simpler selection styling to avoid nested Graphics on Sprites in Pixi v8: tint when selected
-    (s as any).tint = selected ? 0xbfeeff : 0xffffff;
+    (s as any).tint = selected
+      ? Colors.cardSelectedTint()
+      : Colors.cardDefaultTint();
     // Hide legacy outline if present
     if (s.__outline) {
       try {
@@ -830,17 +833,17 @@ function ensureDoubleSidedBadge(sprite: CardSprite) {
     const wrap = new PIXI.Container();
     const g = new PIXI.Graphics();
     g.circle(0, 0, targetRadius)
-      .fill({ color: 0x0a1a22, alpha: 0.9 })
-      .stroke({ color: 0x48cfff, width: 2 });
+      .fill({ color: Colors.badgeBg(), alpha: 0.9 })
+      .stroke({ color: Colors.badgeStroke(), width: 2 });
     // Smaller arrows scaled to new radius
     g.moveTo(-2, -1)
       .lineTo(0, -5)
       .lineTo(2, -1)
-      .stroke({ color: 0x8ae9ff, width: 2 });
+      .stroke({ color: Colors.badgeArrows(), width: 2 });
     g.moveTo(2, 1)
       .lineTo(0, 5)
       .lineTo(-2, 1)
-      .stroke({ color: 0x8ae9ff, width: 2 });
+      .stroke({ color: Colors.badgeArrows(), width: 2 });
     wrap.addChild(g);
     wrap.eventMode = "static";
     wrap.cursor = "pointer";

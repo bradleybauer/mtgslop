@@ -8,6 +8,7 @@
 
 import * as PIXI from "pixi.js";
 import { SelectionStore } from "../state/selectionStore";
+import { Colors } from "../ui/theme";
 import type { CardSprite } from "./cardNode";
 
 // Public shape used elsewhere. Keep name for integration, but surface is simplified.
@@ -42,66 +43,32 @@ export interface GroupVisual {
 // Slightly larger header for improved readability and to better host inline controls.
 export const HEADER_HEIGHT = 50;
 const BODY_RADIUS = 6;
-// Colors now derived from CSS variables so light/dark themes stay in sync.
-// We sample only when theme changes to avoid per-frame cost.
-let BORDER_COLOR = 0x222a30;
-let BORDER_COLOR_SELECTED = 0x33bbff;
-let BODY_BG = 0x161c20; // flat dark body background
-let BODY_BG_COLLAPSED = 0x181e22;
-let HEADER_TEXT_COLOR = 0xffffff;
-let COUNT_TEXT_COLOR = 0xb5c7d1;
-let PRICE_TEXT_COLOR = 0xd9f0ff;
-let OVERLAY_TEXT_COLOR = 0xffffff; // zoom overlay text color (theme-aware)
+// Colors are derived from CSS via the centralized Colors helper.
+// Sample on theme changes to avoid per-frame cost.
+let BORDER_COLOR = Colors.panelBorder();
+let BORDER_COLOR_SELECTED = Colors.accent();
+let BODY_BG = Colors.panelBg(); // flat body background
+let BODY_BG_COLLAPSED = Colors.panelBgAlt();
+let HEADER_TEXT_COLOR = Colors.panelFg();
+let COUNT_TEXT_COLOR = Colors.panelFgDim();
+let PRICE_TEXT_COLOR = Colors.panelFg();
+let OVERLAY_TEXT_COLOR = Colors.overlayText(); // zoom overlay text color (theme-aware)
 // Shared presentation constants
 export const GROUP_DIM_ALPHA = 0.4; // frame/header opacity in normal view
 // Outline thickness
 const BORDER_WIDTH = 10;
 const BORDER_WIDTH_SELECTED = 10;
-function hexFromCSS(varName: string, fallback: number) {
-  try {
-    const v = getComputedStyle(document.documentElement)
-      .getPropertyValue(varName)
-      .trim();
-    if (!v) return fallback;
-    if (/^#?[0-9a-fA-F]{3,8}$/.test(v)) {
-      const hex = v.startsWith("#") ? v.slice(1) : v;
-      return parseInt(
-        hex.length === 3
-          ? hex
-              .split("")
-              .map((c) => c + c)
-              .join("")
-          : hex.slice(0, 6),
-        16,
-      );
-    }
-  } catch {}
-  return fallback;
-}
-function isLightColor(hex: number) {
-  const r = (hex >> 16) & 0xff;
-  const g = (hex >> 8) & 0xff;
-  const b = hex & 0xff;
-  // Perceived luminance (sRGB approx)
-  const luma = 0.2126 * (r / 255) + 0.7152 * (g / 255) + 0.0722 * (b / 255);
-  return luma > 0.6; // threshold: treat as light
-}
 export function applyGroupTheme() {
-  // Map CSS vars to internal palette; provide fallbacks resembling existing dark theme.
-  BORDER_COLOR = hexFromCSS("--panel-border", 0x222a30);
-  BORDER_COLOR_SELECTED = hexFromCSS("--panel-accent", 0x33bbff);
-  // Derive body backgrounds by darkening panel background slightly.
-  const panelBg = hexFromCSS("--panel-bg", 0x101b24);
-  const panelAlt = hexFromCSS("--panel-bg-alt", 0x0d1720);
-  BODY_BG = panelBg;
-  BODY_BG_COLLAPSED = panelAlt;
-  HEADER_TEXT_COLOR = hexFromCSS("--panel-fg", 0xffffff);
-  COUNT_TEXT_COLOR = hexFromCSS("--panel-fg-dim", 0xb5c7d1);
+  // Map CSS vars to internal palette via Colors helper.
+  BORDER_COLOR = Colors.panelBorder();
+  BORDER_COLOR_SELECTED = Colors.accent();
+  BODY_BG = Colors.panelBg();
+  BODY_BG_COLLAPSED = Colors.panelBgAlt();
+  HEADER_TEXT_COLOR = Colors.panelFg();
+  COUNT_TEXT_COLOR = Colors.panelFgDim();
   PRICE_TEXT_COLOR = HEADER_TEXT_COLOR;
-  // Overlay text: dark in light mode, light in dark mode
-  OVERLAY_TEXT_COLOR = isLightColor(BODY_BG)
-    ? hexFromCSS("--panel-fg", 0x111111)
-    : 0xffffff;
+  // Overlay text: theme-aware via centralized helper
+  OVERLAY_TEXT_COLOR = Colors.overlayText();
 }
 // Initial sample (safe if executed before DOM ready; will be resampled on first theme ensure anyway)
 try {

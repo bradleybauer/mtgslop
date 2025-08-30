@@ -59,6 +59,7 @@ import {
   ensureThemeStyles,
   registerThemeListener,
 } from "./ui/theme";
+import { Colors } from "./ui/theme";
 import { installSearchPalette } from "./ui/searchPalette";
 import { installImportExport } from "./ui/importExport";
 import { searchScryfall, fetchScryfallByNames } from "./services/scryfall";
@@ -93,7 +94,7 @@ const app = new PIXI.Application();
 const splashEl = document.getElementById("splash");
 (async () => {
   await app.init({
-    background: "#1e1e1e",
+    background: Colors.canvasBg() as any,
     resizeTo: window,
     antialias: true,
     resolution: window.devicePixelRatio || 1,
@@ -143,11 +144,8 @@ const splashEl = document.getElementById("splash");
   // Visual marker for the maximum canvas area (world-bounded region)
   let boundsMarker: PIXI.Graphics | null = null;
   let lastBounds: { x: number; y: number; w: number; h: number } | null = null;
-  let themeForBounds: "dark" | "light" =
-    (document.documentElement.getAttribute("data-theme") as any) || "dark";
-  function boundsStrokeColor(theme: "dark" | "light"): number {
-    // Dark: soft off-white. Light: soft mid-gray for contrast.
-    return theme === "dark" ? 0xf4f7fa : 0x8a949e;
+  function boundsStrokeColor(): number {
+    return Colors.boundsStroke();
   }
   function ensureBoundsMarker(b: {
     x: number;
@@ -167,7 +165,7 @@ const splashEl = document.getElementById("splash");
       // Wireframe only: outline the bounds rectangle without fill; color depends on theme
       // Draw stroke entirely outside the true bounds so the inner edge equals the bounded area
       boundsMarker.rect(b.x, b.y, b.w, b.h).stroke({
-        color: boundsStrokeColor(themeForBounds) as any,
+        color: boundsStrokeColor() as any,
         width: 120,
         alignment: 0, // 0 = outside, 0.5 = centered (default), 1 = inside
       });
@@ -183,12 +181,12 @@ const splashEl = document.getElementById("splash");
   // Ensure stage sorts by zIndex
   (app.stage as any).sortableChildren = true;
   const bannerText = new PIXI.Text("MTG Slop", {
-    fill: 0x88d1ff as any,
+    fill: Colors.bannerText() as any,
     fontFamily: "Inter, system-ui, sans-serif",
     fontWeight: "800" as any,
     fontSize: 64,
     dropShadow: true,
-    dropShadowColor: 0x000000 as any,
+    dropShadowColor: Colors.bannerShadow() as any,
     dropShadowBlur: 1,
     dropShadowDistance: 2,
     align: "left",
@@ -208,31 +206,11 @@ const splashEl = document.getElementById("splash");
   let ctrlsOverlay: PIXI.Container | null = null;
   let ctrlsOverlayW = 0;
   // Theme helpers for overlay colors
-  function cssHex(varName: string, fallback: number): number {
-    try {
-      const v = getComputedStyle(document.documentElement)
-        .getPropertyValue(varName)
-        .trim();
-      if (!v) return fallback;
-      const hex = v.startsWith("#") ? v.slice(1) : v;
-      const clean =
-        hex.length === 3
-          ? hex
-              .split("")
-              .map((c) => c + c)
-              .join("")
-          : hex.slice(0, 6);
-      const n = parseInt(clean, 16);
-      return isFinite(n) ? n : fallback;
-    } catch {
-      return fallback;
-    }
-  }
   function overlayTheme() {
     return {
-      fg: cssHex("--panel-fg", 0xffffff),
-      bg: cssHex("--panel-bg-alt", 0x0f1418),
-      border: cssHex("--panel-accent", 0x33bbff),
+      fg: Colors.panelFg(),
+      bg: Colors.panelBgAlt(),
+      border: Colors.accent(),
     };
   }
   function createCtrlsOverlay(): PIXI.Container {
@@ -1278,9 +1256,10 @@ const splashEl = document.getElementById("splash");
     input.style.zIndex = "10000";
     input.style.padding = "3px 6px";
     input.style.font = '12px "Inter", system-ui, sans-serif';
-    input.style.color = "#fff";
-    input.style.background = "#1c2a33";
-    input.style.border = "1px solid #3d6175";
+    // Use theme variables for colors
+    input.style.color = "var(--input-fg)";
+    input.style.background = "var(--input-bg)";
+    input.style.border = "1px solid var(--input-border)";
     input.style.borderRadius = "4px";
     input.style.outline = "none";
     input.style.width = `${Math.max(80, Math.min(240, gv.w * scale - 20))}px`;
@@ -1879,30 +1858,34 @@ const splashEl = document.getElementById("splash");
       const edgeWorld = EDGE_PX / (world.scale.x || 1);
       dbg.clear();
       // Top (blue)
-      dbg.rect(0, 0, gv.w, edgeWorld).fill({ color: 0x3355ff, alpha: 0.25 });
+      dbg
+        .rect(0, 0, gv.w, edgeWorld)
+        .fill({ color: Colors.debugBlue(), alpha: 0.25 });
       // Bottom (blue)
       dbg
         .rect(0, gv.h - edgeWorld, gv.w, edgeWorld)
-        .fill({ color: 0x3355ff, alpha: 0.25 });
+        .fill({ color: Colors.debugBlue(), alpha: 0.25 });
       // Left (green)
-      dbg.rect(0, 0, edgeWorld, gv.h).fill({ color: 0x33cc66, alpha: 0.25 });
+      dbg
+        .rect(0, 0, edgeWorld, gv.h)
+        .fill({ color: Colors.debugGreen(), alpha: 0.25 });
       // Right (green)
       dbg
         .rect(gv.w - edgeWorld, 0, edgeWorld, gv.h)
-        .fill({ color: 0x33cc66, alpha: 0.25 });
+        .fill({ color: Colors.debugGreen(), alpha: 0.25 });
       // Corners (red) overdraw so they stand out
       dbg
         .rect(0, 0, edgeWorld, edgeWorld)
-        .fill({ color: 0xff3366, alpha: 0.35 }); // NW
+        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // NW
       dbg
         .rect(gv.w - edgeWorld, 0, edgeWorld, edgeWorld)
-        .fill({ color: 0xff3366, alpha: 0.35 }); // NE
+        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // NE
       dbg
         .rect(0, gv.h - edgeWorld, edgeWorld, edgeWorld)
-        .fill({ color: 0xff3366, alpha: 0.35 }); // SW
+        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // SW
       dbg
         .rect(gv.w - edgeWorld, gv.h - edgeWorld, edgeWorld, edgeWorld)
-        .fill({ color: 0xff3366, alpha: 0.35 }); // SE
+        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // SE
     }
 
     function modeFromPoint(
@@ -2590,14 +2573,15 @@ const splashEl = document.getElementById("splash");
             const badge = document.createElement("span");
             badge.textContent = "✓";
             badge.style.cssText =
-              "margin-left:auto;color:#5fcba4;font-size:24px;";
+              "margin-left:auto;color:var(--success-accent);font-size:24px;";
             it.appendChild(badge);
           }
         });
     }
     if (card.__groupId) {
       const divider = document.createElement("div");
-      divider.style.cssText = "height:1px;background:#1e323d;margin:6px 4px;";
+      divider.style.cssText =
+        "height:1px;background:var(--menu-divider-bg);margin:6px 4px;";
       el.appendChild(divider);
       addItem("Remove from current group", () => {
         const old = card.__groupId ? groups.get(card.__groupId) : null;

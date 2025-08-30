@@ -64,7 +64,8 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       b.style.padding = "8px 14px";
       const update = () => {
         b.style.opacity = filterMode === mode ? "1" : "0.55";
-        b.style.outline = filterMode === mode ? "1px solid #4d90a8" : "none";
+        b.style.outline =
+          filterMode === mode ? "1px solid var(--pill-active-outline)" : "none";
       };
       b.onclick = () => {
         filterMode = mode;
