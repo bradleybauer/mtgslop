@@ -1300,13 +1300,40 @@ const splashEl = document.getElementById("splash");
     if (groupInfoPanel) return groupInfoPanel;
     const el = document.createElement("div");
     el.id = "group-info-panel";
-    // Bottom anchored slim bar replacing side panel
+    // Match card info panel geometry, anchored bottom-right
     el.style.cssText =
-      "position:fixed;left:0;right:0;bottom:0;height:120px;z-index:10020;display:flex;flex-direction:row;align-items:flex-start;padding:10px 14px;gap:16px;";
+      "position:fixed;right:14px;bottom:14px;width:420px;max-width:45vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
     el.className = "ui-panel";
-    el.innerHTML =
-      '<div style="font-size:22px;font-weight:600;letter-spacing:.55px;text-transform:uppercase;color:var(--panel-accent);">Group</div>';
-    el.style.fontSize = "16px";
+
+    // Header (mirrors card panel header)
+    const header = document.createElement("div");
+    header.id = "gip-header";
+    header.style.cssText =
+      "padding:10px 14px 6px;font-size:14px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:8px;justify-content:space-between;";
+    const headerTitle = document.createElement("div");
+    headerTitle.textContent = "Group";
+    header.appendChild(headerTitle);
+    // Optional clear button on header
+    const clearBtn = document.createElement("button");
+    clearBtn.textContent = "×";
+    clearBtn.title = "Clear selection";
+    clearBtn.className = "ui-btn";
+    clearBtn.style.cssText =
+      "width:32px;height:32px;padding:0;font-size:18px;line-height:18px;";
+    clearBtn.onclick = () => {
+      SelectionStore.clear();
+      updateGroupInfoPanel();
+    };
+    header.appendChild(clearBtn);
+    el.appendChild(header);
+
+    // Scrollable content container
+    const scroll = document.createElement("div");
+    scroll.id = "gip-scroll";
+    scroll.style.cssText =
+      "overflow:auto;padding:0 14px 18px;display:flex;flex-direction:column;gap:14px;";
+    el.appendChild(scroll);
+
     // Name editor
     const nameWrap = document.createElement("div");
     nameWrap.style.display = "flex";
@@ -1325,13 +1352,15 @@ const splashEl = document.getElementById("splash");
     nameInput.style.fontSize = "16px";
     nameInput.style.padding = "8px 10px";
     nameWrap.appendChild(nameInput);
-    el.appendChild(nameWrap);
+    scroll.appendChild(nameWrap);
+
     // Metrics
     const metrics = document.createElement("div");
     metrics.id = "group-info-metrics";
     metrics.style.cssText =
       "display:grid;grid-template-columns:auto 1fr;column-gap:12px;row-gap:4px;font-size:16px;min-width:140px;";
-    el.appendChild(metrics);
+    scroll.appendChild(metrics);
+
     // Actions
     const actions = document.createElement("div");
     actions.style.cssText =
@@ -1373,21 +1402,8 @@ const splashEl = document.getElementById("splash");
     });
     deleteBtn.classList.add("danger");
     actions.append(autoBtn, deleteBtn);
-    el.appendChild(actions);
-    // Color palette removed; colors are theme-driven now
-    // Member list removed per requirements
-    // Close button (optional)
-    const closeBtn = document.createElement("button");
-    closeBtn.textContent = "×";
-    closeBtn.title = "Clear selection";
-    closeBtn.className = "ui-btn";
-    closeBtn.style.cssText +=
-      "position:absolute;top:6px;right:6px;width:40px;height:40px;font-size:22px;line-height:22px;padding:0;";
-    closeBtn.onclick = () => {
-      SelectionStore.clear();
-      updateGroupInfoPanel();
-    };
-    el.appendChild(closeBtn);
+    scroll.appendChild(actions);
+
     // Name input commit
     nameInput.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
@@ -1426,6 +1442,10 @@ const splashEl = document.getElementById("splash");
       return;
     }
     panel.style.display = "flex";
+    // Ensure mutual exclusivity with card panel
+    try {
+      hideCardInfoPanel();
+    } catch {}
     if (groupInfoNameInput) groupInfoNameInput.value = gv.name;
     // Update metrics grid
     const metrics = panel.querySelector(
@@ -1445,6 +1465,9 @@ const splashEl = document.getElementById("splash");
       addRow("Cards", gv.items.size.toString());
       addRow("Price", `$${gv.totalPrice.toFixed(2)}`);
     }
+  }
+  function hideGroupInfoPanel() {
+    if (groupInfoPanel) groupInfoPanel.style.display = "none";
   }
 
   // ---- Card Info Side Pane ----
@@ -1493,6 +1516,10 @@ const splashEl = document.getElementById("splash");
     }
     const card = sprite.__card;
     showCardInfoPanel();
+    // Ensure mutual exclusivity with group panel
+    try {
+      hideGroupInfoPanel();
+    } catch {}
     const panel = ensureCardInfoPanel();
     const empty = panel.querySelector("#cip-empty") as HTMLElement | null;
     const content = panel.querySelector("#cip-content") as HTMLElement | null;
