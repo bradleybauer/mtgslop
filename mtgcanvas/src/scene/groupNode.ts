@@ -21,7 +21,6 @@ export interface GroupVisual {
   price: PIXI.Text; // total price text (rightmost)
   resize: PIXI.Graphics; // resize affordance (triangle)
   name: string;
-  color: number; // header color
   w: number;
   h: number;
   collapsed: boolean;
@@ -53,6 +52,8 @@ let HEADER_TEXT_COLOR = 0xffffff;
 let COUNT_TEXT_COLOR = 0xb5c7d1;
 let PRICE_TEXT_COLOR = 0xd9f0ff;
 let OVERLAY_TEXT_COLOR = 0xffffff; // zoom overlay text color (theme-aware)
+// Shared presentation constants
+export const GROUP_DIM_ALPHA = 0.4; // frame/header opacity in normal view
 // Outline thickness
 const BORDER_WIDTH = 10;
 const BORDER_WIDTH_SELECTED = 10;
@@ -113,11 +114,18 @@ const FONT_FAMILY = "Inter, system-ui, sans-serif";
 
 // Layout constants for cards inside a group
 const GRID_SIZE = 8; // match reduced global grid for consistent snapping when resizing groups
-const CARD_W = 100,
-  CARD_H = 140;
-const PAD_X = 16; // inner left/right
-const PAD_Y = 12; // inner top below header
-const PAD_BOTTOM_EXTRA = 8; // extra bottom padding so cards don't touch frame
+const CARD_W = 100;
+const CARD_H = 140;
+// Choose PAD_X so that (innerW + 2*PAD_X) is divisible by GRID_SIZE for any column count.
+// With CARD_W=100 and GAP_X=4, innerW = 104*c - 4; picking PAD_X=18 makes innerW + 2*PAD_X = 104*c + 32, a multiple of 8.
+const PAD_X = 18; // inner left/right (slightly increased to ensure visible right padding)
+// Choose a top padding that, when added to HEADER_HEIGHT (50), lands on the 8px grid: 50 + 6 = 56.
+// This prevents snap() from inflating the gap and keeps cards snug under the title bar.
+const PAD_Y = 6; // inner top below header
+// Bottom inner padding: keep visual gap symmetric to top by default.
+// With PAD_Y=6 and innerH = 144*r - 4, choosing PAD_BOTTOM_EXTRA=6 keeps sizes aligned to the 8px grid
+// while avoiding an oversized bottom gutter.
+const PAD_BOTTOM_EXTRA = 6; // extra bottom padding so cards don't touch frame
 // Choose gaps that keep (CARD + GAP) divisible by GRID_SIZE so snap() preserves spacing.
 // 100 + 4 = 104, 140 + 4 = 144, both divisible by 8. Visually ≈8px at common zooms.
 const GAP_X = 4;
@@ -126,11 +134,7 @@ function snap(v: number) {
   return Math.round(v / GRID_SIZE) * GRID_SIZE;
 }
 
-// Muted header palette; can be recolored later via context menu.
-const PALETTE = [
-  0x2d3e53, 0x444444, 0x224433, 0x333355, 0x553355, 0x335555, 0x4a284a,
-  0x3c4a28,
-];
+// No per-group color; colors come from theme variables for consistency.
 
 export function createGroupVisual(
   id: number,
@@ -197,7 +201,6 @@ export function createGroupVisual(
   resize.eventMode = "static";
   resize.cursor = "nwse-resize";
   resize.zIndex = 3;
-  const color = PALETTE[id % PALETTE.length];
   const gv: GroupVisual = {
     id,
     gfx,
@@ -208,7 +211,6 @@ export function createGroupVisual(
     price,
     resize,
     name: `Group ${id}`,
-    color,
     w,
     h,
     collapsed: false,
@@ -231,7 +233,7 @@ export function createGroupVisual(
     },
   });
   zoomLabel.visible = false;
-  zoomLabel.alpha = 0;
+  zoomLabel.alpha = 0; // start hidden
   zoomLabel.zIndex = 4;
   gv._zoomLabel = zoomLabel;
   // Dedicated transparent drag surface placed below text
@@ -257,6 +259,13 @@ export function createGroupVisual(
     overlayDrag,
     zoomLabel,
   );
+  // Ensure default (non-overlay) alphas are applied at creation
+  gfx.alpha = 1;
+  frame.alpha = GROUP_DIM_ALPHA;
+  header.alpha = GROUP_DIM_ALPHA;
+  label.alpha = 1;
+  count.alpha = 1;
+  price.alpha = 1;
   drawGroup(gv, false);
   return gv;
 }
@@ -270,11 +279,12 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   const borderColor = selected ? BORDER_COLOR_SELECTED : BORDER_COLOR;
   const bw = selected ? BORDER_WIDTH_SELECTED : BORDER_WIDTH;
 
-  // Ensure header texts reflect current theme
+  // Ensure header texts reflect current theme on every draw
   try {
     (label.style as any).fill = HEADER_TEXT_COLOR;
     (count.style as any).fill = COUNT_TEXT_COLOR;
   } catch {}
+  // Keep default header text fully opaque unless overlay presentation dims them later
   label.alpha = 1;
   count.alpha = 1;
   // Unify title bar font sizes (label, count, price) to a comfortable size
@@ -302,8 +312,9 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   const hh = Math.max(0, HEADER_HEIGHT - bw);
   const overlayActive = !!(gv._lastZoomPhase && gv._lastZoomPhase > 0);
   if (innerW > 0 && innerH > 0) {
-    const startY = overlayActive ? bw : bw + hh; // leave header area unfilled when visible
-    const fillH = innerH - (overlayActive ? 0 : hh);
+    // Always leave header area unfilled so it shows the border ring color
+    const startY = bw + hh;
+    const fillH = innerH - hh;
     if (fillH > 0) {
       // Use simple rect for body under header; rounded corners still apply at bottom via BODY_RADIUS-bw
       frame.rect(bw, startY, innerW, fillH).fill({
@@ -312,8 +323,6 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
     }
   }
 
-  // No additional header fill needed: the header area remains the borderColor from the outer ring.
-  // Keep header Graphics for interaction only; no visual fill here to avoid color disparity.
   header.hitArea = new PIXI.Rectangle(0, 0, w, HEADER_HEIGHT);
 
   // Label text (truncate if needed)
@@ -678,7 +687,7 @@ export function ensureGroupEncapsulates(
   const desiredW = Math.max(160, Math.ceil(maxX - minX + PAD_X * 2));
   const desiredH = Math.max(
     HEADER_HEIGHT + 80,
-    Math.ceil(HEADER_HEIGHT + PAD_Y + (maxY - minY) + PAD_BOTTOM_EXTRA),
+    Math.ceil(HEADER_HEIGHT + PAD_Y + (maxY - minY) + PAD_Y + PAD_BOTTOM_EXTRA),
   );
   // Snap size to grid; position can remain freeform for smoother feel.
   gv.w = snap(desiredW);
@@ -719,7 +728,7 @@ export function placeCardInGroup(
   const left = snap(gv.gfx.x + PAD_X);
   const top = snap(gv.gfx.y + HEADER_HEIGHT + PAD_Y);
   const right = gv.gfx.x + gv.w - PAD_X;
-  const bottom = gv.gfx.y + gv.h - PAD_BOTTOM_EXTRA;
+  const bottom = gv.gfx.y + gv.h - PAD_Y - PAD_BOTTOM_EXTRA;
   const step = GRID_SIZE; // search on grid-aligned steps
   // Start search near preferred point if provided, else top-left
   const startX = snap(
@@ -781,7 +790,7 @@ export function placeCardInGroup(
     gv.h = snap(gv.h + added);
     gv._expandedH = gv.h;
     // New inner bottom
-    const newBottom = snap(gv.gfx.y + gv.h - PAD_BOTTOM_EXTRA - CARD_H);
+  const newBottom = snap(gv.gfx.y + gv.h - PAD_Y - PAD_BOTTOM_EXTRA - CARD_H);
     // Scan left->right for first fit in new bottom row
     for (let x = snap(left); x <= right - CARD_W; x += step) {
       if (fitsAt(x, newBottom)) {
@@ -1210,7 +1219,6 @@ export function updateGroupZoomPresentation(
     }
   }
   // Dim frame + header consistently (same opacity whether overlay is active or not)
-  const dimAlpha = 0.4;
-  gv.frame.alpha = dimAlpha;
-  gv.header.alpha = dimAlpha;
+  gv.frame.alpha = GROUP_DIM_ALPHA;
+  gv.header.alpha = GROUP_DIM_ALPHA;
 }

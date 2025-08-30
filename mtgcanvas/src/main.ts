@@ -1077,7 +1077,7 @@ const splashEl = document.getElementById("splash");
           z: gv.gfx.zIndex || 0,
           name: gv.name,
           collapsed: gv.collapsed,
-          color: gv.color,
+          // color retired; theme-driven only
           layoutMode: (gv as any).layoutMode || "grid",
           facet: (gv as any).facet || null,
           membersById: gv.order.slice(),
@@ -1104,7 +1104,7 @@ const splashEl = document.getElementById("splash");
       );
       if (gr.name) gv.name = gr.name;
       /* collapse retired: always load expanded */ gv.collapsed = false;
-      if (gr.color) gv.color = gr.color;
+  // color retired; theme-driven only
       if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode;
       if (gr.facet) (gv as any).facet = gr.facet;
       if (typeof gr.z === "number") {
@@ -1378,14 +1378,6 @@ const splashEl = document.getElementById("splash");
       scheduleGroupSave();
       updateGroupInfoPanel();
     });
-    const recolorBtn = makeBtn("Recolor", () => {
-      const gv = currentPanelGroup();
-      if (!gv) return;
-      gv.color = (Math.random() * 0xffffff) | 0;
-      drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-      scheduleGroupSave();
-      updateGroupInfoPanel();
-    });
     const deleteBtn = makeBtn("Delete", () => {
       const gv = currentPanelGroup();
       if (!gv) return;
@@ -1395,28 +1387,9 @@ const splashEl = document.getElementById("splash");
       updateGroupInfoPanel();
     });
     deleteBtn.classList.add("danger");
-    actions.append(autoBtn, recolorBtn, deleteBtn);
+  actions.append(autoBtn, deleteBtn);
     el.appendChild(actions);
-    // Color palette strip
-    const paletteStrip = document.createElement("div");
-    paletteStrip.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
-    for (let i = 0; i < 10; i++) {
-      const sq = document.createElement("div");
-      const col = (i * 0x222222 + 0x334455) & 0xffffff;
-      sq.style.cssText =
-        "width:18px;height:18px;border-radius:4px;cursor:pointer;border:1px solid var(--panel-border);";
-      sq.style.background = "#" + col.toString(16).padStart(6, "0");
-      sq.onclick = () => {
-        const gv = currentPanelGroup();
-        if (!gv) return;
-        gv.color = col;
-        drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-        scheduleGroupSave();
-        updateGroupInfoPanel();
-      };
-      paletteStrip.appendChild(sq);
-    }
-    el.appendChild(paletteStrip);
+  // Color palette removed; colors are theme-driven now
     // Member list removed per requirements
     // Close button (optional)
     const closeBtn = document.createElement("button");
@@ -2499,31 +2472,13 @@ const splashEl = document.getElementById("splash");
     gridBy.appendChild(facetBtn("Mana Value", "mv"));
     el.appendChild(gridBy);
     addItem("Rename", () => startGroupRename(gv));
-    addItem("Recolor", () => {
-      gv.color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
-      drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-      scheduleGroupSave();
-    });
+  // Recolor removed; theme-driven
     addItem("Delete", () => {
       deleteGroupById(gv.id);
       SelectionStore.clear();
       scheduleGroupSave();
     });
-    const sw = document.createElement("div");
-    sw.style.cssText =
-      "display:flex;gap:4px;padding:4px 6px 2px;flex-wrap:wrap;";
-    PALETTE.forEach((c) => {
-      const sq = document.createElement("div");
-      sq.style.cssText = `width:16px;height:16px;border-radius:4px;background:#${c.toString(16).padStart(6, "0")};cursor:pointer;border:1px solid #182830;`;
-      sq.onclick = () => {
-        gv.color = c;
-        drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-        scheduleGroupSave();
-        hideGroupMenu();
-      };
-      sw.appendChild(sq);
-    });
-    el.appendChild(sw);
+  // Palette removed
     const bounds = app.renderer.canvas.getBoundingClientRect();
     el.style.left = `${bounds.left + globalPt.x + 4}px`;
     el.style.top = `${bounds.top + globalPt.y + 4}px`;
@@ -5114,7 +5069,7 @@ const splashEl = document.getElementById("splash");
                 z: gv.gfx.zIndex || 0,
                 name: gv.name,
                 collapsed: gv.collapsed,
-                color: gv.color,
+                // color retired; theme-driven only
                 layoutMode: (gv as any).layoutMode || "grid",
                 facet: (gv as any).facet || null,
                 membersById: gv.order.slice(),
