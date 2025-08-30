@@ -3060,7 +3060,18 @@ const splashEl = document.getElementById("splash");
           const ungrouped = resolve(data.ungrouped);
           if (ungrouped.length) {
             let placed = 0;
-            const cols = 10;
+            // Choose columns to keep the block close to square (respecting card aspect ratio)
+            const ratio = SPACING_Y / SPACING_X;
+            const idealCols = Math.max(
+              1,
+              Math.round(Math.sqrt(ungrouped.length * ratio)),
+            );
+            const cols = Math.max(4, idealCols);
+            // Compute block size, then find a free spot for the whole block
+            const rows = Math.ceil(ungrouped.length / cols);
+            const blockW = cols * SPACING_X - GAP_X_GLOBAL;
+            const blockH = rows * SPACING_Y - GAP_Y_GLOBAL;
+            const anchor = findFreeSpotForBlock(blockW, blockH, { pad: 16 });
             let maxId = sprites.length
               ? Math.max(...sprites.map((s) => s.__id))
               : 0;
@@ -3068,8 +3079,8 @@ const splashEl = document.getElementById("splash");
               const idx = placed++;
               const col = idx % cols;
               const row = Math.floor(idx / cols);
-              const x = col * SPACING_X;
-              const y = row * SPACING_Y;
+              const x = anchor.x + col * SPACING_X;
+              const y = anchor.y + row * SPACING_Y;
               let id: number;
               try {
                 id = InstancesRepo.create(1, x, y);
@@ -3086,6 +3097,11 @@ const splashEl = document.getElementById("splash");
               ensureCardImage(sp);
               imported++;
             }
+            // Fit view to the new block for quick access
+            camera.fitBounds(
+              { x: anchor.x, y: anchor.y, w: blockW, h: blockH },
+              { w: window.innerWidth, h: window.innerHeight },
+            );
           }
           if (imported) {
             try {
@@ -3242,6 +3258,172 @@ const splashEl = document.getElementById("splash");
   }
   ensureDebugPanel();
 
+  // --- Smart placement helper for groups ---
+  // Finds a non-overlapping spot for a group near an anchor (viewport top-left by default),
+  // scanning left-to-right then top-to-bottom in shelf rows. Considers existing groups and loose cards.
+  function placeGroupSmart(
+    gv: GroupVisual,
+    opts?: { anchor?: "view" | "centroid"; pad?: number },
+  ) {
+    const pad = opts?.pad ?? 16;
+    // Determine anchor
+    let startX = 0,
+      startY = 0;
+    if (opts?.anchor === "centroid") {
+      // Use centroid of current members if available; fall back to view
+      const ids = gv.order.slice();
+      const members = ids
+        .map((id) => sprites.find((s) => s.__id === id))
+        .filter(Boolean) as CardSprite[];
+      if (members.length) {
+        const minX = Math.min(...members.map((s) => s.x));
+        const minY = Math.min(...members.map((s) => s.y));
+        startX = snap(minX);
+        startY = snap(minY);
+      } else {
+        const invScale = 1 / world.scale.x;
+        startX = snap(-world.position.x * invScale + 40);
+        startY = snap(-world.position.y * invScale + 40);
+      }
+    } else {
+      const invScale = 1 / world.scale.x;
+      startX = snap(-world.position.x * invScale + 40);
+      startY = snap(-world.position.y * invScale + 40);
+    }
+    // Collision test against existing groups and free cards
+    function collides(x: number, y: number): boolean {
+      const gx1 = x - pad,
+        gy1 = y - pad,
+        gx2 = x + gv.w + pad,
+        gy2 = y + gv.h + pad;
+      for (const eg of groups.values()) {
+        if (eg.id === gv.id) continue;
+        const x1 = eg.gfx.x - pad,
+          y1 = eg.gfx.y - pad,
+          x2 = eg.gfx.x + eg.w + pad,
+          y2 = eg.gfx.y + eg.h + pad;
+        if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+      }
+      for (const s of sprites) {
+        if ((s as any).__groupId === gv.id) continue;
+        const x1 = s.x - 4,
+          y1 = s.y - 4,
+          x2 = s.x + 100 + 4,
+          y2 = s.y + 140 + 4;
+        if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+      }
+      return false;
+    }
+    // Compute search steps so rows/columns feel tidy regardless of group size.
+    const stepX = snap(Math.max(gv.w + 48, 320));
+    const stepY = snap(Math.max(gv.h + 48, 260));
+    const searchCols = 48;
+    const searchRows = 48;
+    let bestX = gv.gfx.x,
+      bestY = gv.gfx.y;
+    let found = false;
+    outer: for (let row = 0; row < searchRows; row++) {
+      for (let col = 0; col < searchCols; col++) {
+        const x = snap(startX + col * stepX);
+        const y = snap(startY + row * stepY);
+        if (!collides(x, y)) {
+          bestX = x;
+          bestY = y;
+          found = true;
+          break outer;
+        }
+      }
+    }
+    if (!found) {
+      // Fallback: place to the far right of current max extent
+      let maxX = 0,
+        minY = 0;
+      let initialized = false;
+      sprites.forEach((s) => {
+        if (!initialized) {
+          maxX = s.x + 100;
+          minY = s.y;
+          initialized = true;
+        } else {
+          if (s.x + 100 > maxX) maxX = s.x + 100;
+          if (s.y < minY) minY = s.y;
+        }
+      });
+      groups.forEach((eg) => {
+        if (eg.id === gv.id) return;
+        if (eg.gfx.x + eg.w > maxX) maxX = eg.gfx.x + eg.w;
+        if (eg.gfx.y < minY) minY = eg.gfx.y;
+      });
+      bestX = snap(maxX + 120);
+      bestY = snap(minY);
+    }
+    const dx = bestX - gv.gfx.x;
+    const dy = bestY - gv.gfx.y;
+    if (dx || dy) {
+      gv.gfx.x = bestX;
+      gv.gfx.y = bestY;
+      // Shift member cards with the group pre-layout so their relative ordering is preserved during initial paint
+      for (const cid of gv.order) {
+        const s = sprites.find((sp) => sp.__id === cid);
+        if (s) {
+          s.x += dx;
+          s.y += dy;
+          spatial.update({
+            id: s.__id,
+            minX: s.x,
+            minY: s.y,
+            maxX: s.x + 100,
+            maxY: s.y + 140,
+          });
+        }
+      }
+    }
+  }
+
+  // Find a free top-left position for a rectangular block (w x h) near viewport.
+  // Scans in shelf order (left-to-right, then next row) to avoid overlap with groups and free cards.
+  function findFreeSpotForBlock(
+    w: number,
+    h: number,
+    opts?: { pad?: number },
+  ): { x: number; y: number } {
+    const pad = opts?.pad ?? 12;
+    const invScale = 1 / world.scale.x;
+    const startX = snap(-world.position.x * invScale + 40);
+    const startY = snap(-world.position.y * invScale + 40);
+    function collides(x: number, y: number): boolean {
+      const gx1 = x - pad,
+        gy1 = y - pad,
+        gx2 = x + w + pad,
+        gy2 = y + h + pad;
+      for (const eg of groups.values()) {
+        const x1 = eg.gfx.x - pad,
+          y1 = eg.gfx.y - pad,
+          x2 = eg.gfx.x + eg.w + pad,
+          y2 = eg.gfx.y + eg.h + pad;
+        if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+      }
+      for (const s of sprites) {
+        const x1 = s.x - 4,
+          y1 = s.y - 4,
+          x2 = s.x + 100 + 4,
+          y2 = s.y + 140 + 4;
+        if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
+      }
+      return false;
+    }
+    const stepX = snap(Math.max(w + 40, 200));
+    const stepY = snap(Math.max(h + 40, 180));
+    for (let row = 0; row < 60; row++) {
+      for (let col = 0; col < 60; col++) {
+        const x = snap(startX + col * stepX);
+        const y = snap(startY + row * stepY);
+        if (!collides(x, y)) return { x, y };
+      }
+    }
+    return { x: startX, y: startY };
+  }
+
   // Explicit hi-res upgrade pass: ensure visible cards promote quickly (not limited by LOAD_PER_FRAME small image loader)
   let hiResCursor = 0;
   function upgradeVisibleHiRes() {
@@ -3393,19 +3575,19 @@ const splashEl = document.getElementById("splash");
         lines.push("");
       });
       // Ungrouped
-    const ungrouped = sprites.filter((s) => !(s as any).__groupId);
+      const ungrouped = sprites.filter((s) => !(s as any).__groupId);
       lines.push("# Ungrouped");
       if (!ungrouped.length) lines.push("(none)");
       else
         ungrouped.forEach((s) => {
-      const raw = ((s as any).__card?.name || "").trim();
-      const i = raw.indexOf("//");
-      const n = i >= 0 ? raw.slice(0, i).trim() : raw;
+          const raw = ((s as any).__card?.name || "").trim();
+          const i = raw.indexOf("//");
+          const n = i >= 0 ? raw.slice(0, i).trim() : raw;
           if (n) lines.push(`- ${n}`);
         });
       return lines.join("\n");
     },
-  importGroups: async (data, opt) => {
+    importGroups: async (data, opt) => {
       // Build lookup by lowercase name from currently loaded sprites; extend by fetching from Scryfall if needed.
       const byName = new Map<string, any>();
       for (const s of sprites) {
@@ -3426,18 +3608,19 @@ const splashEl = document.getElementById("splash");
       );
       if (unresolvedOriginal.length) {
         try {
-          const { byName: fetched, unknown: notFound } = await fetchScryfallByNames(
-            unresolvedOriginal,
-            { signal: (opt as any)?.signal, onProgress: opt?.onProgress },
-          );
+          const { byName: fetched, unknown: notFound } =
+            await fetchScryfallByNames(unresolvedOriginal, {
+              signal: (opt as any)?.signal,
+              onProgress: opt?.onProgress,
+            });
           // Merge into byName map
           fetched.forEach((card, key) => {
             if (!byName.has(key)) byName.set(key, card);
           });
           // Compute unknowns based on what remains unresolved
           const notFoundSet = new Set<string>(notFound);
-          unknown = unresolvedOriginal.filter(
-            (n) => notFoundSet.has(n.toLowerCase()),
+          unknown = unresolvedOriginal.filter((n) =>
+            notFoundSet.has(n.toLowerCase()),
           );
         } catch (e) {
           console.warn("[importGroups] scryfall collection failed", e);
@@ -3456,7 +3639,7 @@ const splashEl = document.getElementById("splash");
         cards: resolveCards(g.cards),
       }));
       const ungroupedCards = resolveCards(data.ungrouped);
-  // unknown was already computed from Scryfall not_found (if any).
+      // unknown was already computed from Scryfall not_found (if any).
       let imported = 0;
       // Create groups with cards
       for (const g of groupDefs) {
@@ -3487,10 +3670,15 @@ const splashEl = document.getElementById("splash");
       }
       // Place ungrouped cards in a grid near current view
       if (ungroupedCards.length) {
-        const inv = 1 / world.scale.x;
-        const startX = snap(-world.position.x * inv + 40);
-        const startY = snap(-world.position.y * inv + 40);
-        const cols = 10;
+        const ratio = SPACING_Y / SPACING_X;
+        const cols = Math.max(
+          4,
+          Math.round(Math.sqrt(ungroupedCards.length * ratio)),
+        );
+        const rows = Math.ceil(ungroupedCards.length / cols);
+        const blockW = cols * SPACING_X - GAP_X_GLOBAL;
+        const blockH = rows * SPACING_Y - GAP_Y_GLOBAL;
+        const anchor = findFreeSpotForBlock(blockW, blockH, { pad: 16 });
         let placed = 0;
         let maxId = sprites.length
           ? Math.max(...sprites.map((s) => s.__id))
@@ -3499,8 +3687,8 @@ const splashEl = document.getElementById("splash");
           const idx = placed++;
           const col = idx % cols;
           const row = Math.floor(idx / cols);
-          const x = startX + col * SPACING_X;
-          const y = startY + row * SPACING_Y;
+          const x = anchor.x + col * SPACING_X;
+          const y = anchor.y + row * SPACING_Y;
           let id: number;
           try {
             id = InstancesRepo.create(1, x, y);
@@ -3511,6 +3699,11 @@ const splashEl = document.getElementById("splash");
           ensureCardImage(sp);
           imported++;
         }
+        // Fit to the block of cards just placed
+        camera.fitBounds(
+          { x: anchor.x, y: anchor.y, w: blockW, h: blockH },
+          { w: window.innerWidth, h: window.innerHeight },
+        );
       }
       // Persist raw imported cards for rehydration
       try {
@@ -3541,7 +3734,7 @@ const splashEl = document.getElementById("splash");
       } catch {}
       return { imported, unknown };
     },
-  importByNames: async (items, opt) => {
+    importByNames: async (items, opt) => {
       // Build lookup from currently loaded sprites by lowercase name -> card object
       const byName = new Map<string, any>();
       for (const s of sprites) {
@@ -3551,11 +3744,10 @@ const splashEl = document.getElementById("splash");
         if (nm && !byName.has(nm)) byName.set(nm, c);
       }
       let unknown: string[] = [];
-      // Placement grid near current viewport
+      // Prepare placement variables (anchor computed after we know total count)
       const inv = 1 / world.scale.x;
-      const startX = snap(-world.position.x * inv + 40);
-      const startY = snap(-world.position.y * inv + 40);
-      const cols = 10;
+      // Choose near-square grid for the deck block; adjust after we know total count
+      let cols = 8; // temporary, recomputed below
       let placed = 0;
       let maxId = sprites.length ? Math.max(...sprites.map((s) => s.__id)) : 0;
       const created: CardSprite[] = [];
@@ -3572,10 +3764,13 @@ const splashEl = document.getElementById("splash");
       // If any names weren't found locally, fetch them from Scryfall
       if (originalUnknown.length) {
         try {
-          const { byName: fetched } = await fetchScryfallByNames(originalUnknown, {
-            signal: (opt as any)?.signal,
-            onProgress: opt?.onProgress,
-          });
+          const { byName: fetched } = await fetchScryfallByNames(
+            originalUnknown,
+            {
+              signal: (opt as any)?.signal,
+              onProgress: opt?.onProgress,
+            },
+          );
           fetched.forEach((card, key) => {
             if (!byName.has(key)) byName.set(key, card);
           });
@@ -3593,6 +3788,14 @@ const splashEl = document.getElementById("splash");
           unknown = originalUnknown.slice();
         }
       }
+      // Decide final block anchor now that we know how many to place
+      const totalToPlace = toPlace.reduce((sum, p) => sum + p.count, 0);
+      const ratio2 = SPACING_Y / SPACING_X;
+      cols = Math.max(4, Math.round(Math.sqrt(totalToPlace * ratio2)));
+      const rows2 = Math.max(1, Math.ceil(totalToPlace / cols));
+      const blockW2 = cols * SPACING_X - GAP_X_GLOBAL;
+      const blockH2 = rows2 * SPACING_Y - GAP_Y_GLOBAL;
+      const anchor2 = findFreeSpotForBlock(blockW2, blockH2, { pad: 16 });
       // Place all resolved cards
       const persistedCards: any[] = [];
       for (const pl of toPlace) {
@@ -3600,8 +3803,8 @@ const splashEl = document.getElementById("splash");
           const idx = placed++;
           const col = idx % cols;
           const row = Math.floor(idx / cols);
-          const x = startX + col * SPACING_X;
-          const y = startY + row * SPACING_Y;
+          const x = anchor2.x + col * SPACING_X;
+          const y = anchor2.y + row * SPACING_Y;
           let id: number;
           try {
             id = InstancesRepo.create(1, x, y);
@@ -3854,101 +4057,8 @@ const splashEl = document.getElementById("splash");
       });
       updateGroupMetrics(gv, sprites);
       drawGroup(gv, false);
-      // --- Non-overlapping placement ---
-      (function placeGroup() {
-        const pad = 16; // extra spacing from other objects
-        const searchCols = 40;
-        const searchRows = 40; // safety bounds
-        const invScale = 1 / world.scale.x;
-        const viewLeft = -world.position.x * invScale;
-        const viewTop = -world.position.y * invScale;
-        const startX = snap(viewLeft + 40);
-        const startY = snap(viewTop + 40);
-        function collides(x: number, y: number): boolean {
-          const gx1 = x - pad,
-            gy1 = y - pad,
-            gx2 = x + gv.w + pad,
-            gy2 = y + gv.h + pad;
-          // Existing groups
-          for (const eg of groups.values()) {
-            if (eg.id === gv.id) continue; // skip self
-            const x1 = eg.gfx.x - pad,
-              y1 = eg.gfx.y - pad,
-              x2 = eg.gfx.x + eg.w + pad,
-              y2 = eg.gfx.y + eg.h + pad;
-            if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
-          }
-          // Existing cards (ignore cards in this new group since they will move with it)
-          for (const s of sprites) {
-            if ((s as any).__groupId === gv.id) continue;
-            const x1 = s.x - 4,
-              y1 = s.y - 4,
-              x2 = s.x + 100 + 4,
-              y2 = s.y + 140 + 4;
-            if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
-          }
-          return false;
-        }
-        let found = false;
-        let bestX = gv.gfx.x,
-          bestY = gv.gfx.y;
-        outer: for (let row = 0; row < searchRows; row++) {
-          for (let col = 0; col < searchCols; col++) {
-            const x = snap(startX + col * (gv.w + 60));
-            const y = snap(startY + row * (gv.h + 60));
-            if (!collides(x, y)) {
-              bestX = x;
-              bestY = y;
-              found = true;
-              break outer;
-            }
-          }
-        }
-        if (!found) {
-          // Fallback: place to the far right of current max extent
-          let maxX = 0,
-            minY = 0;
-          let initialized = false;
-          sprites.forEach((s) => {
-            if (!initialized) {
-              maxX = s.x + 100;
-              minY = s.y;
-              initialized = true;
-            } else {
-              if (s.x + 100 > maxX) maxX = s.x + 100;
-              if (s.y < minY) minY = s.y;
-            }
-          });
-          groups.forEach((eg) => {
-            if (eg.id === gv.id) return;
-            if (eg.gfx.x + eg.w > maxX) maxX = eg.gfx.x + eg.w;
-            if (eg.gfx.y < minY) minY = eg.gfx.y;
-          });
-          bestX = snap(maxX + 120);
-          bestY = snap(minY);
-        }
-        const dx = bestX - gv.gfx.x;
-        const dy = bestY - gv.gfx.y;
-        if (dx || dy) {
-          gv.gfx.x = bestX;
-          gv.gfx.y = bestY;
-          // Shift member cards
-          for (const cid of gv.order) {
-            const s = sprites.find((sp) => sp.__id === cid);
-            if (s) {
-              s.x += dx;
-              s.y += dy;
-              spatial.update({
-                id: s.__id,
-                minX: s.x,
-                minY: s.y,
-                maxX: s.x + 100,
-                maxY: s.y + 140,
-              });
-            }
-          }
-        }
-      })();
+      // Non-overlapping placement using the shared helper; anchor near selection centroid
+      placeGroupSmart(gv, { anchor: "centroid" });
       scheduleGroupSave();
       // Fit new group into view
       const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
@@ -4008,55 +4118,8 @@ const splashEl = document.getElementById("splash");
         ids.map((cid) => ({ id: cid, group_id: gv.id })),
       );
     } catch {}
-    // Try to place the group near top-left of current view without overlap first
-    (function placeGroup() {
-      const pad = 16;
-      const invScale = 1 / world.scale.x;
-      const viewLeft = -world.position.x * invScale;
-      const viewTop = -world.position.y * invScale;
-      const startX = snap(viewLeft + 40);
-      const startY = snap(viewTop + 40);
-      function collides(x: number, y: number): boolean {
-        const gx1 = x - pad,
-          gy1 = y - pad,
-          gx2 = x + gv.w + pad,
-          gy2 = y + gv.h + pad;
-        for (const eg of groups.values()) {
-          if (eg.id === gv.id) continue;
-          const x1 = eg.gfx.x - pad,
-            y1 = eg.gfx.y - pad,
-            x2 = eg.gfx.x + eg.w + pad,
-            y2 = eg.gfx.y + eg.h + pad;
-          if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
-        }
-        for (const s of sprites) {
-          if ((s as any).__groupId === gv.id) continue;
-          const x1 = s.x - 4,
-            y1 = s.y - 4,
-            x2 = s.x + 100 + 4,
-            y2 = s.y + 140 + 4;
-          if (gx1 < x2 && gx2 > x1 && gy1 < y2 && gy2 > y1) return true;
-        }
-        return false;
-      }
-      let placed = false;
-      for (let dy = 0; dy < 40 && !placed; dy++) {
-        for (let dx = 0; dx < 40 && !placed; dx++) {
-          const x = startX + dx * (gv.w + 24);
-          const y = startY + dy * (gv.h + 24);
-          if (!collides(x, y)) {
-            gv.gfx.x = x;
-            gv.gfx.y = y;
-            placed = true;
-          }
-        }
-      }
-      if (!placed) {
-        gv.gfx.x = startX;
-        gv.gfx.y = startY;
-      }
-    })();
-
+    // Smart non-overlapping placement near current view
+    placeGroupSmart(gv, { anchor: "centroid" });
     // Now size and layout the group at its final position
     autoPackGroup(gv, sprites, (s) =>
       spatial.update({
@@ -4076,84 +4139,19 @@ const splashEl = document.getElementById("splash");
     });
     updateGroupMetrics(gv, sprites);
     drawGroup(gv, false);
-  }
-
-  async function createGroupFromNames(
-    names: string[],
-    groupName = "Max Combo Deck",
-  ) {
-    const wanted = names.map(normalizeName);
-    const index = new Map<string, number[]>();
-    sprites.forEach((s) => {
-      const nm = normalizeName((s as any).__card?.name || "");
-      if (!nm) return;
-      const arr = index.get(nm);
-      if (arr) arr.push(s.__id);
-      else index.set(nm, [s.__id]);
-    });
-    const chosenIds: number[] = [];
-    const used = new Set<number>();
-    for (const n of wanted) {
-      const arr = index.get(n);
-      if (!arr || !arr.length) continue;
-      const cid = arr.find((id) => !used.has(id));
-      if (cid != null) {
-        chosenIds.push(cid);
-        used.add(cid);
-      }
-    }
-    if (!chosenIds.length) return;
-    createGroupWithCardIds(chosenIds, groupName);
-  }
-
-  async function createGroupFromJsonDeck(
-    url: string,
-    groupName = "Max Combo Deck",
-  ) {
+    // Save and fit
+    scheduleGroupSave();
+    const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
+    camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
     try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) return;
-      const data = await res.json();
-      const names: string[] = Array.isArray(data?.deck)
-        ? data.deck
-        : Array.isArray(data?.cards)
-          ? data.cards
-          : [];
-      if (!names.length) return;
-      await createGroupFromNames(names, groupName);
-    } catch {
-      /* ignore */
-    }
+      persistGroupTransform(gv.id, {
+        x: gv.gfx.x,
+        y: gv.gfx.y,
+        w: gv.w,
+        h: gv.h,
+      });
+    } catch {}
   }
-
-  // Expose helpers for console use
-  (window as any).createGroupFromNames = createGroupFromNames;
-  (window as any).createGroupFromJsonDeck = createGroupFromJsonDeck;
-
-  // Auto-load a deck JSON placed in public as /max_combo_deck.json when query flag is set
-  try {
-    const params = new URLSearchParams(location.search);
-    if (params.get("autogroup") === "max-deck") {
-      createGroupFromJsonDeck(
-        "/max_combo_deck.json",
-        params.get("group") || "Max Combo Deck",
-      );
-    }
-  } catch {}
-
-  // Table mode stub container
-  const tableEl = document.createElement("div");
-  tableEl.id = "table-mode";
-  tableEl.style.cssText =
-    'position:fixed;inset:0;display:none;background:#0d1419;color:#d5d5d5;font:12px/1.4 "Inter",system-ui,monospace;padding:10px;z-index:60;overflow:auto;';
-  tableEl.innerHTML =
-    '<h2 style="margin:8px 0 18px;font-size:28px;">Table Mode (Phase 1 Stub)</h2><p style="font-size:24px;">Press Tab to return to canvas.</p>';
-  document.body.appendChild(tableEl);
-  UIState.on(() => {
-    const canvasMode = UIState.state.mode === "canvas";
-    app.canvas.style.display = canvasMode ? "block" : "none";
-    tableEl.style.display = canvasMode ? "none" : "block";
-  });
 
   // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
   let last = performance.now();

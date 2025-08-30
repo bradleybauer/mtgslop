@@ -5,7 +5,10 @@ export interface ImportExportOptions {
   getSelectedNames: () => string[]; // names for selected sprites
   importByNames: (
     items: { name: string; count: number }[],
-  opt?: { onProgress?: (done: number, total?: number) => void; signal?: AbortSignal },
+    opt?: {
+      onProgress?: (done: number, total?: number) => void;
+      signal?: AbortSignal;
+    },
   ) => Promise<{ imported: number; unknown: string[] }>; // performs import, returns stats
   // Optional: provide a preformatted text export of groups and ungrouped cards
   getGroupsExport?: () => string;
@@ -15,7 +18,10 @@ export interface ImportExportOptions {
       groups: { name: string; cards: string[] }[];
       ungrouped: string[];
     },
-    opt?: { onProgress?: (done: number, total?: number) => void; signal?: AbortSignal },
+    opt?: {
+      onProgress?: (done: number, total?: number) => void;
+      signal?: AbortSignal;
+    },
   ) => Promise<{ imported: number; unknown: string[] }>;
   // Optional: Scryfall search integration – when provided, panel shows a Search tab
   scryfallSearchAndPlace?: (
@@ -299,7 +305,7 @@ export function installImportExport(
       const asGroups = parseGroupsText(inputText);
       if (asGroups && opts.importGroups) {
         if (statusEl) statusEl.textContent = "Importing groups…";
-  const res = await opts.importGroups(asGroups, {
+        const res = await opts.importGroups(asGroups, {
           onProgress: (done, total) => {
             if (!statusEl) return;
             if (typeof total === "number" && total > 0)
@@ -318,7 +324,7 @@ export function installImportExport(
         return;
       }
       if (statusEl) statusEl.textContent = "Importing…";
-  const res = await opts.importByNames(items, {
+      const res = await opts.importByNames(items, {
         onProgress: (done, total) => {
           if (!statusEl) return;
           if (typeof total === "number" && total > 0)
@@ -412,10 +418,10 @@ export function installImportExport(
   }
 
   function show() {
-  const elp = ensure();
-  elp.style.display = "block"; // pre-populate export
+    const elp = ensure();
+    elp.style.display = "block"; // pre-populate export
     // Use current format selection when showing
-  const fmtSel = elp.querySelector("#ie-format") as HTMLSelectElement | null;
+    const fmtSel = elp.querySelector("#ie-format") as HTMLSelectElement | null;
     const fmt = fmtSel?.value || "counts";
     if (fmt === "groups" && (opts as any).getGroupsExport) {
       if (exportArea) exportArea.value = (opts as any).getGroupsExport();

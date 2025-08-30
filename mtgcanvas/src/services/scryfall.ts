@@ -235,7 +235,10 @@ export async function searchScryfall(
  */
 export async function fetchScryfallByNames(
   names: string[],
-  opts: { signal?: AbortSignal; onProgress?: (done: number, total?: number) => void } = {},
+  opts: {
+    signal?: AbortSignal;
+    onProgress?: (done: number, total?: number) => void;
+  } = {},
 ): Promise<{ byName: Map<string, ScryfallCard>; unknown: string[] }> {
   // Normalize and de-duplicate names while preserving a map to original casings
   const norm = (s: string) => (s || "").trim();
@@ -296,8 +299,8 @@ export async function fetchScryfallByNames(
       );
     }
     const json = (await res.json()) as any;
-  const data = Array.isArray(json?.data) ? (json.data as ScryfallCard[]) : [];
-  for (const c of data) indexCardNames(c);
+    const data = Array.isArray(json?.data) ? (json.data as ScryfallCard[]) : [];
+    for (const c of data) indexCardNames(c);
     if (Array.isArray(json?.not_found)) {
       for (const nf of json.not_found) {
         const nm = (nf?.name || "").toString().toLowerCase();
@@ -334,7 +337,9 @@ export async function fetchScryfallByNames(
               continue;
             }
             const text = await safeText(res);
-            throw new Error(`Scryfall named error ${res.status}: ${text || res.statusText}`);
+            throw new Error(
+              `Scryfall named error ${res.status}: ${text || res.statusText}`,
+            );
           }
           const card = (await res.json()) as ScryfallCard;
           indexCardNames(card);
@@ -346,8 +351,8 @@ export async function fetchScryfallByNames(
         }
       }
     }
-  const workers2: Promise<void>[] = [];
-  for (let i = 0; i < cc; i++) workers2.push(worker2());
+    const workers2: Promise<void>[] = [];
+    for (let i = 0; i < cc; i++) workers2.push(worker2());
     await Promise.all(workers2);
   }
   // Derive unknowns by comparing the unique set to resolved keys, union not_found
