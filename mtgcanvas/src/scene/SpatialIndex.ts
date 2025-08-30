@@ -14,6 +14,11 @@ export class SpatialIndex {
   insert(item: SpatialItem) {
     this.tree.insert(item);
   }
+  // Efficiently load many items at once
+  bulkLoad(items: SpatialItem[]) {
+    if (!items || !items.length) return;
+    this.tree.load(items);
+  }
   remove(id: number) {
     this.tree.remove(
       { id, minX: 0, minY: 0, maxX: 0, maxY: 0 } as SpatialItem,

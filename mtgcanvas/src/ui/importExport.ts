@@ -44,29 +44,6 @@ export interface ImportExportAPI {
   hide(): void;
 }
 
-function frontFace(name: string): string {
-  const s = (name || "").trim();
-  if (!s) return s;
-  const i = s.indexOf("//");
-  return i >= 0 ? s.slice(0, i).trim() : s;
-}
-
-function groupCounts(names: string[]): { name: string; count: number }[] {
-  const map = new Map<string, number>();
-  for (const n of names) {
-    const key = frontFace(n);
-    if (!key) continue;
-    map.set(key, (map.get(key) || 0) + 1);
-  }
-  return [...map.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([name, count]) => ({ name, count }));
-}
-
-function countsToText(items: { name: string; count: number }[]): string {
-  return items.map((it) => `${it.count} ${it.name}`).join("\n");
-}
-
 function parseDecklist(text: string): { name: string; count: number }[] {
   const out: { name: string; count: number }[] = [];
   const lines = text.split(/\r?\n/);
@@ -233,7 +210,6 @@ export function installImportExport(
     const copyBtn = el.querySelector("#ie-copy") as HTMLButtonElement;
     const dlBtn = el.querySelector("#ie-download") as HTMLButtonElement;
 
-    const clearBtn = null as HTMLButtonElement | null;
     const scopeAllEl = el.querySelector("#ie-scope-all") as HTMLInputElement;
     const scopeSelEl = el.querySelector("#ie-scope-sel") as HTMLInputElement;
     const importBtn = el.querySelector("#ie-import-btn") as HTMLButtonElement;

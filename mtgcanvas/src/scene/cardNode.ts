@@ -965,7 +965,10 @@ export function attachCardInteractions(
 ) {
   let dragState: null | {
     sprites: CardSprite[];
-    offsets: { sprite: CardSprite; dx: number; dy: number }[];
+    // Original positions at drag start (for rigid-body delta application)
+    starts: { sprite: CardSprite; x0: number; y0: number }[];
+    // Local position where drag started (to compute intended delta)
+    startLocal: { x: number; y: number };
   } = null;
   s.on("pointerdown", (e: any) => {
     if (e.button !== 0) return; // only left button selects / drags
@@ -986,11 +989,8 @@ export function attachCardInteractions(
     const startLocal = world.toLocal(e.global);
     dragState = {
       sprites: dragSprites,
-      offsets: dragSprites.map((cs) => ({
-        sprite: cs,
-        dx: startLocal.x - cs.x,
-        dy: startLocal.y - cs.y,
-      })),
+      starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
+      startLocal: { x: startLocal.x, y: startLocal.y },
     };
     dragSprites.forEach((cs) => (cs.zIndex = 100000 + cs.__baseZ));
   });
@@ -998,9 +998,23 @@ export function attachCardInteractions(
     if (!dragState) return;
     dragState.sprites.forEach((cs) => (cs.zIndex = cs.__baseZ));
     if (commit) {
+      const ha: any = (stage as any).hitArea as any;
+      const hasBounds = ha && typeof ha.x === "number";
+      const minX = hasBounds ? ha.x : -Infinity;
+      const minY = hasBounds ? ha.y : -Infinity;
+      const maxX = hasBounds ? ha.x + ha.width - 100 : Infinity;
+      const maxY = hasBounds ? ha.y + ha.height - 140 : Infinity;
       dragState.sprites.forEach((cs) => {
-        cs.x = snap(cs.x);
-        cs.y = snap(cs.y);
+        let nx = snap(cs.x);
+        let ny = snap(cs.y);
+        if (hasBounds) {
+          if (nx < minX) nx = minX;
+          if (ny < minY) ny = minY;
+          if (nx > maxX) nx = maxX;
+          if (ny > maxY) ny = maxY;
+        }
+        cs.x = nx;
+        cs.y = ny;
       });
       onCommit && onCommit(dragState.sprites);
     }
@@ -1012,12 +1026,44 @@ export function attachCardInteractions(
     if (!dragState) return;
     const local = world.toLocal(e.global);
     let moved = false;
-    for (const off of dragState.offsets) {
-      const nx = local.x - off.dx;
-      const ny = local.y - off.dy;
-      if (off.sprite.x !== nx || off.sprite.y !== ny) {
-        off.sprite.x = nx;
-        off.sprite.y = ny;
+    const ha: any = (stage as any).hitArea as any;
+    const hasBounds = ha && typeof ha.x === "number";
+    const minX = hasBounds ? ha.x : -Infinity;
+    const minY = hasBounds ? ha.y : -Infinity;
+    const maxX = hasBounds ? ha.x + ha.width - 100 : Infinity;
+    const maxY = hasBounds ? ha.y + ha.height - 140 : Infinity;
+
+    // Intended deltas from drag start
+    let dX = local.x - dragState.startLocal.x;
+    let dY = local.y - dragState.startLocal.y;
+
+    if (hasBounds) {
+      // Compute shared delta limits so that all sprites remain in-bounds
+      let lowDX = -Infinity;
+      let highDX = Infinity;
+      let lowDY = -Infinity;
+      let highDY = Infinity;
+      for (const st of dragState.starts) {
+        // For X: minX <= x0 + dX <= maxX
+        lowDX = Math.max(lowDX, minX - st.x0);
+        highDX = Math.min(highDX, maxX - st.x0);
+        // For Y: minY <= y0 + dY <= maxY
+        lowDY = Math.max(lowDY, minY - st.y0);
+        highDY = Math.min(highDY, maxY - st.y0);
+      }
+      // Clamp intended delta to allowable range
+      if (dX < lowDX) dX = lowDX;
+      if (dX > highDX) dX = highDX;
+      if (dY < lowDY) dY = lowDY;
+      if (dY > highDY) dY = highDY;
+    }
+
+    for (const st of dragState.starts) {
+      const nx = st.x0 + dX;
+      const ny = st.y0 + dY;
+      if (st.sprite.x !== nx || st.sprite.y !== ny) {
+        st.sprite.x = nx;
+        st.sprite.y = ny;
         moved = true;
       }
     }

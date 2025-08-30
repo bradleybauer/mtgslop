@@ -324,7 +324,7 @@ export async function fetchScryfallByNames(
   if (notFound.size) {
     const unresolved = [...notFound];
     notFound.clear();
-    async function worker2() {
+    const worker2 = async () => {
       while (unresolved.length) {
         const nm = unresolved.shift();
         if (!nm) break;
@@ -350,7 +350,7 @@ export async function fetchScryfallByNames(
           notFound.add(nm);
         }
       }
-    }
+    };
     const workers2: Promise<void>[] = [];
     for (let i = 0; i < cc; i++) workers2.push(worker2());
     await Promise.all(workers2);
