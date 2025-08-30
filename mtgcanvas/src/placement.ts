@@ -152,7 +152,7 @@ function bestFirstFreeSpot(
   // Multi-resolution expansion: start coarse, refine down to gridSize
   let stepX = snap(Math.max(w + 40, 200), ctx.gridSize);
   let stepY = snap(Math.max(h + 40, 180), ctx.gridSize);
-  while (true) {
+  for (;;) {
     const heap = new MinHeap<{ x: number; y: number }>();
     const seen = new Set<string>();
     const bLocal = b;
@@ -341,10 +341,10 @@ function buildOccupancyGrid(ctx: PlacementContext) {
       y1 = g.gfx.y,
       x2 = g.gfx.x + g.w,
       y2 = g.gfx.y + g.h;
-    let i0 = clampI(Math.floor((x1 - originX) / ctx.spacingX) - di);
-    let i1 = clampI(Math.ceil((x2 - originX) / ctx.spacingX) - 1 + di);
-    let j0 = clampJ(Math.floor((y1 - originY) / ctx.spacingY) - dj);
-    let j1 = clampJ(Math.ceil((y2 - originY) / ctx.spacingY) - 1 + dj);
+    const i0 = clampI(Math.floor((x1 - originX) / ctx.spacingX) - di);
+    const i1 = clampI(Math.ceil((x2 - originX) / ctx.spacingX) - 1 + di);
+    const j0 = clampJ(Math.floor((y1 - originY) / ctx.spacingY) - dj);
+    const j1 = clampJ(Math.ceil((y2 - originY) / ctx.spacingY) - 1 + dj);
     for (let j = j0; j <= j1; j++)
       for (let i = i0; i <= i1; i++) occ[idx(i, j)] = 1;
   });
@@ -354,10 +354,10 @@ function buildOccupancyGrid(ctx: PlacementContext) {
       y1 = s.y,
       x2 = s.x + ctx.cardW,
       y2 = s.y + ctx.cardH;
-    let i0 = clampI(Math.floor((x1 - originX) / ctx.spacingX) - di);
-    let i1 = clampI(Math.ceil((x2 - originX) / ctx.spacingX) - 1 + di);
-    let j0 = clampJ(Math.floor((y1 - originY) / ctx.spacingY) - dj);
-    let j1 = clampJ(Math.ceil((y2 - originY) / ctx.spacingY) - 1 + dj);
+    const i0 = clampI(Math.floor((x1 - originX) / ctx.spacingX) - di);
+    const i1 = clampI(Math.ceil((x2 - originX) / ctx.spacingX) - 1 + di);
+    const j0 = clampJ(Math.floor((y1 - originY) / ctx.spacingY) - dj);
+    const j1 = clampJ(Math.ceil((y2 - originY) / ctx.spacingY) - 1 + dj);
     for (let j = j0; j <= j1; j++)
       for (let i = i0; i <= i1; i++) occ[idx(i, j)] = 1;
   }

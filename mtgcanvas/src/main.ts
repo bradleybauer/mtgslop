@@ -1,5 +1,4 @@
 import * as PIXI from "pixi.js";
-import RBush from "rbush";
 import { planImportPositions, computeBestGrid } from "./placement";
 import type { PlacementContext } from "./placement";
 import { SelectionStore } from "./state/selectionStore";
@@ -316,11 +315,47 @@ const splashEl = document.getElementById("splash");
     } catch {}
   });
   const spatial = new SpatialIndex();
+  // Global z-order helper: monotonic counter shared across modules via window
+  function nextZ(): number {
+    const w: any = window as any;
+    if (typeof w.__mtgZCounter !== "number") w.__mtgZCounter = 1000;
+    w.__mtgZCounter += 1;
+    return w.__mtgZCounter;
+  }
+  (window as any).__mtgNextZ = nextZ;
 
   // Card layer & data (persisted instances)
   const sprites: CardSprite[] = [];
   // Groups container + visuals (initialized early so camera fit can consider them)
   const groups = new Map<number, GroupVisual>();
+  // Transient z-order rules during drag: use very high z values below HUD/banner
+  // Live-refresh groups on theme changes (colors, text fills, overlay presentation)
+  registerThemeListener(() => {
+    try {
+      groups.forEach((gv) => {
+        // Ensure overlay/header visibility & overlay text color/position reflect new theme
+        updateGroupZoomPresentation(gv, world.scale.x, sprites);
+        // Redraw with current theme-derived palette
+        drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+        // If faceted labels exist, update their fill to match theme header text color
+        try {
+          if ((gv as any)._facetLayer && (gv as any)._facetLayer.children) {
+            const layer: any = (gv as any)._facetLayer;
+            for (const c of layer.children) {
+              if (c && (c as any).style) {
+                // Reuse current label color from one of the header texts after drawGroup
+                (c as any).style.fill =
+                  (gv.label as any).style?.fill ??
+                  (gv as any).HEADER_TEXT_COLOR;
+                (c as any).dirty = true;
+                (c as any).updateText && (c as any).updateText();
+              }
+            }
+          }
+        } catch {}
+      });
+    } catch {}
+  });
   // Build placement context for planner module (captures live references)
   function buildPlacementContext(): PlacementContext {
     return {
@@ -373,6 +408,7 @@ const splashEl = document.getElementById("splash");
       () => sprites,
       world,
       app.stage,
+      // onDrop: finalize membership & persist
       (moved) =>
         moved.forEach((ms) => {
           spatial.update({
@@ -388,6 +424,17 @@ const splashEl = document.getElementById("splash");
         }),
       () => panning,
       (global, additive) => marquee.start(global, additive),
+      // onDragMove: only update spatial (no membership changes yet)
+      (moved) =>
+        moved.forEach((ms) => {
+          spatial.update({
+            id: ms.__id,
+            minX: ms.x,
+            minY: ms.y,
+            maxX: ms.x + CARD_W_GLOBAL,
+            maxY: ms.y + CARD_H_GLOBAL,
+          });
+        }),
     );
     // Ensure context menu listener
     try {
@@ -439,11 +486,51 @@ const splashEl = document.getElementById("splash");
           maxY: s.y + CARD_H_GLOBAL,
         })),
       );
+      // Attach interactions for each created sprite so they are immediately clickable/draggable
+      created.forEach((s) =>
+        attachCardInteractions(
+          s,
+          () => sprites,
+          world,
+          app.stage,
+          // onDrop
+          (moved) =>
+            moved.forEach((ms) => {
+              spatial.update({
+                id: ms.__id,
+                minX: ms.x,
+                minY: ms.y,
+                maxX: ms.x + CARD_W_GLOBAL,
+                maxY: ms.y + CARD_H_GLOBAL,
+              });
+              assignCardToGroupByPosition(ms);
+              queuePosition(ms);
+              scheduleLocalSave();
+            }),
+          () => panning,
+          (global, additive) => marquee.start(global, additive),
+          // onDragMove
+          (moved) =>
+            moved.forEach((ms) => {
+              spatial.update({
+                id: ms.__id,
+                minX: ms.x,
+                minY: ms.y,
+                maxX: ms.x + CARD_W_GLOBAL,
+                maxY: ms.y + CARD_H_GLOBAL,
+              });
+            }),
+        ),
+      );
       // Fire image loads after they exist to parallelize
       created.forEach((s) => ensureCardImage(s));
     } finally {
       SUPPRESS_SAVES = prevSuppress;
       updateEmptyStateOverlay();
+      try {
+        // Ensure right-click context menu listeners are wired for new cards
+        (ensureCardContextListeners as any)();
+      } catch {}
     }
     return created;
   }
@@ -1891,6 +1978,55 @@ const splashEl = document.getElementById("splash");
     let dy = 0;
     const g = gv.gfx;
     let memberOffsets: { sprite: CardSprite; ox: number; oy: number }[] = [];
+    // Temporary z-order raising while dragging a group (applies to all dragged groups + their members)
+    const DRAG_GROUP_BASE_Z = 800000; // group container during drag
+    const DRAG_GROUP_CARD_BASE_Z = 850000; // member cards during group drag (above group)
+    const prevGroupZ = new Map<number, number>(); // groupId -> original z (pre-drag)
+    const prevCardZ = new Map<number, number>(); // cardId -> original z (pre-drag)
+    function beginGroupDragZRaise(primary: GroupVisual) {
+      prevGroupZ.clear();
+      prevCardZ.clear();
+      // All groups that will move: the primary plus any other selected groups
+      const draggingIds = new Set(SelectionStore.getGroups());
+      draggingIds.add(primary.id);
+      draggingIds.forEach((id) => {
+        const gg = groups.get(id);
+        if (!gg) return;
+        // Save and raise group container zIndex
+        prevGroupZ.set(gg.id, gg.gfx.zIndex ?? 0);
+        gg.gfx.zIndex = DRAG_GROUP_BASE_Z;
+        // Raise all member cards above the group
+        gg.items.forEach((cid) => {
+          const sp = sprites.find((s) => s.__id === cid);
+          if (!sp) return;
+          if (!prevCardZ.has(cid)) prevCardZ.set(cid, sp.zIndex ?? 0);
+          // Keep relative order using baseZ to reduce flicker when stacks overlap
+          sp.zIndex = DRAG_GROUP_CARD_BASE_Z + (sp.__baseZ || 0);
+          (sp as any).__baseZ = (sp as any).__baseZ || 0; // ensure defined
+        });
+      });
+    }
+    function endGroupDragZRestore() {
+      // Restore groups
+      prevGroupZ.forEach((_z, id) => {
+        const gg = groups.get(id);
+        if (!gg) return;
+        // Persistently bring to front
+        const gz = nextZ();
+        gg.gfx.zIndex = gz;
+        // Raise members to sit above the group persistently as well
+        gg.items.forEach((cid) => {
+          const sp = sprites.find((s) => s.__id === cid);
+          if (!sp) return;
+          const cz = gz + 1;
+          sp.zIndex = cz;
+          (sp as any).__baseZ = cz;
+        });
+      });
+      prevGroupZ.clear();
+      // Do not restore member card z: they have been reassigned to remain above their group
+      prevCardZ.clear();
+    }
     gv.header.eventMode = "static";
     gv.header.cursor = "move";
     gv.header.on("pointerdown", (e: any) => {
@@ -1915,6 +2051,7 @@ const splashEl = document.getElementById("splash");
       drag = true;
       dx = local.x - g.x;
       dy = local.y - g.y;
+      beginGroupDragZRaise(gv);
       memberOffsets = [...gv.items]
         .map((id) => {
           const s = sprites.find((sp) => sp.__id === id);
@@ -1938,6 +2075,7 @@ const splashEl = document.getElementById("splash");
         drag = true;
         dx = local.x - g.x;
         dy = local.y - g.y;
+        beginGroupDragZRaise(gv);
         memberOffsets = [...gv.items]
           .map((id) => {
             const s = sprites.find((sp) => sp.__id === id);
@@ -1979,6 +2117,7 @@ const splashEl = document.getElementById("splash");
       drag = true;
       dx = local.x - g.x;
       dy = local.y - g.y;
+      beginGroupDragZRaise(gv);
       memberOffsets = [...gv.items]
         .map((id) => {
           const s = sprites.find((sp) => sp.__id === id);
@@ -2054,6 +2193,7 @@ const splashEl = document.getElementById("splash");
     const endGroupDrag = () => {
       if (!drag) return;
       drag = false;
+      endGroupDragZRestore();
       // Snap and re-clamp to bounds the primary group
       const p = clampGroupXY(gv, snap(g.x), snap(g.y));
       g.x = p.x;
@@ -2733,6 +2873,17 @@ const splashEl = document.getElementById("splash");
           s.x,
           s.y,
         );
+        // If the group's zoom overlay is active, the new member must be hidden/disabled immediately.
+        if ((target._lastZoomPhase || 0) > 0.05) {
+          const now = performance.now();
+          (s as any).__groupOverlayActive = true;
+          (s as any).eventMode = "none" as any;
+          s.cursor = "default";
+          s.alpha = 0;
+          s.visible = false;
+          s.renderable = false;
+          (s as any).__hiddenAt = now;
+        }
       } else {
         // Already a member: keep freeform position
       }
@@ -2742,6 +2893,8 @@ const splashEl = document.getElementById("splash");
         drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id));
       }
       drawGroup(target, SelectionStore.state.groupIds.has(target.id));
+      // Ensure z-order contract: member cards above their group
+      ensureMembersZOrder(target, sprites);
     } else if (s.__groupId) {
       const old = groups.get(s.__groupId);
       if (old) {
@@ -2757,6 +2910,10 @@ const splashEl = document.getElementById("splash");
       s.visible = true;
       s.renderable = true;
       updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
+      // Ungrouped card: reset z to a sane base if it was elevated by prior grouping
+      if (!(s as any).__baseZ || (s.zIndex || 0) < (s as any).__baseZ) {
+        (s as any).__baseZ = s.zIndex || ((window as any).__mtgNextZ?.() ?? 1);
+      }
       if (old) {
         updateGroupMetrics(old, sprites);
         drawGroup(old, SelectionStore.state.groupIds.has(old.id));

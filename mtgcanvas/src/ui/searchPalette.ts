@@ -206,7 +206,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     <li><code>is:</code> <em>spell</em>, <em>permanent</em>, <em>dfc</em>, <em>modal</em>, <em>vanilla</em>, <em>frenchvanilla</em>, <em>bear</em>, <em>hybrid</em>, <em>phyrexian</em>, <em>foil</em>, <em>etched</em>, <em>hires</em>, <em>promo</em>, <em>spotlight</em>, <em>digital</em>, <em>reserved</em>, <em>commander</em>…</li>
     <li><code>has:</code> <em>indicator</em>, <em>watermark</em>, <em>flavor</em>, <em>security_stamp</em></li>
   </ul>
-  <div style="opacity:.8">Tip: plain text without fields matches names and dedupes by name; use <code>o:</code> for oracle‑only text.</div>
+  <div style="opacity:.8">Tip: plain text without fields matches names and oracle. Use <code>n:</code> to target name only, or <code>o:</code> for oracle‑only text.</div>
 </details>`;
     wrap.appendChild(hint);
     document.body.appendChild(wrap);
@@ -343,17 +343,10 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     }
     // Try advanced Scryfall-like parse first
     const adv = parseScryfallQuery(q);
-    // Heuristic: if no field operators/OR/parentheses/negation, treat as name-only search and dedupe by name
-    const isNameOnly =
-      !/[A-Za-z_][A-Za-z0-9_]*:/.test(q) &&
-      !/\bOR\b/i.test(q) &&
-      !/[()]/.test(q) &&
-      !/^-/.test(q);
     const tk = adv ? null : tokenize(q);
     const sprites = getSprites();
     // const MAX = 800; // safety cap
     const matched: number[] = [];
-    const seenNames = new Set<string>();
     for (const s of sprites) {
       const c = (s as any).__card;
       if (!c) continue;
@@ -362,16 +355,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       let ok = false;
       if (adv) ok = adv(c);
       else if (tk) ok = match(c, tk);
-      if (ok) {
-        if (isNameOnly) {
-          const nm = (c.name || "").toLowerCase();
-          if (nm) {
-            if (seenNames.has(nm)) continue;
-            seenNames.add(nm);
-          }
-        }
-        matched.push(s.__id);
-      }
+      if (ok) matched.push(s.__id);
     }
     currentMatches = matched;
     cursor = 0;

@@ -959,9 +959,10 @@ export function attachCardInteractions(
   getAll: () => CardSprite[],
   world: PIXI.Container,
   stage: PIXI.Container,
-  onCommit?: (moved: CardSprite[]) => void,
+  onDrop?: (moved: CardSprite[]) => void,
   isPanning?: () => boolean,
   startMarquee?: (global: PIXI.Point, additive: boolean) => void,
+  onDragMove?: (moved: CardSprite[]) => void,
 ) {
   let dragState: null | {
     sprites: CardSprite[];
@@ -992,11 +993,25 @@ export function attachCardInteractions(
       starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
       startLocal: { x: startLocal.x, y: startLocal.y },
     };
-    dragSprites.forEach((cs) => (cs.zIndex = 100000 + cs.__baseZ));
+    // Elevate dragged cards above everything else (but below HUD), using a very high z
+    const DRAG_CARD_BASE_Z = 900000;
+    dragSprites.forEach(
+      (cs) => (cs.zIndex = DRAG_CARD_BASE_Z + (cs.__baseZ || 0)),
+    );
   });
   const endDrag = (commit: boolean) => {
     if (!dragState) return;
-    dragState.sprites.forEach((cs) => (cs.zIndex = cs.__baseZ));
+    // Persist bring-to-front ordering: assign new global z and store as baseZ
+    const nextZ: (() => number) | undefined = (window as any).__mtgNextZ;
+    if (nextZ) {
+      dragState.sprites.forEach((cs) => {
+        const nz = nextZ();
+        cs.zIndex = nz;
+        (cs as any).__baseZ = nz;
+      });
+    } else {
+      dragState.sprites.forEach((cs) => (cs.zIndex = cs.__baseZ));
+    }
     if (commit) {
       const ha: any = (stage as any).hitArea as any;
       const hasBounds = ha && typeof ha.x === "number";
@@ -1016,7 +1031,7 @@ export function attachCardInteractions(
         cs.x = nx;
         cs.y = ny;
       });
-      onCommit && onCommit(dragState.sprites);
+      onDrop && onDrop(dragState.sprites);
     }
     dragState = null;
   };
@@ -1067,7 +1082,7 @@ export function attachCardInteractions(
         moved = true;
       }
     }
-    if (moved && onCommit) onCommit(dragState.sprites);
+    if (moved && onDragMove) onDragMove(dragState.sprites);
   });
 }
 

@@ -41,9 +41,8 @@ export interface GroupVisual {
 
 // Styling constants (tuned to approximate ComfyUI aesthetic while remaining generic)
 // Slightly larger header for improved readability and to better host inline controls.
-export const HEADER_HEIGHT = 32;
+export const HEADER_HEIGHT = 50;
 const BODY_RADIUS = 6;
-const HEADER_RADIUS = 6;
 // Colors now derived from CSS variables so light/dark themes stay in sync.
 // We sample only when theme changes to avoid per-frame cost.
 let BORDER_COLOR = 0x222a30;
@@ -53,6 +52,10 @@ let BODY_BG_COLLAPSED = 0x181e22;
 let HEADER_TEXT_COLOR = 0xffffff;
 let COUNT_TEXT_COLOR = 0xb5c7d1;
 let PRICE_TEXT_COLOR = 0xd9f0ff;
+let OVERLAY_TEXT_COLOR = 0xffffff; // zoom overlay text color (theme-aware)
+// Outline thickness
+const BORDER_WIDTH = 10;
+const BORDER_WIDTH_SELECTED = 10;
 function hexFromCSS(varName: string, fallback: number) {
   try {
     const v = getComputedStyle(document.documentElement)
@@ -74,6 +77,14 @@ function hexFromCSS(varName: string, fallback: number) {
   } catch {}
   return fallback;
 }
+function isLightColor(hex: number) {
+  const r = (hex >> 16) & 0xff;
+  const g = (hex >> 8) & 0xff;
+  const b = hex & 0xff;
+  // Perceived luminance (sRGB approx)
+  const luma = 0.2126 * (r / 255) + 0.7152 * (g / 255) + 0.0722 * (b / 255);
+  return luma > 0.6; // threshold: treat as light
+}
 export function applyGroupTheme() {
   // Map CSS vars to internal palette; provide fallbacks resembling existing dark theme.
   BORDER_COLOR = hexFromCSS("--panel-border", 0x222a30);
@@ -86,6 +97,10 @@ export function applyGroupTheme() {
   HEADER_TEXT_COLOR = hexFromCSS("--panel-fg", 0xffffff);
   COUNT_TEXT_COLOR = hexFromCSS("--panel-fg-dim", 0xb5c7d1);
   PRICE_TEXT_COLOR = HEADER_TEXT_COLOR;
+  // Overlay text: dark in light mode, light in dark mode
+  OVERLAY_TEXT_COLOR = isLightColor(BODY_BG)
+    ? hexFromCSS("--panel-fg", 0x111111)
+    : 0xffffff;
 }
 // Initial sample (safe if executed before DOM ready; will be resampled on first theme ensure anyway)
 try {
@@ -125,6 +140,7 @@ export function createGroupVisual(
   h = 280,
 ): GroupVisual {
   const gfx = new PIXI.Container();
+  gfx.sortableChildren = true;
   gfx.x = x;
   gfx.y = y;
   gfx.eventMode = "static";
@@ -135,10 +151,12 @@ export function createGroupVisual(
   frame.eventMode = "static";
   frame.cursor = "default";
   (frame as any).__groupBody = true;
+  frame.zIndex = 0;
   const header = new PIXI.Graphics();
   header.eventMode = "static";
   header.cursor = "move";
   (header as any).__groupHeader = true;
+  header.zIndex = 1;
   const label = new PIXI.Text({
     text: `Group ${id}`,
     style: {
@@ -149,6 +167,9 @@ export function createGroupVisual(
       lineHeight: 13,
     },
   });
+  // Let header receive pointer events even when hovering text
+  (label as any).eventMode = "none";
+  label.zIndex = 2;
   const count = new PIXI.Text({
     text: "0",
     style: {
@@ -158,6 +179,8 @@ export function createGroupVisual(
       lineHeight: 12,
     },
   });
+  (count as any).eventMode = "none";
+  count.zIndex = 2;
   const price = new PIXI.Text({
     text: "$0.00",
     style: {
@@ -168,9 +191,12 @@ export function createGroupVisual(
       lineHeight: 12,
     },
   });
+  (price as any).eventMode = "none";
+  price.zIndex = 2;
   const resize = new PIXI.Graphics();
   resize.eventMode = "static";
   resize.cursor = "nwse-resize";
+  resize.zIndex = 3;
   const color = PALETTE[id % PALETTE.length];
   const gv: GroupVisual = {
     id,
@@ -196,7 +222,7 @@ export function createGroupVisual(
   const zoomLabel = new PIXI.Text({
     text: gv.name,
     style: {
-      fill: HEADER_TEXT_COLOR,
+      fill: OVERLAY_TEXT_COLOR,
       fontSize: 96,
       fontFamily: FONT_FAMILY,
       fontWeight: "600",
@@ -206,12 +232,14 @@ export function createGroupVisual(
   });
   zoomLabel.visible = false;
   zoomLabel.alpha = 0;
+  zoomLabel.zIndex = 4;
   gv._zoomLabel = zoomLabel;
   // Dedicated transparent drag surface placed below text
   const overlayDrag = new PIXI.Graphics();
   overlayDrag.visible = false;
   overlayDrag.alpha = 0;
   (overlayDrag as any).eventMode = "none";
+  overlayDrag.zIndex = 5;
   gv._overlayDrag = overlayDrag;
   // Facet layer for section labels
   const facetLayer = new PIXI.Container();
@@ -240,43 +268,88 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   header.clear();
   resize.clear();
   const borderColor = selected ? BORDER_COLOR_SELECTED : BORDER_COLOR;
+  const bw = selected ? BORDER_WIDTH_SELECTED : BORDER_WIDTH;
+
+  // Ensure header texts reflect current theme
+  try {
+    (label.style as any).fill = HEADER_TEXT_COLOR;
+    (count.style as any).fill = COUNT_TEXT_COLOR;
+  } catch {}
+  label.alpha = 1;
+  count.alpha = 1;
+  // Unify title bar font sizes (label, count, price) to a comfortable size
+  const innerHeaderH = Math.max(0, HEADER_HEIGHT - bw);
+  const desiredCommonBase = 18; // previous comfortable size
+  const desiredScaled = Math.round(desiredCommonBase * 1.5); // increase by 1.5x
+  const commonSize = Math.max(12, Math.min(desiredScaled, innerHeaderH - 6));
+  try {
+    (label.style as any).fontSize = commonSize;
+    (label.style as any).fontWeight = "500";
+    (label.style as any).lineHeight = commonSize;
+    (count.style as any).fontSize = commonSize;
+    (count.style as any).fontWeight = "500";
+    (count.style as any).lineHeight = commonSize;
+  } catch {}
 
   // Body (hide card area when collapsed)
   const bodyH = collapsed ? HEADER_HEIGHT : h;
-  // Body background (one rounded rect). ComfyUI style uses simple rectangles; we keep slight rounding.
-  frame
-    .roundRect(0, 0, w, bodyH, BODY_RADIUS)
-    .fill({ color: collapsed ? BODY_BG_COLLAPSED : BODY_BG })
-    .stroke({ color: borderColor, width: selected ? 2 : 1 });
+  // Draw outer border ring as a filled rounded rect (avoids stroke joint artifacts)
+  frame.roundRect(0, 0, w, bodyH, BODY_RADIUS).fill({ color: borderColor });
+  // Draw inner body fill inset by border width.
+  // Important: do NOT draw it under the header region, so the header color sits over the same background as the border ring.
+  const innerW = Math.max(0, w - bw * 2);
+  const innerH = Math.max(0, bodyH - bw * 2);
+  const hh = Math.max(0, HEADER_HEIGHT - bw);
+  const overlayActive = !!(gv._lastZoomPhase && gv._lastZoomPhase > 0);
+  if (innerW > 0 && innerH > 0) {
+    const startY = overlayActive ? bw : bw + hh; // leave header area unfilled when visible
+    const fillH = innerH - (overlayActive ? 0 : hh);
+    if (fillH > 0) {
+      // Use simple rect for body under header; rounded corners still apply at bottom via BODY_RADIUS-bw
+      frame.rect(bw, startY, innerW, fillH).fill({
+        color: collapsed ? BODY_BG_COLLAPSED : BODY_BG,
+      });
+    }
+  }
 
-  // Header with rounded top corners and square bottom corners
-  header.clear();
-  header
-    .moveTo(0, HEADER_HEIGHT)
-    .lineTo(0, HEADER_RADIUS)
-    .quadraticCurveTo(0, 0, HEADER_RADIUS, 0)
-    .lineTo(w - HEADER_RADIUS, 0)
-    .quadraticCurveTo(w, 0, w, HEADER_RADIUS)
-    .lineTo(w, HEADER_HEIGHT)
-    .closePath()
-    .fill({ color: gv.color })
-    .stroke({ color: borderColor, width: selected ? 2 : 1 });
+  // No additional header fill needed: the header area remains the borderColor from the outer ring.
+  // Keep header Graphics for interaction only; no visual fill here to avoid color disparity.
   header.hitArea = new PIXI.Rectangle(0, 0, w, HEADER_HEIGHT);
 
   // Label text (truncate if needed)
   label.text = gv.name + (collapsed ? " ▸" : "");
-  label.x = 8;
+  // Keep header text away from thick borders
+  label.x = bw + 8;
   truncateLabelIfNeeded(gv);
-  positionHeaderText(label);
+  // y set later with common baseline
 
   // Price & count text (always show) - price rightmost, count just left of it
   const price = gv.price;
+  try {
+    (price.style as any).fontSize = commonSize;
+    (price.style as any).fontWeight = "500";
+    (price.style as any).lineHeight = commonSize;
+  } catch {}
   price.text = `$${gv.totalPrice.toFixed(2)}`;
-  price.x = w - price.width - 8;
-  positionHeaderText(price);
+  price.x = w - bw - price.width - 8;
+  // y set later with common baseline
+  // Update price style and opacity after price is in scope
+  try {
+    (price.style as any).fill = PRICE_TEXT_COLOR;
+  } catch {}
+  price.alpha = 1;
   count.text = gv.items.size.toString();
-  count.x = price.x - count.width - 6;
-  positionHeaderText(count);
+  count.x = Math.max(bw + 8, price.x - count.width - 6);
+  // y set later with common baseline
+
+  // Align all header texts to the same vertical baseline with a slight upward optical lift
+  const headerTop = bw; // inner top after border thickness
+  const baseCenter = Math.round(headerTop + (innerHeaderH - commonSize) / 2);
+  const baselineLift = Math.max(2, Math.round(commonSize * 0.34)); // ~18% of size, lifted more
+  const yCommon = baseCenter - baselineLift;
+  label.y = yCommon;
+  price.y = yCommon;
+  count.y = yCommon;
 
   // Legacy resize triangle removed (edge/corner resize active everywhere). Keep graphic hidden & non-interactive.
   resize.visible = false;
@@ -295,19 +368,6 @@ function truncateLabelIfNeeded(gv: GroupVisual) {
     txt = txt.slice(0, -1);
     gv.label.text = txt + "…";
   }
-}
-
-function positionHeaderText(t: PIXI.Text) {
-  const size = (t.style as any)?.fontSize || t.height; // prefer declared font size
-  // Center using font size rather than rendered height (avoids resolution scaling jitter)
-  let y = (HEADER_HEIGHT - size) / 2;
-  // Optical adjustment: slightly raise heavier or larger fonts so visual centers align.
-  const weight = (t.style as any)?.fontWeight;
-  if (size >= 13) y -= 1; // larger label font sits a tad low optically
-  if (weight && weight !== "normal" && weight !== "400") y -= 0.5; // semi/bold fonts
-  // Price text ($...) appears optically low due to glyph shape; lift it a bit.
-  if (typeof t.text === "string" && t.text.startsWith("$")) y -= 2; // extra lift for price
-  t.y = Math.round(y);
 }
 
 // Layout cards into a grid inside group body.
@@ -1012,6 +1072,10 @@ function positionZoomOverlay(gv: GroupVisual) {
   if (!gv._zoomLabel) return;
   const zl = gv._zoomLabel;
   zl.text = `${gv.name}\n${gv.items.size} cards  $${gv.totalPrice.toFixed(2)}`;
+  // Ensure color stays theme-appropriate (dark in light mode)
+  try {
+    (zl.style as any).fill = OVERLAY_TEXT_COLOR;
+  } catch {}
   // Constrain width and adjust font size downward if necessary (simple heuristic)
   const pad = 16;
   const maxWidth = Math.max(60, gv.w - pad * 2);
@@ -1072,6 +1136,20 @@ export function updateGroupZoomPresentation(
     if (!overlayActive) overlay.visible = false;
     else positionZoomOverlay(gv); // ensure centered after any dimension changes
   }
+  // When overlay is active, hide the title bar and its texts; overlay acts as replacement
+  if (overlayActive) {
+    gv.header.visible = false;
+    gv.header.eventMode = "none" as any;
+    gv.label.visible = false;
+    gv.count.visible = false;
+    gv.price.visible = false;
+  } else {
+    gv.header.visible = true;
+    gv.header.eventMode = "static" as any;
+    gv.label.visible = true;
+    gv.count.visible = true;
+    gv.price.visible = true;
+  }
   // Maintain a dedicated transparent drag surface with an inset hitArea so edges remain clickable.
   const dragSurf = gv._overlayDrag as PIXI.Graphics | undefined;
   if (dragSurf) {
@@ -1131,8 +1209,8 @@ export function updateGroupZoomPresentation(
       if (!sp.renderable) sp.renderable = true;
     }
   }
-  // Dim frame + header (keep subtle silhouette for spatial awareness)
-  const dimAlpha = overlayActive ? 0.4 : 1.0;
+  // Dim frame + header consistently (same opacity whether overlay is active or not)
+  const dimAlpha = 0.4;
   gv.frame.alpha = dimAlpha;
   gv.header.alpha = dimAlpha;
 }
