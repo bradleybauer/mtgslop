@@ -230,8 +230,6 @@ export interface CardVisualOptions {
 interface CardTextures {
   base: PIXI.Texture;
   selected: PIXI.Texture;
-  inGroup: PIXI.Texture;
-  inGroupSelected: PIXI.Texture;
 }
 let cachedTextures: CardTextures | null = null;
 
@@ -264,20 +262,6 @@ function ensureCardTextures(renderer: PIXI.Renderer) {
       w,
       h,
       fill: 0xffffff,
-      stroke: 0x00aaff,
-      strokeW: 4,
-    }),
-    inGroup: buildTexture(renderer, {
-      w,
-      h,
-      fill: 0xf7f7f7,
-      stroke: 0x000000,
-      strokeW: 2,
-    }),
-    inGroupSelected: buildTexture(renderer, {
-      w,
-      h,
-      fill: 0xf7f7f7,
       stroke: 0x00aaff,
       strokeW: 4,
     }),
@@ -798,14 +782,8 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
     }
     return;
   }
-  const inGroup = !!s.__groupId;
-  s.texture = inGroup
-    ? selected
-      ? cachedTextures.inGroupSelected
-      : cachedTextures.inGroup
-    : selected
-      ? cachedTextures.selected
-      : cachedTextures.base;
+  // Placeholder: only two states now (base/selected); drop in-group variants
+  s.texture = selected ? cachedTextures.selected : cachedTextures.base;
 }
 
 // --- Double-sided (Reversible) Badge ---
