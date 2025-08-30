@@ -176,6 +176,7 @@ const splashEl = document.getElementById("splash");
     });
     const lines: PIXI.Text[] = [
       new PIXI.Text({ text: "Import cards: Ctrl+I", style: bodyStyle }),
+      new PIXI.Text({ text: "Group selected cards: G", style: bodyStyle }),
       new PIXI.Text({
         text: "Zoom: Mouse Wheel (cursor focus)",
         style: bodyStyle,
@@ -256,6 +257,8 @@ const splashEl = document.getElementById("splash");
 
   // Card layer & data (persisted instances)
   const sprites: CardSprite[] = [];
+  // Groups container + visuals (initialized early so camera fit can consider them)
+  const groups = new Map<number, GroupVisual>();
   let zCounter = 1;
   function createSpriteForInstance(inst: {
     id: number;
@@ -501,6 +504,72 @@ const splashEl = document.getElementById("splash");
     } catch {}
   }
 
+  // Smart initial camera framing: fit view to all content once after load
+  let initialFitDone = false;
+  function computeSceneBounds(): {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null {
+    if (!sprites.length && !(groups && groups.size)) return null;
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    // Include card sprites
+    for (const s of sprites) {
+      const x1 = s.x;
+      const y1 = s.y;
+      const x2 = s.x + 100;
+      const y2 = s.y + 140;
+      if (x1 < minX) minX = x1;
+      if (y1 < minY) minY = y1;
+      if (x2 > maxX) maxX = x2;
+      if (y2 > maxY) maxY = y2;
+    }
+    // Include group frames if any exist
+    try {
+      groups?.forEach((gv: any) => {
+        const x1 = gv.gfx?.x ?? gv.x ?? 0;
+        const y1 = gv.gfx?.y ?? gv.y ?? 0;
+        const x2 = x1 + (gv.w ?? 0);
+        const y2 = y1 + (gv.h ?? 0);
+        if (x1 < minX) minX = x1;
+        if (y1 < minY) minY = y1;
+        if (x2 > maxX) maxX = x2;
+        if (y2 > maxY) maxY = y2;
+      });
+    } catch {}
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(maxY)
+    )
+      return null;
+    const w = Math.max(1, maxX - minX);
+    const h = Math.max(1, maxY - minY);
+    // Add a little padding so content isn't flush to edges
+    const pad = 40;
+    return { x: minX - pad, y: minY - pad, w: w + pad * 2, h: h + pad * 2 };
+  }
+  function tryInitialFit() {
+    if (initialFitDone) return;
+    const b = computeSceneBounds();
+    if (!b) return;
+    initialFitDone = true;
+    camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
+  }
+  function focusViewOnContent(duration = 220) {
+    const b = computeSceneBounds();
+    if (!b) return;
+    camera.animateTo(
+      { bounds: b, viewport: { w: window.innerWidth, h: window.innerHeight } },
+      duration,
+    );
+  }
+
   // Disable automatic dataset JSON load: always start without spawning universe
   console.log(
     "[startup] dataset auto-load disabled; starting empty unless DB already has instances",
@@ -509,16 +578,17 @@ const splashEl = document.getElementById("splash");
     // Rehydrate any previously imported cards (from IndexedDB/LS), then apply positions/groups
     await rehydrateImportedCards();
     applyStoredPositionsMemory();
+    tryInitialFit();
     finishStartup();
   } else {
     loaded.instances.forEach((inst: any) => createSpriteForInstance(inst));
     // Also add imported cards in memory mode even if repo returned instances (browser fallback only)
     await rehydrateImportedCards();
     applyStoredPositionsMemory();
+    tryInitialFit();
   }
 
-  // Groups container + visuals
-  const groups = new Map<number, GroupVisual>();
+  // Groups container + visuals (declared earlier)
   function relayoutGroup(gv: GroupVisual) {
     if ((gv as any).layoutMode === "faceted" && (gv as any).facet) {
       layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, (s) =>
@@ -737,6 +807,7 @@ const splashEl = document.getElementById("splash");
         (GroupsRepo as any).ensureNextId(maxId + 1);
     } catch {}
     finishStartup();
+    tryInitialFit();
     updateEmptyStateOverlay();
   } else {
     // If instances were present at load-time, restore groups from local storage immediately.
@@ -746,6 +817,7 @@ const splashEl = document.getElementById("splash");
     // If we started empty but rehydrated cards earlier, restore groups now that groups exist.
     else if (sprites.length) {
       restoreMemoryGroups();
+      tryInitialFit();
     }
   }
   world.sortableChildren = true;
@@ -1006,8 +1078,9 @@ const splashEl = document.getElementById("splash");
     const el = document.createElement("div");
     cardInfoPanel = el;
     el.id = "card-info-panel";
+    // Auto-height panel anchored to bottom-right; capped height; contents scroll if needed
     el.style.cssText =
-      "position:fixed;top:0;right:0;bottom:0;width:420px;max-width:45vw;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
+      "position:fixed;right:14px;bottom:14px;width:420px;max-width:45vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
     el.className = "ui-panel";
     el.innerHTML =
       '<div id="cip-header" style="padding:10px 14px 6px;font-size:14px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:8px;">Card</div>' +
@@ -2959,6 +3032,8 @@ const splashEl = document.getElementById("splash");
     addBtn("Auto-Layout", () => {
       gridUngroupedCards();
       gridGroupedCards();
+      // After tidying, center the view on the resulting content for clarity
+      focusViewOnContent(180);
     });
     addBtn("Reset Layout", () => {
       const ok = window.confirm(
@@ -3019,17 +3094,45 @@ const splashEl = document.getElementById("splash");
     return el;
   }
   function gridGroupedCards() {
-    // Auto-pack each group into a tight grid based on current members and persist transforms
+    // Auto-pack each group with minimal translation: keep group center fixed while packing
     groups.forEach((gv) => {
+      const oldW = gv.w;
+      const oldH = gv.h;
+      const oldX = gv.gfx.x;
+      const oldY = gv.gfx.y;
+      const centerX = oldX + oldW / 2;
+      const centerY = oldY + oldH / 2;
+      // Pack to update w/h and card positions relative to group origin
       autoPackGroup(gv, sprites, (s) =>
         spatial.update({
           id: s.__id,
           minX: s.x,
           minY: s.y,
-          maxX: s.x + 100,
-          maxY: s.y + 140,
+          maxX: s.x + CARD_W_GLOBAL,
+          maxY: s.y + CARD_H_GLOBAL,
         }),
       );
+      // Shift group so its center remains the same after pack
+      const dx = Math.round(centerX - (gv.gfx.x + gv.w / 2));
+      const dy = Math.round(centerY - (gv.gfx.y + gv.h / 2));
+      if (dx !== 0 || dy !== 0) {
+        gv.gfx.x = snap(gv.gfx.x + dx);
+        gv.gfx.y = snap(gv.gfx.y + dy);
+        // Move member sprites by the same delta to preserve layout relative to world
+        gv.order.forEach((cid) => {
+          const sp = sprites.find((s) => s.__id === cid);
+          if (!sp) return;
+          sp.x = snap(sp.x + dx);
+          sp.y = snap(sp.y + dy);
+          spatial.update({
+            id: sp.__id,
+            minX: sp.x,
+            minY: sp.y,
+            maxX: sp.x + CARD_W_GLOBAL,
+            maxY: sp.y + CARD_H_GLOBAL,
+          });
+        });
+      }
       // Persist group dimensions/position changes if any
       try {
         persistGroupTransform(gv.id, {
@@ -3345,26 +3448,44 @@ const splashEl = document.getElementById("splash");
       } catch {}
     }
     if (!alreadyCleared) clearGroupsOnly();
+    // After resetting positions, move camera to frame the cards so it doesn't feel like teleporting
+    focusViewOnContent(220);
   }
   function gridUngroupedCards() {
     const ungrouped = sprites.filter((s) => !(s as any).__groupId);
     if (!ungrouped.length) return;
-    // Compute vertical placement just below all existing groups
-    let maxBottom = 0;
-    let hasGroup = false;
-    groups.forEach((gv) => {
-      hasGroup = true;
-      const b = gv.gfx.y + gv.h;
-      if (b > maxBottom) maxBottom = b;
-    });
-    const startY = hasGroup ? snap(maxBottom + 80) : 0;
-    // Simple grid width heuristic
-    const cols = Math.ceil(Math.sqrt(ungrouped.length));
+    // Compute current cluster bounds of ungrouped to preserve its overall position
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const s of ungrouped) {
+      const x1 = s.x;
+      const y1 = s.y;
+      const x2 = s.x + CARD_W_GLOBAL;
+      const y2 = s.y + CARD_H_GLOBAL;
+      if (x1 < minX) minX = x1;
+      if (y1 < minY) minY = y1;
+      if (x2 > maxX) maxX = x2;
+      if (y2 > maxY) maxY = y2;
+    }
+    if (!Number.isFinite(minX)) return;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    // Grid dimensions (keep similar heuristic for columns)
+    const n = ungrouped.length;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+    const rows = Math.ceil(n / cols);
+    const gridW = cols * CARD_W_GLOBAL + (cols - 1) * GAP_X_GLOBAL;
+    const gridH = rows * CARD_H_GLOBAL + (rows - 1) * GAP_Y_GLOBAL;
+    // Anchor the new grid so its center matches the previous cluster center (minimal translation)
+    const startX = snap(Math.round(cx - gridW / 2));
+    const startY = snap(Math.round(cy - gridH / 2));
     const batch: { id: number; x: number; y: number }[] = [];
     ungrouped.forEach((s, idx) => {
       const col = idx % cols;
       const row = Math.floor(idx / cols);
-      const x = col * (CARD_W_GLOBAL + GAP_X_GLOBAL);
+      const x = startX + col * (CARD_W_GLOBAL + GAP_X_GLOBAL);
       const y = startY + row * (CARD_H_GLOBAL + GAP_Y_GLOBAL);
       s.x = x;
       s.y = y;
@@ -3372,8 +3493,8 @@ const splashEl = document.getElementById("splash");
         id: s.__id,
         minX: x,
         minY: y,
-        maxX: x + 100,
-        maxY: y + 140,
+        maxX: x + CARD_W_GLOBAL,
+        maxY: y + CARD_H_GLOBAL,
       });
       batch.push({ id: s.__id, x, y });
     });

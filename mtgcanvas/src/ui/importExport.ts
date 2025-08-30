@@ -288,6 +288,16 @@ export function installImportExport(
     importBtn.onclick = async () => {
       if (!importArea) return;
       const inputText = importArea.value;
+      if (!inputText.trim()) {
+        if (statusEl) statusEl.textContent = "Nothing to import.";
+        return;
+      }
+      // Clear immediately to avoid accidental double import on rapid clicks
+      importArea.value = "";
+      // Disable button during import to prevent re-entry
+      const prevLabel = importBtn.textContent;
+      importBtn.disabled = true;
+      importBtn.textContent = "Importing…";
       // Try groups format first
       const asGroups = parseGroupsText(inputText);
       if (asGroups && opts.importGroups) {
@@ -302,25 +312,34 @@ export function installImportExport(
         });
         if (statusEl)
           statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+        importBtn.disabled = false;
+        importBtn.textContent = prevLabel || "Import";
         return;
       }
       // Fallback to decklist format
       const items = parseDecklist(inputText);
       if (!items.length) {
         if (statusEl) statusEl.textContent = "Nothing to import.";
+        importBtn.disabled = false;
+        importBtn.textContent = prevLabel || "Import";
         return;
       }
       if (statusEl) statusEl.textContent = "Importing…";
-      const res = await opts.importByNames(items, {
-        onProgress: (done, total) => {
-          if (!statusEl) return;
-          if (typeof total === "number" && total > 0)
-            statusEl.textContent = `Resolving ${done}/${total}…`;
-          else statusEl.textContent = `Resolving ${done}…`;
-        },
-      });
-      if (statusEl)
-        statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+      try {
+        const res = await opts.importByNames(items, {
+          onProgress: (done, total) => {
+            if (!statusEl) return;
+            if (typeof total === "number" && total > 0)
+              statusEl.textContent = `Resolving ${done}/${total}…`;
+            else statusEl.textContent = `Resolving ${done}…`;
+          },
+        });
+        if (statusEl)
+          statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+      } finally {
+        importBtn.disabled = false;
+        importBtn.textContent = prevLabel || "Import";
+      }
     };
 
     // Scryfall search wiring
