@@ -134,7 +134,7 @@ export function initHelp(): HelpAPI {
     const fab = document.createElement("div");
     fab.id = "help-fab";
     fab.style.cssText =
-      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;display:flex;align-items:center;justify-content:center;font:32px/1 var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;font:32px/1 var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:var(--panel-shadow);";
     fab.textContent = "?";
     fab.title = "Help";
     const panel = document.createElement("div");

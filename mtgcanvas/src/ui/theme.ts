@@ -33,7 +33,10 @@ export function ensureThemeStyles() {
     --panel-fg-dim:#9ab3c1;
     --panel-accent:#6fb9ff;
     --panel-shadow:0 4px 18px -4px rgba(0,0,0,0.65);
-    --panel-fab-bg:#264b66;
+  /* Cohesive FAB colors (derived from panel + accent) */
+  --fab-bg: color-mix(in srgb, var(--panel-accent) 18%, var(--panel-bg) 82%);
+  --fab-fg: var(--panel-fg);
+  --fab-border: var(--panel-border);
     --input-bg:#182830; --input-border:#325261; --input-fg:#e8f7ff;
     --btn-bg:#20333d; --btn-border:#2d5366; --btn-fg:#cbe8f5; --btn-bg-hover:#2c4b59;
     --danger-bg:#402529; --danger-border:#5a3137;
@@ -50,7 +53,9 @@ export function ensureThemeStyles() {
     --panel-fg-dim:#4a5b65;
     --panel-accent:#236fa1;
     --panel-shadow:0 4px 20px -6px rgba(0,0,0,0.18);
-    --panel-fab-bg:#3478b8;
+  --fab-bg: color-mix(in srgb, var(--panel-accent) 12%, var(--panel-bg) 88%);
+  --fab-fg: var(--panel-fg);
+  --fab-border: var(--panel-border);
     --input-bg:#ffffff; --input-border:#b7c5cf; --input-fg:#132028;
     --btn-bg:#e4ecf1; --btn-border:#b7c5cf; --btn-fg:#243640; --btn-bg-hover:#d3e2ea;
     --danger-bg:#f8e1e4; --danger-border:#e3a4ab;
@@ -86,8 +91,8 @@ export function ensureThemeStyles() {
   .ui-menu-item.disabled{ opacity:.5; cursor:default; }
   /* Perf overlay monospace */
   .perf-grid{ font:15px/1.5 monospace; white-space:pre; }
-  .theme-toggle-btn{ position:fixed; bottom:14px; left:14px; width:54px; height:54px; border-radius:50%; background:var(--panel-fab-bg); color:#fff; font:26px/54px var(--panel-font); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:0 2px 6px rgba(0,0,0,0.35); transition:background .25s; }
-  .theme-toggle-btn:hover{ filter:brightness(1.15); }
+  .theme-toggle-btn{ position:fixed; bottom:14px; left:14px; width:54px; height:54px; border-radius:50%; background:var(--fab-bg); color:var(--fab-fg); border:1px solid var(--fab-border); font:26px/54px var(--panel-font); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:var(--panel-shadow); transition:filter .2s, box-shadow .2s, background .2s; }
+  .theme-toggle-btn:hover{ filter:brightness(1.06); box-shadow:0 4px 20px -6px rgba(0,0,0,0.35); }
   body{ background:var(--canvas-bg); color:var(--panel-fg); }
   `;
   document.head.appendChild(style);
@@ -136,11 +141,12 @@ export function ensureThemeToggleButton() {
   fab.title = "Toggle theme";
   fab.setAttribute("role", "button");
   fab.setAttribute("aria-label", "Toggle theme");
+  // Style as a circular button that sits inside the top FAB bar
   fab.style.cssText =
-    "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;box-shadow:0 1px 3px rgba(0,0,0,0.25);transition:filter .2s;";
+    "position:relative;width:56px;height:56px;border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;box-shadow:var(--panel-shadow);transition:filter .2s, box-shadow .2s, background .2s;";
   // Make this the leftmost FAB within row-reverse layout by giving it highest order
   (fab.style as any).order = "999";
-  fab.onmouseenter = () => (fab.style.filter = "brightness(1.08)");
+  fab.onmouseenter = () => (fab.style.filter = "brightness(1.06)");
   fab.onmouseleave = () => (fab.style.filter = "");
   const sunSVG =
     '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">\
@@ -157,7 +163,7 @@ export function ensureThemeToggleButton() {
   const moonSVG =
     '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">\
     <circle cx="12" cy="12" r="9" fill="currentColor"/>\
-    <circle cx="16" cy="10" r="6.5" fill="var(--panel-fab-bg)"/>\
+    <circle cx="16" cy="10" r="6.5" fill="var(--fab-bg)"/>\
   </svg>';
   const setIcon = () => {
     // Show an icon matching the current theme

@@ -98,16 +98,32 @@ const splashEl = document.getElementById("splash");
     antialias: true,
     resolution: window.devicePixelRatio || 1,
   });
+  function parseCssHexColor(v: string): number | null {
+    try {
+      const s = (v || "").trim();
+      if (!s) return null;
+      if (s.startsWith("#")) {
+        let hex = s.slice(1);
+        if (hex.length === 3)
+          hex = hex
+            .split("")
+            .map((c) => c + c)
+            .join("");
+        if (hex.length >= 6) hex = hex.slice(0, 6);
+        const n = parseInt(hex, 16);
+        return Number.isFinite(n) ? n : null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
   function applyCanvasBg() {
     try {
       const css = getComputedStyle(document.documentElement);
       const bg = css.getPropertyValue("--canvas-bg").trim();
-      if (bg) {
-        const hex = (PIXI as any).utils?.string2hex
-          ? (PIXI as any).utils.string2hex(bg)
-          : Number("0x" + bg.replace("#", ""));
-        app.renderer.background.color = hex;
-      }
+      const hex = parseCssHexColor(bg);
+      if (hex != null) app.renderer.background.color = hex as any;
     } catch {}
   }
   registerThemeListener(() => applyCanvasBg());
@@ -191,15 +207,44 @@ const splashEl = document.getElementById("splash");
   // Controls helper overlay (on-canvas) — shown whenever there are zero cards & zero groups
   let ctrlsOverlay: PIXI.Container | null = null;
   let ctrlsOverlayW = 0;
+  // Theme helpers for overlay colors
+  function cssHex(varName: string, fallback: number): number {
+    try {
+      const v = getComputedStyle(document.documentElement)
+        .getPropertyValue(varName)
+        .trim();
+      if (!v) return fallback;
+      const hex = v.startsWith("#") ? v.slice(1) : v;
+      const clean =
+        hex.length === 3
+          ? hex
+              .split("")
+              .map((c) => c + c)
+              .join("")
+          : hex.slice(0, 6);
+      const n = parseInt(clean, 16);
+      return isFinite(n) ? n : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  function overlayTheme() {
+    return {
+      fg: cssHex("--panel-fg", 0xffffff),
+      bg: cssHex("--panel-bg-alt", 0x0f1418),
+      border: cssHex("--panel-accent", 0x33bbff),
+    };
+  }
   function createCtrlsOverlay(): PIXI.Container {
     const layer = new PIXI.Container();
     layer.zIndex = 999999; // below banner but above world
     layer.eventMode = "none";
+    const theme = overlayTheme();
     const padX = 36;
     const padY = 28;
     const lineGap = 12;
     const bodyStyle = {
-      fill: 0xffffff,
+      fill: theme.fg as any,
       fontFamily: "Inter, system-ui, sans-serif",
       fontSize: 30,
       lineHeight: 28,
@@ -207,7 +252,7 @@ const splashEl = document.getElementById("splash");
     const title = new PIXI.Text({
       text: "Controls",
       style: {
-        fill: 0xffffff,
+        fill: theme.fg as any,
         fontFamily: "Inter, system-ui, sans-serif",
         fontWeight: "700" as any,
         fontSize: 60,
@@ -238,10 +283,10 @@ const splashEl = document.getElementById("splash");
     ctrlsOverlayW = w;
     // Background
     const bg = new PIXI.Graphics();
-    const borderColor = 0x33bbff;
-    const fillColor = 0x0f1418;
+    const borderColor = theme.border;
+    const fillColor = theme.bg;
     bg.roundRect(0, 0, w, h, 12)
-      .fill({ color: fillColor, alpha: 0.92 })
+      .fill({ color: fillColor as any, alpha: 0.92 })
       .stroke({ color: borderColor, width: 4 });
     layer.addChild(bg);
     // Position text
@@ -258,6 +303,16 @@ const splashEl = document.getElementById("splash");
     }
     return layer;
   }
+  // Re-theme overlay when theme changes
+  registerThemeListener(() => {
+    if (!ctrlsOverlay) return;
+    try {
+      ctrlsOverlay.destroy({ children: true });
+    } catch {}
+    ctrlsOverlay = createCtrlsOverlay();
+    app.stage.addChild(ctrlsOverlay);
+    layoutCtrlsOverlay();
+  });
   function layoutCtrlsOverlay() {
     if (!ctrlsOverlay) return;
     const cx = Math.round(window.innerWidth / 2 - ctrlsOverlayW / 2);
@@ -323,6 +378,94 @@ const splashEl = document.getElementById("splash");
     return w.__mtgZCounter;
   }
   (window as any).__mtgNextZ = nextZ;
+  // Compute the maximum zIndex among regular world content (cards and groups),
+  // ignoring HUD/overlays that live in reserved high bands (>= 900k).
+  function currentMaxContentZ(): number {
+    const TOP_RESERVED = 1000000;
+    let maxZ = 0;
+    try {
+      sprites.forEach((s) => {
+        const z = s.zIndex || 0;
+        if (z < TOP_RESERVED && z > maxZ) maxZ = z;
+      });
+    } catch {}
+    try {
+      groups.forEach((gv) => {
+        const z = gv.gfx?.zIndex || 0;
+        if (z < TOP_RESERVED && z > maxZ) maxZ = z;
+      });
+    } catch {}
+    return maxZ;
+  }
+  // Expose for card layer to use when computing bring-to-front
+  (window as any).__mtgMaxContentZ = currentMaxContentZ;
+  // Expose a read-only accessor for sprites for cross-module utilities (avoid circular deps)
+  (window as any).__mtgGetSprites = () => sprites;
+
+  // Persistently bring given groups (and their member cards) to the very top.
+  function bringGroupsToFrontPersistent(groupIds: number[]) {
+    if (!groupIds || !groupIds.length) return;
+    const ids = Array.from(new Set(groupIds));
+    const draggedGroupIds = new Set<number>(ids);
+    const draggedCardIds = new Set<number>();
+    ids.forEach((id) => {
+      const gg = groups.get(id);
+      if (!gg) return;
+      gg.items.forEach((cid) => draggedCardIds.add(cid));
+    });
+    // Compute baseline excluding these groups and their members
+    let base = 0;
+    sprites.forEach((s) => {
+      if (draggedCardIds.has(s.__id)) return;
+      const z = s.zIndex || 0;
+      if (z > base) base = z;
+    });
+    groups.forEach((gv, id) => {
+      if (draggedGroupIds.has(id)) return;
+      const z = gv.gfx?.zIndex || 0;
+      if (z > base) base = z;
+    });
+    base += 1;
+    // Stable order: by current z then id, to preserve relative order between raised groups
+    const ordered = ids
+      .map((id) => ({ id, z: groups.get(id)?.gfx?.zIndex || 0 }))
+      .sort((a, b) => (a.z === b.z ? a.id - b.id : a.z - b.z))
+      .map((e) => e.id);
+    for (const id of ordered) {
+      const gg = groups.get(id);
+      if (!gg) continue;
+      gg.gfx.zIndex = base++;
+      gg.order.forEach((cid) => {
+        const sp = sprites.find((s) => s.__id === cid);
+        if (!sp) return;
+        sp.zIndex = base;
+        (sp as any).__baseZ = base;
+        base += 1;
+      });
+    }
+    // Persist: instances z and groups (which now include z)
+    try {
+      const data = {
+        instances: sprites.map((s) => ({
+          id: s.__id,
+          x: s.x,
+          y: s.y,
+          z: s.zIndex || (s as any).__baseZ || 0,
+          group_id: (s as any).__groupId ?? null,
+          scryfall_id:
+            (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+        })),
+        byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+      };
+      try {
+        InstancesRepo.updateMany(
+          data.instances.map((r) => ({ id: r.id, z: r.z })) as any,
+        );
+      } catch {}
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
+    } catch {}
+    scheduleGroupSave();
+  }
 
   // Card layer & data (persisted instances)
   const sprites: CardSprite[] = [];
@@ -385,7 +528,8 @@ const splashEl = document.getElementById("splash");
       id: inst.id,
       x: inst.x,
       y: inst.y,
-      z: inst.z ?? zCounter++,
+      // Prefer provided z (restored), otherwise assign and advance counter
+      z: typeof inst.z === "number" ? inst.z : zCounter++,
       renderer: app.renderer,
       card: inst.card,
     });
@@ -582,6 +726,12 @@ const splashEl = document.getElementById("splash");
             const b = getCanvasBounds();
             s.x = Math.min(b.x + b.w - CARD_W_GLOBAL, Math.max(b.x, p.x));
             s.y = Math.min(b.y + b.h - CARD_H_GLOBAL, Math.max(b.y, p.y));
+            // Restore z if available on p (populated by LS)
+            const anyP: any = p as any;
+            if (typeof anyP.z === "number") {
+              s.zIndex = anyP.z;
+              (s as any).__baseZ = anyP.z;
+            }
             if (p.group_id != null) (s as any).__groupId = p.group_id;
             if (p.scryfall_id) (s as any).__scryfallId = p.scryfall_id;
             matched++;
@@ -629,7 +779,13 @@ const splashEl = document.getElementById("splash");
     } catch {}
     const savedByScry: Map<
       string,
-      { id: number; x: number; y: number; group_id: number | null }[]
+      {
+        id: number;
+        x: number;
+        y: number;
+        z?: number;
+        group_id: number | null;
+      }[]
     > = new Map();
     if (saved && Array.isArray(saved.instances)) {
       for (const r of saved.instances) {
@@ -640,6 +796,7 @@ const splashEl = document.getElementById("splash");
           id: r.id,
           x: r.x ?? 0,
           y: r.y ?? 0,
+          z: typeof r.z === "number" ? r.z : undefined,
           group_id: r.group_id ?? null,
         });
         savedByScry.set(sid, arr);
@@ -669,6 +826,7 @@ const splashEl = document.getElementById("splash");
         let id = entry.id;
         const x = entry.x;
         const y = entry.y;
+        const z = typeof entry.z === "number" ? entry.z : undefined;
         const gid: number | null = entry.group_id;
         try {
           id = (InstancesRepo as any).createWithId
@@ -677,7 +835,7 @@ const splashEl = document.getElementById("splash");
                 card_id: 1,
                 x,
                 y,
-                z: 0,
+                z: z ?? 0,
                 group_id: gid,
               })
             : id;
@@ -688,7 +846,13 @@ const splashEl = document.getElementById("splash");
             id = ++maxId;
           }
         }
-        const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
+        const sp = createSpriteForInstance({
+          id,
+          x,
+          y,
+          z: z ?? zCounter++,
+          card,
+        });
         if (gid != null) (sp as any).__groupId = gid;
         (sp as any).__scryfallId = sid || null;
         ensureCardImage(sp);
@@ -705,6 +869,8 @@ const splashEl = document.getElementById("splash");
           if (inst) {
             inst.x = r.x;
             inst.y = r.y;
+            // Also restore z-order if present
+            if (typeof r.z === "number") (inst as any).z = r.z;
             (inst as any).group_id = r.group_id ?? inst.group_id ?? null;
           }
         });
@@ -908,6 +1074,7 @@ const splashEl = document.getElementById("splash");
           y: gv.gfx.y,
           w: gv.w,
           h: gv.h,
+          z: gv.gfx.zIndex || 0,
           name: gv.name,
           collapsed: gv.collapsed,
           color: gv.color,
@@ -940,6 +1107,11 @@ const splashEl = document.getElementById("splash");
       if (gr.color) gv.color = gr.color;
       if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode;
       if (gr.facet) (gv as any).facet = gr.facet;
+      if (typeof gr.z === "number") {
+        try {
+          gv.gfx.zIndex = gr.z;
+        } catch {}
+      }
       groups.set(gv.id, gv);
       world.addChild(gv.gfx);
       attachResizeHandle(gv);
@@ -979,6 +1151,11 @@ const splashEl = document.getElementById("splash");
     });
     groups.forEach((gv) => {
       ensureMembersZOrder(gv, sprites);
+      // Normalize baseZ of members to their zIndex after restore so future drags are stable
+      gv.order.forEach((cid) => {
+        const sp = sprites.find((s) => s.__id === cid);
+        if (sp) (sp as any).__baseZ = sp.zIndex || (sp as any).__baseZ || 0;
+      });
       ensureGroupEncapsulates(gv, sprites);
       if ((gv as any).layoutMode === "faceted" && (gv as any).facet) {
         layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, (s) =>
@@ -1978,53 +2155,18 @@ const splashEl = document.getElementById("splash");
     let dy = 0;
     const g = gv.gfx;
     let memberOffsets: { sprite: CardSprite; ox: number; oy: number }[] = [];
-    // Temporary z-order raising while dragging a group (applies to all dragged groups + their members)
-    const DRAG_GROUP_BASE_Z = 800000; // group container during drag
-    const DRAG_GROUP_CARD_BASE_Z = 850000; // member cards during group drag (above group)
+    // Temporary z-order raising while dragging a group using a dynamic baseline
     const prevGroupZ = new Map<number, number>(); // groupId -> original z (pre-drag)
     const prevCardZ = new Map<number, number>(); // cardId -> original z (pre-drag)
     function beginGroupDragZRaise(primary: GroupVisual) {
-      prevGroupZ.clear();
-      prevCardZ.clear();
-      // All groups that will move: the primary plus any other selected groups
-      const draggingIds = new Set(SelectionStore.getGroups());
-      draggingIds.add(primary.id);
-      draggingIds.forEach((id) => {
-        const gg = groups.get(id);
-        if (!gg) return;
-        // Save and raise group container zIndex
-        prevGroupZ.set(gg.id, gg.gfx.zIndex ?? 0);
-        gg.gfx.zIndex = DRAG_GROUP_BASE_Z;
-        // Raise all member cards above the group
-        gg.items.forEach((cid) => {
-          const sp = sprites.find((s) => s.__id === cid);
-          if (!sp) return;
-          if (!prevCardZ.has(cid)) prevCardZ.set(cid, sp.zIndex ?? 0);
-          // Keep relative order using baseZ to reduce flicker when stacks overlap
-          sp.zIndex = DRAG_GROUP_CARD_BASE_Z + (sp.__baseZ || 0);
-          (sp as any).__baseZ = (sp as any).__baseZ || 0; // ensure defined
-        });
-      });
+      // Persistently bring to front: primary + selected groups
+      const dragging = new Set(SelectionStore.getGroups());
+      dragging.add(primary.id);
+      bringGroupsToFrontPersistent([...dragging]);
     }
     function endGroupDragZRestore() {
-      // Restore groups
-      prevGroupZ.forEach((_z, id) => {
-        const gg = groups.get(id);
-        if (!gg) return;
-        // Persistently bring to front
-        const gz = nextZ();
-        gg.gfx.zIndex = gz;
-        // Raise members to sit above the group persistently as well
-        gg.items.forEach((cid) => {
-          const sp = sprites.find((s) => s.__id === cid);
-          if (!sp) return;
-          const cz = gz + 1;
-          sp.zIndex = cz;
-          (sp as any).__baseZ = cz;
-        });
-      });
+      // No-op: we persistently raised on pointerdown
       prevGroupZ.clear();
-      // Do not restore member card z: they have been reassigned to remain above their group
       prevCardZ.clear();
     }
     gv.header.eventMode = "static";
@@ -2047,6 +2189,10 @@ const splashEl = document.getElementById("splash");
       if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id))
         SelectionStore.selectOnlyGroup(gv.id);
       else if (e.shiftKey) SelectionStore.toggleGroup(gv.id);
+      // Persistently bring to front on click/drag start
+      const dragging = new Set(SelectionStore.getGroups());
+      dragging.add(gv.id);
+      bringGroupsToFrontPersistent([...dragging]);
       const local = world.toLocal(e.global);
       drag = true;
       dx = local.x - g.x;
@@ -2071,6 +2217,10 @@ const splashEl = document.getElementById("splash");
         e.stopPropagation();
         if (!SelectionStore.state.groupIds.has(gv.id))
           SelectionStore.selectOnlyGroup(gv.id);
+        // Persistently bring to front on click/drag start
+        const dragging = new Set(SelectionStore.getGroups());
+        dragging.add(gv.id);
+        bringGroupsToFrontPersistent([...dragging]);
         const local = world.toLocal(e.global);
         drag = true;
         dx = local.x - g.x;
@@ -2113,6 +2263,10 @@ const splashEl = document.getElementById("splash");
       e.stopPropagation();
       if (!SelectionStore.state.groupIds.has(gv.id))
         SelectionStore.selectOnlyGroup(gv.id);
+      // Persistently bring to front on click/drag start
+      const dragging = new Set(SelectionStore.getGroups());
+      dragging.add(gv.id);
+      bringGroupsToFrontPersistent([...dragging]);
       const local = world.toLocal(e.global);
       drag = true;
       dx = local.x - g.x;
@@ -2794,6 +2948,7 @@ const splashEl = document.getElementById("splash");
                 id: s.__id,
                 x: s.x,
                 y: s.y,
+                z: s.zIndex || (s as any).__baseZ || 0,
                 group_id: (s as any).__groupId ?? null,
                 scryfall_id:
                   (s as any).__scryfallId || ((s as any).__card?.id ?? null),
@@ -3270,12 +3425,19 @@ const splashEl = document.getElementById("splash");
           id: s.__id,
           x: s.x,
           y: s.y,
+          z: s.zIndex || (s as any).__baseZ || 0,
           group_id: (s as any).__groupId ?? null,
           scryfall_id:
             (s as any).__scryfallId || ((s as any).__card?.id ?? null),
         })),
         byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
       };
+      // Mirror z into repository for in-memory consistency
+      try {
+        InstancesRepo.updateMany(
+          data.instances.map((r) => ({ id: r.id, z: r.z })) as any,
+        );
+      } catch {}
       localStorage.setItem(LS_KEY, JSON.stringify(data));
     } catch {}
   }
@@ -3667,6 +3829,7 @@ const splashEl = document.getElementById("splash");
             id: s.__id,
             x: s.x,
             y: s.y,
+            z: s.zIndex || (s as any).__baseZ || 0,
             group_id: (s as any).__groupId ?? null,
             scryfall_id:
               (s as any).__scryfallId || ((s as any).__card?.id ?? null),
@@ -3768,6 +3931,7 @@ const splashEl = document.getElementById("splash");
             id: s.__id,
             x: s.x,
             y: s.y,
+            z: s.zIndex || (s as any).__baseZ || 0,
             group_id: (s as any).__groupId ?? null,
             scryfall_id:
               (s as any).__scryfallId || ((s as any).__card?.id ?? null),
@@ -4335,6 +4499,7 @@ const splashEl = document.getElementById("splash");
               id: s.__id,
               x: s.x,
               y: s.y,
+              z: s.zIndex || (s as any).__baseZ || 0,
               group_id: (s as any).__groupId ?? null,
               scryfall_id:
                 (s as any).__scryfallId || ((s as any).__card?.id ?? null),
@@ -4489,10 +4654,7 @@ const splashEl = document.getElementById("splash");
         // Fallback: if positions fewer than total, append clamped viewport-origin grid
         const need = total - positions.length;
         if (need > 0) {
-          const { cols, rows, w, h } = computeBestGrid(
-            need,
-            buildPlacementContext(),
-          );
+          const { cols, w, h } = computeBestGrid(need, buildPlacementContext());
           const invScale = 1 / world.scale.x;
           let sx = snap(-world.position.x * invScale + 40);
           let sy = snap(-world.position.y * invScale + 40);
@@ -4573,7 +4735,7 @@ const splashEl = document.getElementById("splash");
         <span style="display:inline-block;transform:rotate(90deg);transform-origin:50% 50%;font-size:32px;line-height:1;margin-left:3px;">⇄</span>\
       </span>';
     fab.style.cssText =
-      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--panel-fab-bg);color:#fff;display:flex;align-items:center;justify-content:center;font:32px/1 var(--panel-font);text-align:center;cursor:pointer;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.4);";
+      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;font:32px/1 var(--panel-font);text-align:center;cursor:pointer;user-select:none;box-shadow:var(--panel-shadow);";
     fab.addEventListener("click", (e) => {
       e.stopPropagation();
       pinned = !pinned;
@@ -4949,9 +5111,12 @@ const splashEl = document.getElementById("splash");
                 y: gv.gfx.y,
                 w: gv.w,
                 h: gv.h,
+                z: gv.gfx.zIndex || 0,
                 name: gv.name,
                 collapsed: gv.collapsed,
                 color: gv.color,
+                layoutMode: (gv as any).layoutMode || "grid",
+                facet: (gv as any).facet || null,
                 membersById: gv.order.slice(),
                 membersByIndex: gv.order
                   .map((cid) => sprites.findIndex((s) => s.__id === cid))

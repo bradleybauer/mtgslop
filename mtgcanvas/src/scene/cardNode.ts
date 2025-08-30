@@ -987,32 +987,116 @@ export function attachCardInteractions(
     const ids = SelectionStore.getCards();
     const all = getAll();
     const dragSprites = all.filter((c) => ids.includes(c.__id));
+    // Persistently bring selected set to the top immediately on interaction
+    try {
+      const draggingIds = new Set(dragSprites.map((d) => d.__id));
+      let base = 0;
+      for (const c of all) {
+        if (draggingIds.has(c.__id)) continue;
+        const z = c.zIndex || 0;
+        if (z > base) base = z;
+      }
+      base += 1;
+      const ordered = dragSprites
+        .slice()
+        .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
+      for (const cs of ordered) {
+        cs.zIndex = base;
+        (cs as any).__baseZ = base;
+        base += 1;
+      }
+      // Persist to LS quickly
+      try {
+        const w: any = window as any;
+        const sprites: any[] = (w.__mtgGetSprites && w.__mtgGetSprites()) || [];
+        const data = {
+          instances: sprites.map((sp: any) => ({
+            id: sp.__id,
+            x: sp.x,
+            y: sp.y,
+            z: sp.zIndex || sp.__baseZ || 0,
+            group_id: sp.__groupId ?? null,
+            scryfall_id: sp.__scryfallId || (sp.__card?.id ?? null),
+          })),
+          byIndex: sprites.map((sp: any) => ({ x: sp.x, y: sp.y })),
+        };
+        localStorage.setItem("mtgcanvas_positions_v1", JSON.stringify(data));
+      } catch {}
+    } catch {}
     const startLocal = world.toLocal(e.global);
     dragState = {
       sprites: dragSprites,
       starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
       startLocal: { x: startLocal.x, y: startLocal.y },
     };
-    // Elevate dragged cards above everything else (but below HUD), using a very high z
-    const DRAG_CARD_BASE_Z = 900000;
-    dragSprites.forEach(
-      (cs) => (cs.zIndex = DRAG_CARD_BASE_Z + (cs.__baseZ || 0)),
-    );
+    // Elevate dragged cards above everything else using the current max content z
+    try {
+      const w: any = window as any;
+      const getMax: any = w.__mtgMaxContentZ;
+      const startBase =
+        (typeof getMax === "function" ? Number(getMax()) : 0) + 1;
+      // Stable ordering: keep their relative baseZ order for nicer visuals
+      const ordered = dragSprites
+        .slice()
+        .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
+      let base = startBase;
+      for (const cs of ordered) {
+        cs.zIndex = base++;
+      }
+    } catch {
+      // Fallback: leave z as-is if anything goes wrong
+    }
   });
   const endDrag = (commit: boolean) => {
     if (!dragState) return;
-    // Persist bring-to-front ordering: assign new global z and store as baseZ
-    const nextZ: (() => number) | undefined = (window as any).__mtgNextZ;
-    if (nextZ) {
-      dragState.sprites.forEach((cs) => {
-        const nz = nextZ();
-        cs.zIndex = nz;
-        (cs as any).__baseZ = nz;
+    // Persist bring-to-front ordering: stack above all existing non-dragging cards
+    try {
+      const all = getAll ? getAll() : [];
+      const draggingIds = new Set(dragState.sprites.map((s) => s.__id));
+      let maxZ = 0;
+      for (const c of all) {
+        if (draggingIds.has(c.__id)) continue;
+        const z = c.zIndex || 0;
+        if (z > maxZ) maxZ = z;
+      }
+      // Stable assignment order: promote in ascending previous baseZ to preserve relative stacking
+      const sorted = dragState.sprites.slice().sort((a, b) => {
+        const az = (a as any).__baseZ || 0;
+        const bz = (b as any).__baseZ || 0;
+        return az - bz;
       });
-    } else {
+      for (const cs of sorted) {
+        maxZ += 1;
+        cs.zIndex = maxZ;
+        (cs as any).__baseZ = maxZ;
+      }
+    } catch {
+      // Fallback: restore baseZ if computation fails
       dragState.sprites.forEach((cs) => (cs.zIndex = cs.__baseZ));
     }
     if (commit) {
+      // Persist new z-order to repository and local storage
+      try {
+        // InstancesRepo is imported in main; to avoid circular deps, update LS directly here
+        // The authoritative repo update will happen via main's periodic saves as well.
+        try {
+          const w: any = window as any;
+          const sprites: any[] =
+            (w.__mtgGetSprites && w.__mtgGetSprites()) || [];
+          const data = {
+            instances: sprites.map((s: any) => ({
+              id: s.__id,
+              x: s.x,
+              y: s.y,
+              z: s.zIndex || s.__baseZ || 0,
+              group_id: s.__groupId ?? null,
+              scryfall_id: s.__scryfallId || (s.__card?.id ?? null),
+            })),
+            byIndex: sprites.map((s: any) => ({ x: s.x, y: s.y })),
+          };
+          localStorage.setItem("mtgcanvas_positions_v1", JSON.stringify(data));
+        } catch {}
+      } catch {}
       const ha: any = (stage as any).hitArea as any;
       const hasBounds = ha && typeof ha.x === "number";
       const minX = hasBounds ? ha.x : -Infinity;
