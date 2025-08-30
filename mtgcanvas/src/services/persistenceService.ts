@@ -49,9 +49,7 @@ function flush() {
   flushTimer = null;
   try {
     InstancesRepo.updatePositions(batch);
-  } catch (e) {
-    /* swallow in browser fallback */
-  }
+  } catch (e) {}
 }
 
 // Group persistence helpers
@@ -61,9 +59,7 @@ export function persistGroupTransform(
 ) {
   try {
     GroupsRepo.updateTransform(id, t);
-  } catch {
-    /* ignore in fallback */
-  }
+  } catch {}
 }
 export function persistGroupCollapsed(id: number, collapsed: boolean) {
   try {

@@ -133,7 +133,7 @@ function canonicalize(url: string) {
 const inFlight = new Map<string, Promise<CachedImage>>(); // url -> CachedImage
 const objectUrlCache = new Map<string, string>(); // url -> objectURL for session
 // Parallel blob cache (canonical url -> Blob) so decode path can avoid re-fetching object URL.
-// Only populated for IDB + network paths (legacy session hits may start empty until first materialization).
+// Only populated for IDB + network paths.
 const blobCache = new Map<string, Blob>();
 
 // Metrics & debug instrumentation

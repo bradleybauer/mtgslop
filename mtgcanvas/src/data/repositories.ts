@@ -1,34 +1,4 @@
-// Browser-safe repositories: lazily attempt to load real DB (better-sqlite3) only in desktop/Tauri.
-// Falls back to in-memory stores when unavailable so UI can function for perf / UX work.
-// NOTE: Persistence is intentionally skipped in fallback mode.
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-declare const require: any;
-
-let _getDb: (() => any) | null = null;
-let _attempted = false;
-function getDbSafe() {
-  if (!_attempted) {
-    _attempted = true;
-    if (typeof window === "undefined" || (window as any).__TAURI__) {
-      try {
-        // Dynamic require to avoid bundler static inclusion
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const mod = require("./db");
-        if (mod && mod.getDb) _getDb = mod.getDb;
-      } catch (e) {
-        console.warn(
-          "[repositories] DB module not available, using in-memory fallback",
-        );
-      }
-    }
-  }
-  return _getDb ? _getDb() : null;
-}
-
-export function hasRealDb() {
-  return !!_getDb;
-}
+// In-memory repositories for card instances and groups.
 
 export interface CardInstance {
   id: number;
@@ -50,29 +20,12 @@ export interface GroupRow {
   transform_json: string | null;
 }
 
-// In-memory fallback stores
 const mem = { instances: [] as CardInstance[], groups: [] as GroupRow[] };
 let memInstanceId = 1;
 let memGroupId = 1;
-let warnedFallback = false;
-function warnOnce(msg: string) {
-  if (!warnedFallback) {
-    console.warn(msg);
-    warnedFallback = true;
-  }
-}
 
 export const InstancesRepo = {
   create(card_id: number, x: number, y: number) {
-    const db = getDbSafe();
-    if (db) {
-      const stmt = db.prepare(
-        `INSERT INTO card_instances (card_id, group_id, x, y, z, rotation, scale, tags) VALUES (?,?,?,?,?,?,?,?)`,
-      );
-      const info = stmt.run(card_id, null, x, y, 0, 0, 1, null);
-      return info.lastInsertRowid as number;
-    }
-    warnOnce("[InstancesRepo] Using in-memory create");
     const inst: CardInstance = {
       id: memInstanceId++,
       card_id,
@@ -99,13 +52,6 @@ export const InstancesRepo = {
     tags?: string | null;
     group_id?: number | null;
   }) {
-    const db = getDbSafe();
-    if (db) {
-      // Fall back to normal create when using real DB (explicit ids not supported here)
-      const id = InstancesRepo.create(row.card_id, row.x, row.y);
-      return id;
-    }
-    warnOnce("[InstancesRepo] Using in-memory createWithId");
     const inst: CardInstance = {
       id: row.id,
       card_id: row.card_id,
@@ -123,39 +69,14 @@ export const InstancesRepo = {
     return inst.id;
   },
   list() {
-    const db = getDbSafe();
-    if (db)
-      return db
-        .prepare(
-          "SELECT id, card_id, group_id, x, y, z, rotation, scale, tags FROM card_instances",
-        )
-        .all() as CardInstance[];
-    warnOnce("[InstancesRepo] Using in-memory list");
     return mem.instances;
   },
   deleteMany(ids: number[]) {
     if (!ids.length) return;
-    const db = getDbSafe();
-    if (db) {
-      const stmt = db.prepare(
-        `DELETE FROM card_instances WHERE id IN (${ids.map(() => "?").join(",")})`,
-      );
-      stmt.run(...ids);
-      return;
-    }
     mem.instances = mem.instances.filter((i) => !ids.includes(i.id));
   },
   updatePositions(batch: { id: number; x: number; y: number }[]) {
     if (!batch.length) return;
-    const db = getDbSafe();
-    if (db) {
-      const stmt = db.prepare("UPDATE card_instances SET x=?, y=? WHERE id=?");
-      const tx = db.transaction((rows: typeof batch) => {
-        rows.forEach((r) => stmt.run(r.x, r.y, r.id));
-      });
-      tx(batch);
-      return;
-    }
     batch.forEach((r) => {
       const inst = mem.instances.find((i) => i.id === r.id);
       if (inst) {
@@ -174,45 +95,6 @@ export const InstancesRepo = {
     }[],
   ) {
     if (!batch.length) return;
-    const db = getDbSafe();
-    if (db) {
-      // Preserve tri-state semantics for group_id:
-      //  - undefined -> leave unchanged
-      //  - number    -> set to that id
-      //  - null      -> set to NULL (clear)
-      const posOnly = batch.filter((r) => r.group_id === undefined);
-      const withGroup = batch.filter((r) => r.group_id !== undefined);
-      if (posOnly.length) {
-        const stmtPos = db.prepare(
-          "UPDATE card_instances SET x=COALESCE(?,x), y=COALESCE(?,y), z=COALESCE(?,z) WHERE id=?",
-        );
-        const txPos = db.transaction((rows: typeof posOnly) => {
-          rows.forEach((r) =>
-            stmtPos.run(r.x ?? null, r.y ?? null, r.z ?? null, r.id),
-          );
-        });
-        txPos(posOnly);
-      }
-      if (withGroup.length) {
-        const stmtGrp = db.prepare(
-          "UPDATE card_instances SET x=COALESCE(?,x), y=COALESCE(?,y), z=COALESCE(?,z), group_id=? WHERE id=?",
-        );
-        const txGrp = db.transaction((rows: typeof withGroup) => {
-          rows.forEach((r) =>
-            stmtGrp.run(
-              r.x ?? null,
-              r.y ?? null,
-              r.z ?? null,
-              // r.group_id can be number or null here
-              (r as any).group_id,
-              r.id,
-            ),
-          );
-        });
-        txGrp(withGroup);
-      }
-      return;
-    }
     batch.forEach((r) => {
       const inst = mem.instances.find((i) => i.id === r.id);
       if (inst) {
@@ -225,8 +107,6 @@ export const InstancesRepo = {
   },
   /** Memory-only: ensure the next generated instance id is at least `min`. */
   ensureNextId(min: number) {
-    const db = getDbSafe();
-    if (db) return;
     if (typeof min === "number" && isFinite(min)) {
       if (min > memInstanceId) memInstanceId = min;
     }
@@ -242,14 +122,6 @@ export const GroupsRepo = {
     w: number = 300,
     h: number = 300,
   ) {
-    const db = getDbSafe();
-    if (db) {
-      const stmt = db.prepare(
-        "INSERT INTO groups (parent_id, name, collapsed, transform_json) VALUES (?,?,0,?)",
-      );
-      const info = stmt.run(parent_id, name, JSON.stringify({ x, y, w, h }));
-      return info.lastInsertRowid as number;
-    }
     const row: GroupRow = {
       id: memGroupId++,
       parent_id,
@@ -261,68 +133,32 @@ export const GroupsRepo = {
     return row.id;
   },
   list() {
-    const db = getDbSafe();
-    if (db)
-      return db
-        .prepare(
-          "SELECT id,parent_id,name,collapsed,transform_json FROM groups",
-        )
-        .all() as GroupRow[];
     return mem.groups as any;
   },
   deleteMany(ids: number[]) {
     if (!ids.length) return;
-    const db = getDbSafe();
-    if (db) {
-      const stmt = db.prepare(
-        `DELETE FROM groups WHERE id IN (${ids.map(() => "?").join(",")})`,
-      );
-      stmt.run(...ids);
-      return;
-    }
     mem.groups = mem.groups.filter((g) => !ids.includes(g.id));
   },
   updateTransform(
     id: number,
     t: { x: number; y: number; w: number; h: number },
   ) {
-    const db = getDbSafe();
     const json = JSON.stringify(t);
-    if (db) {
-      db.prepare("UPDATE groups SET transform_json=? WHERE id=?").run(json, id);
-      return;
-    }
     const g = mem.groups.find((g) => g.id === id);
     if (g) (g as any).transform_json = json;
   },
   setCollapsed(id: number, collapsed: boolean) {
-    const db = getDbSafe();
-    if (db) {
-      db.prepare("UPDATE groups SET collapsed=? WHERE id=?").run(
-        collapsed ? 1 : 0,
-        id,
-      );
-      return;
-    }
     const g = mem.groups.find((g) => g.id === id);
     if (g) g.collapsed = collapsed ? 1 : 0;
   },
   rename(id: number, name: string) {
-    const db = getDbSafe();
-    if (db) {
-      db.prepare("UPDATE groups SET name=? WHERE id=?").run(name, id);
-      return;
-    }
     const g = mem.groups.find((g) => g.id === id);
     if (g) g.name = name;
   },
   /**
-   * Memory-only: ensure the next generated group id is at least `min`.
-   * No-op when a real DB is present.
+   * Ensure the next generated group id is at least `min`.
    */
   ensureNextId(min: number) {
-    const db = getDbSafe();
-    if (db) return;
     if (typeof min === "number" && isFinite(min)) {
       // Bump the counter to avoid collisions with externally restored ids
       if (min > memGroupId) memGroupId = min;

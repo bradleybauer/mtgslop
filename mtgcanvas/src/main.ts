@@ -28,7 +28,7 @@ import {
   layoutGroup,
   type GroupVisual,
   HEADER_HEIGHT,
-  /* setGroupCollapsed removed */ autoPackGroup,
+  autoPackGroup,
   addCardToGroupOrdered,
   removeCardFromGroup,
   updateGroupTextQuality,
@@ -49,9 +49,9 @@ import {
   loadAll,
   queuePosition,
   persistGroupTransform,
-  /* persistGroupCollapsed removed */ persistGroupRename,
+  persistGroupRename,
 } from "./services/persistenceService";
-import { InstancesRepo, GroupsRepo, hasRealDb } from "./data/repositories";
+import { InstancesRepo, GroupsRepo } from "./data/repositories";
 import {
   fetchCardUniverse,
   spawnLargeSet,
@@ -203,7 +203,7 @@ const splashEl = document.getElementById("splash");
           });
           assignCardToGroupByPosition(ms);
           queuePosition(ms);
-          if (PERSIST_MODE === "memory") scheduleLocalSave();
+          scheduleLocalSave();
         }),
       () => panning,
       (global, additive) => marquee.start(global, additive),
@@ -215,15 +215,13 @@ const splashEl = document.getElementById("splash");
     return s;
   }
   const loaded = loadAll();
-  const PERSIST_MODE = hasRealDb() ? "sqlite" : "memory";
   const LS_KEY = "mtgcanvas_positions_v1";
   const LS_GROUPS_KEY = "mtgcanvas_groups_v1";
-  const LS_IMPORTED_KEY = "mtgcanvas_imported_cards_v1"; // legacy fallback
   // Suppress any local save side effects (used when clearing data to avoid races that re-save)
   let SUPPRESS_SAVES = false;
   let memoryGroupsData: any = null;
   let groupsRestored = false;
-  if (PERSIST_MODE === "memory") {
+  {
     try {
       const raw = localStorage.getItem(LS_GROUPS_KEY);
       if (raw) memoryGroupsData = JSON.parse(raw);
@@ -231,7 +229,6 @@ const splashEl = document.getElementById("splash");
   }
   // (index-based pre-parse removed; id-based restore applies in applyStoredPositionsMemory)
   function applyStoredPositionsMemory() {
-    if (PERSIST_MODE !== "memory") return;
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (!raw) return;
@@ -268,7 +265,7 @@ const splashEl = document.getElementById("splash");
             matched++;
           }
         });
-        // Fallback: index-based if few matched (likely ephemeral ids changed)
+        // Index-based if few matched (ids changed)
         if (matched < sprites.length * 0.5 && Array.isArray(obj.byIndex)) {
           obj.byIndex.forEach((p: any, idx: number) => {
             const s = sprites[idx];
@@ -291,23 +288,13 @@ const splashEl = document.getElementById("splash");
       }
     } catch {}
   }
-  // Memory-mode: rehydrate previously imported Scryfall cards (raw JSON) and attach sprites
+  // Rehydrate previously imported Scryfall cards (raw JSON) and attach sprites
   async function rehydrateImportedCards() {
-    if (PERSIST_MODE !== "memory") return;
-    // Prefer IndexedDB store; fallback to localStorage legacy key
+    // IndexedDB-backed store only
     let cards: any[] = [];
     try {
       cards = await getAllImportedCards();
     } catch {}
-    if (!cards || !cards.length) {
-      try {
-        const raw = localStorage.getItem(LS_IMPORTED_KEY);
-        if (raw) {
-          const arr = JSON.parse(raw);
-          if (Array.isArray(arr)) cards = arr;
-        }
-      } catch {}
-    }
     if (!cards.length) return;
     // Try to restore stable instance ids and group memberships from saved positions
     let saved: any = null;
@@ -385,24 +372,22 @@ const splashEl = document.getElementById("splash");
       }
     }
   }
-  if (PERSIST_MODE === "memory") {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const obj = JSON.parse(raw);
-        if (obj && Array.isArray(obj.instances)) {
-          obj.instances.forEach((r: any) => {
-            const inst = loaded.instances.find((i) => i.id === r.id);
-            if (inst) {
-              inst.x = r.x;
-              inst.y = r.y;
-              (inst as any).group_id = r.group_id ?? inst.group_id ?? null;
-            }
-          });
-        }
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && Array.isArray(obj.instances)) {
+        obj.instances.forEach((r: any) => {
+          const inst = loaded.instances.find((i) => i.id === r.id);
+          if (inst) {
+            inst.x = r.x;
+            inst.y = r.y;
+            (inst as any).group_id = r.group_id ?? inst.group_id ?? null;
+          }
+        });
       }
-    } catch {}
-  }
+    }
+  } catch {}
   let startupComplete = false;
   function finishStartup() {
     if (startupComplete) return;
@@ -491,7 +476,7 @@ const splashEl = document.getElementById("splash");
   // Memory mode group persistence helpers
   let lsGroupsTimer: any = null;
   function scheduleGroupSave() {
-    if (PERSIST_MODE !== "memory" || SUPPRESS_SAVES) return;
+    if (SUPPRESS_SAVES) return;
     if (lsGroupsTimer) return;
     lsGroupsTimer = setTimeout(persistLocalGroups, 400);
   }
@@ -527,7 +512,6 @@ const splashEl = document.getElementById("splash");
   function restoreMemoryGroups() {
     if (groupsRestored) return;
     groupsRestored = true;
-    if (PERSIST_MODE !== "memory") return;
     if (!memoryGroupsData || !Array.isArray(memoryGroupsData.groups)) return;
     memoryGroupsData.groups.forEach((gr: any) => {
       const gv = createGroupVisual(
@@ -642,16 +626,14 @@ const splashEl = document.getElementById("splash");
       updateGroupMetrics(gv, sprites);
       drawGroup(gv, false);
     });
-    // For safety, also bump the next id in memory fallback when DB is absent
+    // Ensure new group creations won't collide with restored ids
     try {
-      if (!hasRealDb()) {
-        const maxId = Math.max(...[...groups.keys(), 0]);
-        (GroupsRepo as any).ensureNextId &&
-          (GroupsRepo as any).ensureNextId(maxId + 1);
-      }
+      const maxId = Math.max(...[...groups.keys(), 0]);
+      (GroupsRepo as any).ensureNextId &&
+        (GroupsRepo as any).ensureNextId(maxId + 1);
     } catch {}
     finishStartup();
-  } else if (PERSIST_MODE === "memory") {
+  } else {
     // If instances were present at load-time, restore groups from local storage immediately.
     if (loaded.instances.length) {
       restoreMemoryGroups();
@@ -660,9 +642,6 @@ const splashEl = document.getElementById("splash");
     else if (sprites.length) {
       restoreMemoryGroups();
     }
-  } else {
-    // No groups in DB, but instances already placed: we're ready
-    finishStartup();
   }
   world.sortableChildren = true;
 
@@ -980,7 +959,7 @@ const splashEl = document.getElementById("splash");
           `<div><span style="font-weight:600;">Cost:</span> ${renderManaCostHTML(card.mana_cost)}</div>`,
         );
       }
-      // Price (USD or USD Foil fallback)
+      // Price (USD or USD Foil)
       const price = getCardPriceUSD(card);
       if (price)
         rows.push(
@@ -1073,7 +1052,7 @@ const splashEl = document.getElementById("splash");
           });
           __symbologyMap = m;
           __symbologyLoaded = true;
-          // Repaint info panels to replace any text fallbacks once symbols are known
+          // Repaint info panels to replace any text placeholders once symbols are known
           try {
             updateCardInfoPanel();
           } catch {}
@@ -1129,7 +1108,7 @@ const splashEl = document.getElementById("splash");
     // Prefer exact URI from symbology when available; otherwise derive filename code.
     const fromMap = symbolSvgFromMap(rawToken);
     if (fromMap) {
-      // Derive a plausible code for fallback host by stripping path
+      // Derive a plausible code for host by stripping path
       const m = fromMap.match(/\/card-symbols\/([^./]+)\.svg/i);
       const code = m ? m[1] : filenameCodeFromRaw(rawToken);
       return { src: fromMap, code };
@@ -1190,11 +1169,11 @@ const splashEl = document.getElementById("splash");
       // happy path: do nothing if it loads
       el.onerror = () => {
         const code = el.getAttribute("data-code") || "";
-        const fallback = `https://c2.scryfall.com/file/scryfall-symbols/card-symbols/${code}.svg`;
-        if (el.src !== fallback) {
-          el.src = fallback;
+        const alt = `https://c2.scryfall.com/file/scryfall-symbols/card-symbols/${code}.svg`;
+        if (el.src !== alt) {
+          el.src = alt;
           el.onerror = () => {
-            // final fallback: readable text token (no custom icons)
+            // final: readable text token (no custom icons)
             try {
               el.outerHTML = `<span style="display:inline-block;min-width:22px;text-align:center;font-weight:700;">{${code}}</span>`;
             } catch {}
@@ -2082,7 +2061,6 @@ const splashEl = document.getElementById("splash");
         return; // swallow other canvas shortcuts while editing text
       }
     }
-    // (Alt previously disabled snapping; feature removed)
     if (e.key === "g" || e.key === "G") {
       let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
       const b = computeSelectionBounds();
@@ -2179,28 +2157,6 @@ const splashEl = document.getElementById("splash");
         SelectionStore.toggleGroup(id);
       }
     }
-    // Stress test: Shift+G generate 1000 cards in spiral for perf profiling
-    if ((e.key === "g" || e.key === "G") && e.shiftKey && e.altKey) {
-      const base = sprites.length;
-      const center = world.toLocal(
-        new PIXI.Point(window.innerWidth / 2, window.innerHeight / 2),
-      );
-      for (let i = 0; i < 1000; i++) {
-        const angle = i * 0.35;
-        const radius = 20 + i * 4;
-        const x = snap(center.x + Math.cos(angle) * radius);
-        const y = snap(center.y + Math.sin(angle) * radius);
-        const id = InstancesRepo.create(1, x, y);
-        createSpriteForInstance({ id, x, y, z: zCounter++ });
-      }
-      console.log(
-        "[stress] added 1000 cards. Total=",
-        sprites.length,
-        "Added=",
-        sprites.length - base,
-      );
-    }
-    // Removed layout mode toggle (only grid layout exists now)
 
     // Select all (Ctrl+A)
     if ((e.key === "a" || e.key === "A") && (e.ctrlKey || e.metaKey)) {
@@ -2213,66 +2169,6 @@ const splashEl = document.getElementById("splash");
     // Clear selection (Esc)
     if (e.key === "Escape") {
       SelectionStore.clear();
-    }
-    // Duplicate removed
-    // Rename single selected group (F2) inline
-    if (e.key === "F2") {
-      const gids = SelectionStore.getGroups();
-      if (gids.length === 1) {
-        const gv = groups.get(gids[0]);
-        if (gv) startGroupRename(gv);
-      }
-    }
-    // Quick rename (R) if exactly one group selected and not typing in an input
-    if (
-      (e.key === "r" || e.key === "R") &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey
-    ) {
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        active &&
-        (active.tagName === "INPUT" ||
-          active.tagName === "TEXTAREA" ||
-          active.isContentEditable)
-      ) {
-        // ignore while typing
-      } else {
-        const gids = SelectionStore.getGroups();
-        if (gids.length === 1) {
-          const gv = groups.get(gids[0]);
-          if (gv) {
-            e.preventDefault();
-            startGroupRename(gv);
-          }
-        }
-      }
-    }
-    // Nudge selected cards by arrow keys (Shift = larger step)
-    const ARROW_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
-    if (ARROW_KEYS.includes(e.key)) {
-      const step = e.shiftKey ? GRID_SIZE * 5 : GRID_SIZE;
-      const dx =
-        e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
-      const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
-      if (dx || dy) {
-        e.preventDefault();
-        SelectionStore.getCards().forEach((id) => {
-          const s = sprites.find((sp) => sp.__id === id);
-          if (!s) return;
-          s.x += dx;
-          s.y += dy;
-          spatial.update({
-            id: s.__id,
-            minX: s.x,
-            minY: s.y,
-            maxX: s.x + 100,
-            maxY: s.y + 140,
-          });
-          assignCardToGroupByPosition(s);
-        });
-      }
     }
     // Zoom / fit shortcuts (+ / - / 0 reset, F fit all (no modifier), Shift+F fit selection, Z fit selection)
     if ((e.key === "+" || e.key === "=") && (e.ctrlKey || e.metaKey)) {
@@ -2295,48 +2191,12 @@ const splashEl = document.getElementById("splash");
     if (e.key === "z" || e.key === "Z") {
       fitSelection();
     }
-    // Large dataset load (Ctrl+Shift+L): progressive spawn using legal.json/all.json
-    if ((e.key === "l" || e.key === "L") && e.ctrlKey && e.shiftKey) {
-      e.preventDefault();
-      console.log("[largeDataset] begin load");
-      fetchCardUniverse().then((cards) => {
-        if (!cards.length) {
-          console.warn("[largeDataset] no cards loaded");
-          return;
-        }
-        const target = 3000; // adjustable
-        spawnLargeSet(
-          cards,
-          (inst) => {
-            createSpriteForInstance(inst);
-          },
-          {
-            count: target,
-            batchSize: 400,
-            onProgress: (done, total) => {
-              if (done === total) {
-                console.log(
-                  `[largeDataset] spawned ${total} cards (total now ${sprites.length})`,
-                );
-              }
-              if (done % 800 === 0 || done === total) updatePerf();
-            },
-          },
-        ).then(() => {
-          console.log("[largeDataset] complete");
-          fitAll();
-        });
-      });
-    }
-    // Collapse / expand selected groups (C)
-    // (Collapse hotkey removed)
     // Help overlay toggle (H or ?)
-    if (e.key === "h" || e.key === "H" || e.key === "?") {
+    if (e.key === "h" || e.key === "H") {
       if (e.repeat) return; // ignore auto-repeat
       (e as any).__helpHandled = true;
       toggleHelp();
     }
-    // (Alt snap override removed)
     if (e.key === "Delete") {
       const cardIds = SelectionStore.getCards();
       const groupIds = SelectionStore.getGroups();
@@ -2373,9 +2233,9 @@ const splashEl = document.getElementById("splash");
           }
         });
         if (touchedGroups.size) scheduleGroupSave();
-        // Persist updated positions to reflect removals (memory mode)
+        // Persist updated positions to reflect removals
         try {
-          if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+          if (!SUPPRESS_SAVES) {
             const data = {
               instances: sprites.map((s) => ({
                 id: s.__id,
@@ -2400,8 +2260,6 @@ const splashEl = document.getElementById("splash");
   });
 
   world.sortableChildren = true;
-
-  // Card drag handled in cardNode module (local state per card set)
 
   // Selection visualization (simple outline)
   SelectionStore.on(() => {
@@ -2497,8 +2355,6 @@ const splashEl = document.getElementById("splash");
       } catch {}
     }
   }
-
-  // Layout constants removed from bootstrap (encapsulated in layout system)
 
   // Unified marquee + drag/resize state handlers
   const marquee = new MarqueeSystem(
@@ -2818,7 +2674,7 @@ const splashEl = document.getElementById("splash");
   let fps = 0;
   let lsTimer: any = null;
   function scheduleLocalSave() {
-    if (PERSIST_MODE !== "memory" || SUPPRESS_SAVES) return;
+    if (SUPPRESS_SAVES) return;
     if (lsTimer) return;
     lsTimer = setTimeout(persistLocalPositions, 350);
   }
@@ -2939,7 +2795,6 @@ const splashEl = document.getElementById("splash");
       `Status / Performance\n` +
       ` FPS: ${fps}\n` +
       ` Zoom: ${world.scale.x.toFixed(2)}x\n` +
-      ` Persist: ${PERSIST_MODE}\n` +
       ` JS Heap: ${jsHeapLine.replace("JS ", "")}\n` +
       `\nCards\n` +
       ` Total Cards: ${sprites.length}\n` +
@@ -3023,7 +2878,7 @@ const splashEl = document.getElementById("splash");
       if (el!.style.top !== desiredTop + "px")
         el!.style.top = desiredTop + "px";
     };
-    // Hook into PIXI ticker (defined earlier). If unavailable, fallback to rAF.
+    // Hook into PIXI ticker (defined earlier). If unavailable, use rAF.
     try {
       (app.ticker as any).add(syncDebugPosition);
     } catch {
@@ -3102,12 +2957,10 @@ const splashEl = document.getElementById("splash");
       } catch {}
     }
     groups.clear();
-    // Clear persisted group transforms (memory mode) so they don't rehydrate
-    if (PERSIST_MODE === "memory") {
-      try {
-        localStorage.removeItem(LS_GROUPS_KEY);
-      } catch {}
-    }
+    // Clear persisted group transforms so they don't rehydrate
+    try {
+      localStorage.removeItem(LS_GROUPS_KEY);
+    } catch {}
   }
   // Load cards from a JSON file (debug)
   function loadFromJsonFile() {
@@ -3240,7 +3093,7 @@ const splashEl = document.getElementById("splash");
           }
           if (imported) {
             try {
-              if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+              if (!SUPPRESS_SAVES) {
                 const data = {
                   instances: sprites.map((s) => ({
                     id: s.__id,
@@ -3320,7 +3173,7 @@ const splashEl = document.getElementById("splash");
         InstancesRepo.updatePositions(batch);
       } catch {}
     }
-    if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+    if (!SUPPRESS_SAVES) {
       try {
         const data = {
           instances: sprites.map((s) => ({
@@ -3374,7 +3227,7 @@ const splashEl = document.getElementById("splash");
         InstancesRepo.updatePositions(batch);
       } catch {}
     }
-    if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+    if (!SUPPRESS_SAVES) {
       try {
         const data = {
           instances: sprites.map((s) => ({
@@ -3650,31 +3503,19 @@ const splashEl = document.getElementById("splash");
           imported++;
         }
       }
-      // Persist raw imported cards for rehydration (memory mode)
+      // Persist raw imported cards for rehydration
       try {
-        if (PERSIST_MODE === "memory") {
-          const allCards: any[] = [
-            ...groupDefs.flatMap((g) => g.cards),
-            ...ungroupedCards,
-          ];
-          if (allCards.length) {
-            await addImportedCards(allCards);
-            if (!SUPPRESS_SAVES) {
-              try {
-                const prev = localStorage.getItem(LS_IMPORTED_KEY);
-                const arr = prev ? JSON.parse(prev) || [] : [];
-                const next = Array.isArray(arr)
-                  ? arr.concat(allCards)
-                  : allCards;
-                localStorage.setItem(LS_IMPORTED_KEY, JSON.stringify(next));
-              } catch {}
-            }
-          }
+        const allCards: any[] = [
+          ...groupDefs.flatMap((g) => g.cards),
+          ...ungroupedCards,
+        ];
+        if (allCards.length) {
+          await addImportedCards(allCards);
         }
       } catch {}
-      // Persist positions (memory mode)
+      // Persist positions
       try {
-        if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+        if (!SUPPRESS_SAVES) {
           const data = {
             instances: sprites.map((s) => ({
               id: s.__id,
@@ -3768,26 +3609,14 @@ const splashEl = document.getElementById("splash");
           persistedCards.push(pl.card);
         }
       }
-      // Ensure images kick off and persist local positions (memory mode)
+      // Ensure images kick off and persist local positions
       created.forEach((s) => ensureCardImage(s));
       // Persist raw imported cards so they rehydrate on reload
       try {
-        if (PERSIST_MODE === "memory" && persistedCards.length) {
-          await addImportedCards(persistedCards);
-          if (!SUPPRESS_SAVES) {
-            try {
-              const prev = localStorage.getItem(LS_IMPORTED_KEY);
-              const arr = prev ? JSON.parse(prev) || [] : [];
-              const next = Array.isArray(arr)
-                ? arr.concat(persistedCards)
-                : persistedCards;
-              localStorage.setItem(LS_IMPORTED_KEY, JSON.stringify(next));
-            } catch {}
-          }
-        }
+        if (persistedCards.length) await addImportedCards(persistedCards);
       } catch {}
       try {
-        if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+        if (!SUPPRESS_SAVES) {
           const data = {
             instances: sprites.map((s) => ({
               id: s.__id,
@@ -3865,29 +3694,13 @@ const splashEl = document.getElementById("splash");
         }
         // Kick off images
         created.forEach((s) => ensureCardImage(s));
-        // Persist raw imported cards in memory mode so they rehydrate on reload
+        // Persist raw imported cards so they rehydrate on reload
         try {
-          if (PERSIST_MODE === "memory") {
-            // Save to IndexedDB store for scalability; also append to legacy LS for backward compatibility
-            await addImportedCards(cards);
-            try {
-              if (SUPPRESS_SAVES) {
-                /* skip legacy LS append during clear */
-              } else {
-                const prev = localStorage.getItem(LS_IMPORTED_KEY);
-                const arr = prev ? JSON.parse(prev) || [] : [];
-                const toAdd = cards
-                  .map((c) => (c && typeof c === "object" ? c : null))
-                  .filter(Boolean);
-                const next = Array.isArray(arr) ? arr.concat(toAdd) : toAdd;
-                localStorage.setItem(LS_IMPORTED_KEY, JSON.stringify(next));
-              }
-            } catch {}
-          }
+          await addImportedCards(cards);
         } catch {}
-        // Persist (memory mode)
+        // Persist positions
         try {
-          if (PERSIST_MODE === "memory" && !SUPPRESS_SAVES) {
+          if (!SUPPRESS_SAVES) {
             const data = {
               instances: sprites.map((s) => ({ id: s.__id, x: s.x, y: s.y })),
               byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
@@ -3948,9 +3761,6 @@ const splashEl = document.getElementById("splash");
         await clearImportedCards();
       } catch {}
       try {
-        localStorage.removeItem(LS_IMPORTED_KEY);
-      } catch {}
-      try {
         localStorage.removeItem(LS_KEY);
       } catch {}
       try {
@@ -3963,18 +3773,15 @@ const splashEl = document.getElementById("splash");
       try {
         (window as any).indexedDB?.deleteDatabase?.("mtgImageCache");
       } catch {}
-      // If running with a real DB (desktop), clear tables
       try {
-        if (hasRealDb()) {
-          const instIds = (InstancesRepo.list() || [])
-            .map((r: any) => r.id)
-            .filter((n: any) => typeof n === "number");
-          if (instIds.length) InstancesRepo.deleteMany(instIds);
-          const grpIds = (GroupsRepo.list() || [])
-            .map((g: any) => g.id)
-            .filter((n: any) => typeof n === "number");
-          if (grpIds.length) GroupsRepo.deleteMany(grpIds);
-        }
+        const instIds = (InstancesRepo.list() || [])
+          .map((r: any) => r.id)
+          .filter((n: any) => typeof n === "number");
+        if (instIds.length) InstancesRepo.deleteMany(instIds);
+        const grpIds = (GroupsRepo.list() || [])
+          .map((g: any) => g.id)
+          .filter((n: any) => typeof n === "number");
+        if (grpIds.length) GroupsRepo.deleteMany(grpIds);
       } catch {}
       // Ensure the next load starts empty (skip universe restore once)
       try {
@@ -4419,7 +4226,7 @@ const splashEl = document.getElementById("splash");
     // Build a per-frame id->sprite map to avoid repeated array scans in hot paths
     const idToSprite: Map<number, CardSprite> = new Map();
     for (const s of sprites) idToSprite.set(s.__id, s);
-    // Monkey-patch a hidden reference used by groupNode to speed lookups (fallback to array if absent)
+    // Build a hidden reference used by groupNode to speed lookups
     (window as any).__mtgIdToSprite = idToSprite;
     // Enforce GPU budget by demoting offscreen sprites when over the cap
     try {
@@ -4437,45 +4244,43 @@ const splashEl = document.getElementById("splash");
       ensureCardContextListeners();
     } catch {}
   }, 2000);
-  if (PERSIST_MODE === "memory") {
-    window.addEventListener("beforeunload", () => {
-      try {
-        if (!SUPPRESS_SAVES) persistLocalPositions();
-      } catch {}
-      try {
-        // flush any pending group save immediately
-        const anyWin: any = window;
-        if (anyWin.lsGroupsTimer) {
-          clearTimeout(anyWin.lsGroupsTimer);
-        }
-        // direct call ensures groups saved even if debounce pending (unless suppressed)
-        if (!SUPPRESS_SAVES)
-          (function () {
-            try {
-              const data = {
-                groups: [...groups.values()].map((gv) => ({
-                  id: gv.id,
-                  x: gv.gfx.x,
-                  y: gv.gfx.y,
-                  w: gv.w,
-                  h: gv.h,
-                  name: gv.name,
-                  collapsed: gv.collapsed,
-                  color: gv.color,
-                  membersById: gv.order.slice(),
-                  membersByIndex: gv.order
-                    .map((cid) => sprites.findIndex((s) => s.__id === cid))
-                    .filter((i) => i >= 0),
-                })),
-              };
-              localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data));
-            } catch {}
-          })();
-      } catch {}
-    });
-  }
+  window.addEventListener("beforeunload", () => {
+    try {
+      if (!SUPPRESS_SAVES) persistLocalPositions();
+    } catch {}
+    try {
+      // flush any pending group save immediately
+      const anyWin: any = window;
+      if (anyWin.lsGroupsTimer) {
+        clearTimeout(anyWin.lsGroupsTimer);
+      }
+      // direct call ensures groups saved even if debounce pending (unless suppressed)
+      if (!SUPPRESS_SAVES)
+        (function () {
+          try {
+            const data = {
+              groups: [...groups.values()].map((gv) => ({
+                id: gv.id,
+                x: gv.gfx.x,
+                y: gv.gfx.y,
+                w: gv.w,
+                h: gv.h,
+                name: gv.name,
+                collapsed: gv.collapsed,
+                color: gv.color,
+                membersById: gv.order.slice(),
+                membersByIndex: gv.order
+                  .map((cid) => sprites.findIndex((s) => s.__id === cid))
+                  .filter((i) => i >= 0),
+              })),
+            };
+            localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data));
+          } catch {}
+        })();
+    } catch {}
+  });
 
-  // Fallback global hotkey listener (capture) to ensure Help toggles even if earlier handler failed.
+  // Global hotkey listener (capture) to ensure Help toggles even if earlier handler failed.
   window.addEventListener(
     "keydown",
     (e) => {
@@ -4497,7 +4302,7 @@ const splashEl = document.getElementById("splash");
         )
           return;
         if ((window as any).__helpAPI) {
-          console.log("[help] fallback listener toggle");
+          console.log("[help] listener toggle");
           (window as any).__helpAPI.toggle();
         }
       }

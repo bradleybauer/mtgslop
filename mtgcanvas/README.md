@@ -2,7 +2,7 @@
 
 Local desktop app to organize Magic: The Gathering cards on an infinite zoomable canvas.
 
-Stack: Tauri (Rust shell) + TypeScript + Vite + PixiJS + better-sqlite3.
+Stack: Tauri (Rust shell) + TypeScript + Vite + PixiJS.
 
 ## MVP Features
 - Import Scryfall `legal.json` (preferred smaller subset) or `all.json` into SQLite.
@@ -23,9 +23,6 @@ mtgcanvas/
     main.ts          # Pixi bootstrap + scene init
     app.ts           # High-level App orchestrator
     data/
-      db.ts          # SQLite connection (better-sqlite3)
-      schema.sql     # Schema definition
-      importer.ts    # Scryfall JSON importer (streamed)
       repositories.ts
     scene/
       CardSprite.ts
@@ -51,11 +48,7 @@ mtgcanvas/
 ## Next Steps
 1. Install dependencies & scaffold Tauri + Vite.
 2. Place `legal.json` (or `all.json`) in `mtgcanvas/public/` or `notes/` directory. The app prefers `legal.json` if both exist.
-3. Import into SQLite (optional) via:
-  - `npm run import:legal` (uses `../notes/legal.json`)
-  - or `npm run import:scryfall` (uses `../all.json`)
-4. Minimal scene with mock cards.
-5. Drag, pan, zoom, persist positions.
+3. Drag, pan, zoom, and persist positions in LocalStorage; imported cards are stored in IndexedDB.
 
 ---
 Work in progress.

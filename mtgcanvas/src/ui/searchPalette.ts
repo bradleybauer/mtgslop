@@ -1,6 +1,5 @@
 // Lightweight search palette: Ctrl+F opens, Enter creates group with matches.
 // Searches across in-memory loaded card sprites (name + oracle_text) with OR semantics between tokens.
-// Future: upgrade to SQLite FTS when persistence/importer active.
 
 import type { CardSprite } from "../scene/cardNode";
 import { parseScryfallQuery } from "../search/scryfallQuery";

@@ -6,7 +6,7 @@
 // Top‑level is OR groups: the literal token OR (case‑insensitive, unquoted) splits groups. Everything between ORs is ANDed.
 // Inside a group every token must match (logical AND). Negation (-prefix) flips that single token’s result after it is evaluated.
 // No parentheses; precedence is: evaluate each group (AND), then OR the groups.
-// If parsing throws, the system falls back to the legacy simple token matcher (not described here).
+// If parsing throws, the system falls back to a simple token matcher.
 // Token forms
 
 // Field filters (colon form): fieldAlias:value Supported aliases: name / n o / oracle (oracle_text) t / type (type_line) layout cmc / mv (numerical) c / ci (color_identity) Examples: o:infect name:"glistener elf" cmc:3 (equals 3) cmc:>=5 c:uw (contains U and W, maybe more) c:=uw (exactly UW) c:<=wub (subset of WUB; i.e. mono-W, mono-U, mono-B, UW, WB, UB, or WUB) c:!=g (color identity not exactly G)
@@ -139,8 +139,8 @@ export interface CardLike {
   story_spotlight?: boolean | null;
   reserved?: boolean | null;
   highres_image?: boolean | null;
-  foil?: boolean | null; // legacy
-  nonfoil?: boolean | null; // legacy
+  foil?: boolean | null;
+  nonfoil?: boolean | null;
   finishes?: string[] | null; // ['nonfoil','foil','etched','glossy']
   border_color?: string | null; // black, white, borderless, silver
   frame?: string | null; // 1993, 1997, 2003, 2015, future
@@ -300,10 +300,7 @@ export function parseScryfallQuery(input: string): Predicate | null {
     const node = parse(tokens);
     return (card) => evalNode(node, card);
   } catch (e) {
-    console.warn(
-      "[scryfallQuery] parse failed – fallback to simple contains",
-      e,
-    );
+    console.warn("[scryfallQuery] parse failed – simple contains", e);
     return null;
   }
 }

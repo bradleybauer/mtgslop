@@ -31,7 +31,7 @@ export function parseUniverseText(txt: string): any[] {
   } catch (_) {
     /* fall through to NDJSON */
   }
-  // NDJSON fallback: each line a JSON object
+  // NDJSON: each line a JSON object
   const lines = txt
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -116,7 +116,7 @@ export async function fetchCardUniverse(): Promise<any[]> {
           console.warn("[largeDataset] streaming parse failed for", url, e);
         }
       }
-      // Fallback full text parse
+      // Full text parse
       const txt = await res.text();
       console.log(
         "[largeDataset] fetched",
@@ -142,7 +142,7 @@ export async function fetchCardUniverse(): Promise<any[]> {
       console.warn("[largeDataset] error fetching candidate", url, err);
     }
   }
-  // Tauri invoke fallback
+  // Tauri invoke
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tauri = (window as any).__TAURI__;
