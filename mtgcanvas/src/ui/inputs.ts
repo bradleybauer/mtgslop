@@ -32,55 +32,48 @@ export function disableSpellAndGrammarGlobally(options?: {
           !(el as HTMLInputElement).type));
     if (!isTextInput && !isCE) return;
 
-    try {
-      // Disable spell and grammar check (Chrome/Firefox/Edge honor this on supported elements)
-      (el as any).spellcheck = false;
-      el.setAttribute("spellcheck", "false");
-      // Mobile hints
-      el.setAttribute("autocapitalize", "off");
-      el.setAttribute("autocorrect", "off");
-      // Some grammar extensions honor this opt-out
-      el.setAttribute("data-gramm", "false");
-      el.setAttribute("data-gramm_editor", "false");
-    } catch {}
+  // Disable spell and grammar check (Chrome/Firefox/Edge honor this on supported elements)
+  (el as any).spellcheck = false;
+  el.setAttribute("spellcheck", "false");
+  // Mobile hints
+  el.setAttribute("autocapitalize", "off");
+  el.setAttribute("autocorrect", "off");
+  // Some grammar extensions honor this opt-out
+  el.setAttribute("data-gramm", "false");
+  el.setAttribute("data-gramm_editor", "false");
   };
 
   const applyAll = (root: ParentNode | Document) => {
-    try {
-      root.querySelectorAll(selector).forEach(apply);
-    } catch {}
+    if (!root) return;
+    (root as ParentNode).querySelectorAll?.(selector)?.forEach?.(apply);
   };
 
   // Initial pass
   if (typeof document !== "undefined") {
     applyAll(document);
     // Observe additions
-    try {
-      const obs = new MutationObserver((muts) => {
-        for (const m of muts) {
-          if (m.type === "childList") {
-            m.addedNodes.forEach((n) => {
-              if (n.nodeType === 1) {
-                const el = n as Element;
-                apply(el);
-                // Recurse into subtree
-                try {
-                  (el as Element).querySelectorAll?.(selector).forEach(apply);
-                } catch {}
-              }
-            });
-          } else if (m.type === "attributes" && (m.target as Element)) {
-            const t = m.target as Element;
-            if (t.matches && t.matches(selector)) apply(t);
-          }
+    const obs = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === "childList") {
+          m.addedNodes.forEach((n) => {
+            if (n.nodeType === 1) {
+              const el = n as Element;
+              apply(el);
+              // Recurse into subtree
+              (el as Element).querySelectorAll?.(selector)?.forEach?.(apply);
+            }
+          });
+        } else if (m.type === "attributes" && (m.target as Element)) {
+          const t = m.target as Element;
+          if (t.matches && t.matches(selector)) apply(t);
         }
-      });
-      obs.observe(document.documentElement, {
-        subtree: true,
-        childList: true,
-        attributes: true,
-        attributeFilter: includeCE ? ["contenteditable"] : undefined,
-      });
-    } catch {}
+      }
+    });
+    obs.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: includeCE ? ["contenteditable"] : undefined,
+    });
   }
 }

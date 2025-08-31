@@ -88,13 +88,7 @@ export async function searchScryfall(
 
   // Support cooperative cancellation
   const ctrl = new AbortController();
-  const abort = (reason?: any) => {
-    try {
-      ctrl.abort(reason);
-    } catch {
-      /* no-op */
-    }
-  };
+  const abort = (reason?: any) => ctrl.abort(reason);
   if (signal) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     signal.addEventListener("abort", () => abort(signal.reason), {

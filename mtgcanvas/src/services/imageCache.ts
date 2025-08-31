@@ -120,11 +120,7 @@ export async function enforceCacheBudget() {
 // Important: Scryfall encodes front/back face and size via query params for non-PNG URLs.
 // Stripping the query conflates distinct images (e.g., face=front vs face=back) and breaks DFC loading.
 function canonicalize(url: string) {
-  try {
-    return url;
-  } catch {
-    return url;
-  }
+  return url;
 }
 
 // In-memory de-duplication maps

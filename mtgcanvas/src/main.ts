@@ -931,24 +931,16 @@ const splashEl = document.getElementById("splash");
           const y = entry.y;
           const z = typeof entry.z === "number" ? entry.z : 0;
           const gid: number | null = entry.group_id;
-          try {
-            id = (InstancesRepo as any).createWithId
-              ? (InstancesRepo as any).createWithId({
-                  id,
-                  card_id: 1,
-                  x,
-                  y,
-                  z,
-                  group_id: gid,
-                })
-              : id;
-          } catch {
-            try {
-              id = InstancesRepo.create(1, x, y);
-            } catch {
-              id = ++maxId;
-            }
-          }
+          id = (InstancesRepo as any).createWithId
+            ? (InstancesRepo as any).createWithId({
+                id,
+                card_id: 1,
+                x,
+                y,
+                z,
+                group_id: gid,
+              })
+            : id;
           bulkItems.push({
             id,
             x,
@@ -4080,22 +4072,18 @@ const splashEl = document.getElementById("splash");
     texResLine = `TexRes low:${low} med:${med} hi:${hi}`;
     hiResPendingLine = `GlobalPending ${pending}`;
     qualLine = `Qual q0:${q0} q1:${q1} q2:${q2} load:${loading}`;
-    try {
+    const dqs = getDecodeQueueStats?.();
+    if (dqs) {
       decodeQLine = `DecodeQ ${getDecodeQueueSize()}`;
-      const dqs = getDecodeQueueStats?.();
-      if (dqs)
-        decodeDiagLine = `Decodes act:${dqs.active} q:${dqs.queued} oldest:${dqs.oldestWaitMs.toFixed(0)}ms avg:${dqs.avgWaitMs.toFixed(0)}ms`;
-    } catch {
+      decodeDiagLine = `Decodes act:${dqs.active} q:${dqs.queued} oldest:${dqs.oldestWaitMs.toFixed(0)}ms avg:${dqs.avgWaitMs.toFixed(0)}ms`;
+    } else {
       decodeQLine = "DecodeQ n/a";
       decodeDiagLine = "DecodeDiag n/a";
     }
-    try {
-      const hq = getHiResQueueDiagnostics?.();
-      if (hq)
-        hiResDiagLine = `HiRes loaded:${hq.loaded} loading:${hq.loading} stale:${hq.stale} vis:${hq.visible} oldest:${(hq.oldestMs || 0).toFixed(0)}ms`;
-    } catch {
-      hiResDiagLine = "HiResDiag n/a";
-    }
+    const hq = getHiResQueueDiagnostics?.();
+    if (hq)
+      hiResDiagLine = `HiRes loaded:${hq.loaded} loading:${hq.loading} stale:${hq.stale} vis:${hq.visible} oldest:${(hq.oldestMs || 0).toFixed(0)}ms`;
+    else hiResDiagLine = "HiResDiag n/a";
     texLine = `Tex ~${(bytes / 1048576).toFixed(1)} MB`;
   }
   function updatePerf() {
@@ -4152,14 +4140,10 @@ const splashEl = document.getElementById("splash");
       ` Decode Queue: ${decodeQLine.replace("DecodeQ ", "")}\n` +
       ` ${decodeDiagLine}\n` +
       (() => {
-        try {
-          const m = (window as any).__frameDiag || {};
-          const line = ` Ops upg:${m.upg || 0} load:${m.load || 0} down:${m.down || 0} budget:${(m.budgetMs || 0).toFixed?.(1) || 0}ms inflight:${m.inflight || 0}`;
-          (window as any).__frameDiag = {};
-          return ` ${line}\n`;
-        } catch {
-          return "";
-        }
+        const m = (window as any).__frameDiag || {};
+        const line = ` Ops upg:${m.upg || 0} load:${m.load || 0} down:${m.down || 0} budget:${(m.budgetMs || 0).toFixed?.(1) || 0}ms inflight:${m.inflight || 0}`;
+        (window as any).__frameDiag = {};
+        return ` ${line}\n`;
       })() +
       `\nCache Layers\n` +
       ` Session Hits: ${stats.sessionHits}  IDB Hits: ${stats.idbHits}  Canonical Hits: ${stats.canonicalHits}\n` +

@@ -3,33 +3,23 @@
 // - Supports user overrides via localStorage
 
 function isWindows(): boolean {
-  try {
-    const ua = navigator.userAgent || navigator.platform || "";
-    return /Windows|Win32|Win64/i.test(ua);
-  } catch {
-    return false;
-  }
+  const ua = (typeof navigator !== "undefined" && (navigator.userAgent || (navigator as any).platform)) || "";
+  return /Windows|Win32|Win64/i.test(ua);
 }
 
 function readNumber(key: string): number | undefined {
-  try {
-    const v = localStorage.getItem(key);
-    if (v == null) return undefined;
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  } catch {
-    return undefined;
-  }
+  if (typeof localStorage === "undefined") return undefined;
+  const v = localStorage.getItem(key);
+  if (v == null) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 function readBool(key: string): boolean | undefined {
-  try {
-    const v = localStorage.getItem(key);
-    if (v == null) return undefined;
-    return v === "true" || v === "1";
-  } catch {
-    return undefined;
-  }
+  if (typeof localStorage === "undefined") return undefined;
+  const v = localStorage.getItem(key);
+  if (v == null) return undefined;
+  return v === "true" || v === "1";
 }
 
 // Returns a platform-tuned DPR to use for the renderer and texture decisions.
@@ -62,35 +52,28 @@ export function watchDpr(onChange: () => void): () => void {
     cb: (this: MediaQueryList, ev: MediaQueryListEvent) => any;
   }> = [];
   const dppxMarks = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 3, 4];
-  try {
-    for (const v of dppxMarks) {
-      const mq = matchMedia(`(resolution: ${v}dppx)`);
-      const cb = () => onChange();
-      // modern addEventListener
-      (mq as any).addEventListener?.("change", cb) ||
-        (mq as any).addListener?.(cb);
-      listeners.push({ mq, cb });
-    }
-  } catch {
+  if (typeof matchMedia !== "function") {
     // Fallback: periodic poll if matchMedia not available
     let last = getEffectiveDpr();
     const id = setInterval(() => {
       const cur = getEffectiveDpr();
       if (cur !== last) {
         last = cur;
-        try {
-          onChange();
-        } catch {}
+        onChange();
       }
     }, 750);
     return () => clearInterval(id as any);
+  } else {
+    for (const v of dppxMarks) {
+      const mq = matchMedia(`(resolution: ${v}dppx)`);
+      const cb = () => onChange();
+      (mq as any).addEventListener?.("change", cb) || (mq as any).addListener?.(cb);
+      listeners.push({ mq, cb });
+    }
   }
   return () => {
     for (const { mq, cb } of listeners) {
-      try {
-        (mq as any).removeEventListener?.("change", cb) ||
-          (mq as any).removeListener?.(cb);
-      } catch {}
+      (mq as any).removeEventListener?.("change", cb) || (mq as any).removeListener?.(cb);
     }
   };
 }

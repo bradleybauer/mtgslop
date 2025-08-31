@@ -8,10 +8,8 @@ export interface GpuInfo {
 }
 
 function getDeviceMemoryGB(): number | undefined {
-  try {
-    const dm: any = (navigator as any).deviceMemory;
-    if (typeof dm === "number" && dm > 0) return dm;
-  } catch {}
+  const dm: any = (typeof navigator !== "undefined" && (navigator as any).deviceMemory) as any;
+  if (typeof dm === "number" && dm > 0) return dm;
   return undefined;
 }
 
@@ -42,9 +40,7 @@ export function detectGpuInfo(renderer: any): GpuInfo {
     renderer: r,
     deviceMemoryGB: dm,
   };
-  try {
-    (window as any).__gpuInfo = info;
-  } catch {}
+  (window as any).__gpuInfo = info;
   return info;
 }
 
@@ -75,17 +71,16 @@ export function estimateGpuBudgetMB(info: GpuInfo): number {
 }
 
 export function autoConfigureTextureBudget(renderer: any) {
-  try {
-    // Respect explicit user override
-    const overrideStr =
-      localStorage.getItem("gpuBudgetMB") ||
-      localStorage.getItem("gpuBudgetMBOverride");
-    const ov = overrideStr ? Number(overrideStr) : NaN;
-    if (Number.isFinite(ov) && ov > 0) {
-      configureTextureSettings({ gpuBudgetMB: Math.floor(ov) });
-      return;
-    }
-  } catch {}
+  // Respect explicit user override
+  const overrideStr =
+    (typeof localStorage !== "undefined" && localStorage.getItem("gpuBudgetMB")) ||
+    (typeof localStorage !== "undefined" && localStorage.getItem("gpuBudgetMBOverride")) ||
+    null;
+  const ov = overrideStr ? Number(overrideStr) : NaN;
+  if (Number.isFinite(ov) && ov > 0) {
+    configureTextureSettings({ gpuBudgetMB: Math.floor(ov) });
+    return;
+  }
   const info = detectGpuInfo(renderer);
   const mb = estimateGpuBudgetMB(info);
   configureTextureSettings({ gpuBudgetMB: mb });

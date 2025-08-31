@@ -152,11 +152,9 @@ export function initHelp(): HelpAPI {
     let hideTimer: any = null;
     function show() {
       // Notify other FAB panels to close
-      try {
-        window.dispatchEvent(
-          new CustomEvent("mtg:fabs:open", { detail: { id: "help" } }),
-        );
-      } catch {}
+      window.dispatchEvent(
+        new CustomEvent("mtg:fabs:open", { detail: { id: "help" } }),
+      );
       panel.style.display = "block";
     }
     function scheduleHide() {

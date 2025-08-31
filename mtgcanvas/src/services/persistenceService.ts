@@ -47,9 +47,7 @@ function flush() {
   const batch = [...pending.values()];
   pending.clear();
   flushTimer = null;
-  try {
-    InstancesRepo.updatePositions(batch);
-  } catch (e) {}
+  InstancesRepo.updatePositions(batch);
 }
 
 // Group persistence helpers
@@ -57,14 +55,8 @@ export function persistGroupTransform(
   id: number,
   t: { x: number; y: number; w: number; h: number },
 ) {
-  try {
-    GroupsRepo.updateTransform(id, t);
-  } catch {}
+  GroupsRepo.updateTransform(id, t);
 }
 export function persistGroupRename(id: number, name: string) {
-  try {
-    GroupsRepo.rename(id, name);
-  } catch {
-    /* */
-  }
+  GroupsRepo.rename(id, name);
 }

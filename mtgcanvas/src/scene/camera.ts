@@ -62,19 +62,17 @@ export class Camera {
   setWorldBounds(b: { x: number; y: number; w: number; h: number } | null) {
     this.worldBounds = b || undefined;
     // Dynamically allow zooming out enough to see the full bounds and a bit more (~10%)
-    try {
-      if (this.worldBounds) {
-        const vw = (globalThis as any).innerWidth || 0;
-        const vh = (globalThis as any).innerHeight || 0;
-        if (vw > 0 && vh > 0) {
-          const sFitW = vw / this.worldBounds.w;
-          const sFitH = vh / this.worldBounds.h;
-          const sMinSeeAll = Math.min(sFitW, sFitH) * 0.9; // 10% extra beyond edges
-          if (isFinite(sMinSeeAll) && sMinSeeAll > 0)
-            this.minScale = Math.min(this.minScale, sMinSeeAll);
-        }
+    if (this.worldBounds) {
+      const vw = (globalThis as any).innerWidth || 0;
+      const vh = (globalThis as any).innerHeight || 0;
+      if (vw > 0 && vh > 0) {
+        const sFitW = vw / this.worldBounds.w;
+        const sFitH = vh / this.worldBounds.h;
+        const sMinSeeAll = Math.min(sFitW, sFitH) * 0.9; // 10% extra beyond edges
+        if (isFinite(sMinSeeAll) && sMinSeeAll > 0)
+          this.minScale = Math.min(this.minScale, sMinSeeAll);
       }
-    } catch {}
+    }
     // Clamp immediately to new bounds
     this.clampToBounds();
   }

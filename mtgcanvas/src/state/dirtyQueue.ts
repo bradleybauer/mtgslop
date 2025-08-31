@@ -12,10 +12,12 @@ function flush() {
   const batch = [...dirty.values()];
   dirty.clear();
   timer = null;
-  try {
-    if (batch.length) InstancesRepo.updatePositions(batch);
-  } catch {
-    // swallow persistence errors; will retry on next dirty mark
+  if (batch.length) {
+    try {
+      InstancesRepo.updatePositions(batch);
+    } catch {
+      // Swallow persistence errors; will retry on next dirty mark
+    }
   }
 }
 

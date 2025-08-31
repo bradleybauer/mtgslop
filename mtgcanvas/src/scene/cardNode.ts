@@ -459,16 +459,12 @@ export function flushPendingTextureDestroys() {
 }
 
 function isTextureUsable(tex: PIXI.Texture | null | undefined): boolean {
-  try {
-    if (!tex) return false;
-    const bt: any = (tex as any).baseTexture;
-    if (!bt) return false;
-    if (bt.destroyed === true) return false;
-    if (bt.valid === false) return false;
-    return true;
-  } catch {
-    return false;
-  }
+  if (!tex) return false;
+  const bt: any = (tex as any).baseTexture;
+  if (!bt) return false;
+  if (bt.destroyed === true) return false;
+  if (bt.valid === false) return false;
+  return true;
 }
 
 function demoteSpriteTextureToPlaceholder(s: CardSprite) {
@@ -1054,44 +1050,18 @@ export function getInflightTextureCount() {
 
 // Exported: snapshot of texture budget/queue/debug counters for perf reports
 export function getTextureBudgetStats() {
-  try {
-    const over = Math.max(
-      0,
-      totalTextureBytes - settings.gpuBudgetMB * 1024 * 1024,
-    );
-    const avgDecode = __dbg.decode.count
-      ? __dbg.decode.totalMs / __dbg.decode.count
-      : 0;
-    return {
-      totalTextureMB: totalTextureBytes / 1048576,
-      budgetMB: settings.gpuBudgetMB,
-      overBudgetMB: over / 1048576,
-      cacheEntries: textureCache.size,
-      inflight: inflightTex.size,
-      decode: {
-        count: __dbg.decode.count,
-        avgMs: avgDecode,
-        maxMs: __dbg.decode.maxMs,
-      },
-      qPeak: __dbg.qPeak,
-      evict: {
-        count: __dbg.evict.count,
-        bytesMB: __dbg.evict.bytes / 1048576,
-        lastMs: __dbg.evict.lastMs,
-      },
-    };
-  } catch {
-    return {
-      totalTextureMB: totalTextureBytes / 1048576,
-      budgetMB: settings.gpuBudgetMB,
-      overBudgetMB: 0,
-      cacheEntries: textureCache.size,
-      inflight: inflightTex.size,
-      decode: { count: 0, avgMs: 0, maxMs: 0 },
-      qPeak: 0,
-      evict: { count: 0, bytesMB: 0, lastMs: 0 },
-    };
-  }
+  const over = Math.max(0, totalTextureBytes - settings.gpuBudgetMB * 1024 * 1024);
+  const avgDecode = __dbg.decode.count ? __dbg.decode.totalMs / __dbg.decode.count : 0;
+  return {
+    totalTextureMB: totalTextureBytes / 1048576,
+    budgetMB: settings.gpuBudgetMB,
+    overBudgetMB: over / 1048576,
+    cacheEntries: textureCache.size,
+    inflight: inflightTex.size,
+    decode: { count: __dbg.decode.count, avgMs: avgDecode, maxMs: __dbg.decode.maxMs },
+    qPeak: __dbg.qPeak,
+    evict: { count: __dbg.evict.count, bytesMB: __dbg.evict.bytes / 1048576, lastMs: __dbg.evict.lastMs },
+  };
 }
 
 export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {

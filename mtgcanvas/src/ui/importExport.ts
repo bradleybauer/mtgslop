@@ -231,11 +231,9 @@ export function installImportExport(
     // no format selector; always output counts + groups
     copyBtn.onclick = async () => {
       if (!exportArea) return;
-      try {
-        await navigator.clipboard.writeText(exportArea.value);
-        (copyBtn as any).textContent = "Copied";
-        setTimeout(() => (copyBtn.textContent = "Copy"), 1200);
-      } catch {}
+      await navigator.clipboard.writeText(exportArea.value);
+      (copyBtn as any).textContent = "Copied";
+      setTimeout(() => (copyBtn.textContent = "Copy"), 1200);
     };
     dlBtn.onclick = () => {
       if (!exportArea) return;
@@ -258,13 +256,11 @@ export function installImportExport(
     importBtn.onclick = async () => {
       // If already running, treat as cancel
       if (textInFlight) {
-        try {
-          textAbort?.abort();
-        } catch {}
+        textAbort?.abort();
         return;
       }
       if (!importArea) return;
-      if (scryInFlight) {
+  if (scryInFlight) {
         // Don't allow text import while Scryfall is running
         if (statusEl)
           statusEl.textContent =
@@ -374,9 +370,7 @@ export function installImportExport(
       const runOrCancel = async () => {
         if (scryInFlight) {
           // Treat click as cancel
-          try {
-            scryAbort?.abort();
-          } catch {}
+          scryAbort?.abort();
           return;
         }
         if (textInFlight) {
@@ -447,7 +441,7 @@ export function installImportExport(
     const elp = ensure();
     elp.style.display = "block"; // pre-populate export
     // Position under the Import/Export FAB if present
-    try {
+    {
       const fab = document.getElementById("ie-fab");
       if (fab) {
         const rect = fab.getBoundingClientRect();
@@ -463,7 +457,7 @@ export function installImportExport(
         elp.style.right = "auto";
         elp.style.transform = "translateX(-50%)";
       }
-    } catch {}
+    }
     // Use current scope selection when showing
     const scope: "all" | "selection" = scopeAll ? "all" : "selection";
     const txt = opts.getGroupsExportScoped
