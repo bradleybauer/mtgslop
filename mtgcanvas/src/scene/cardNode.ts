@@ -992,6 +992,11 @@ export function attachCardInteractions(
     const dragSprites = all.filter((c) => ids.includes(c.__id));
     // Persistently bring selected set to the top immediately on interaction
     try {
+      // Normalize z-range first to avoid unbounded growth while preserving relative order
+      try {
+        const w: any = window as any;
+        if (typeof w.__mtgNormalizeZ === "function") w.__mtgNormalizeZ();
+      } catch {}
       const draggingIds = new Set(dragSprites.map((d) => d.__id));
       let base = 0;
       for (const c of all) {

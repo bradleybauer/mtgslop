@@ -390,9 +390,68 @@ const splashEl = document.getElementById("splash");
   // Expose a read-only accessor for sprites for cross-module utilities (avoid circular deps)
   (window as any).__mtgGetSprites = () => sprites;
 
+  // Compute the minimum zIndex among regular world content (cards and groups).
+  function currentMinContentZ(): number {
+    let minZ = Number.POSITIVE_INFINITY;
+    try {
+      sprites.forEach((s) => {
+        const z = s.zIndex || 0;
+        if (z < minZ) minZ = z;
+      });
+    } catch {}
+    try {
+      groups.forEach((gv) => {
+        const z = gv.gfx?.zIndex || 0;
+        if (z < minZ) minZ = z;
+      });
+    } catch {}
+    return minZ === Number.POSITIVE_INFINITY ? 0 : minZ;
+  }
+
   // Persistently bring given groups (and their member cards) to the very top.
+  function normalizeContentZ() {
+    // Build ordered list of all content (groups + cards) by current z, then type, then id for stability
+    type Entry =
+      | { kind: "group"; id: number; z: number }
+      | { kind: "card"; id: number; z: number };
+    const entries: Entry[] = [];
+    groups.forEach((gv) =>
+      entries.push({ kind: "group", id: gv.id, z: gv.gfx?.zIndex || 0 }),
+    );
+    sprites.forEach((s) =>
+      entries.push({ kind: "card", id: s.__id, z: s.zIndex || 0 }),
+    );
+    if (!entries.length) return;
+    entries.sort((a, b) => {
+      if (a.z !== b.z) return a.z - b.z;
+      // For identical z, put groups before cards so cards get a strictly higher normalized z afterwards
+      if (a.kind !== b.kind) return a.kind === "group" ? -1 : 1;
+      return a.id - b.id;
+    });
+    // Assign compact, bounded z in [0, N]
+    let zVal = 0;
+    for (const e of entries) {
+      if (e.kind === "group") {
+        const gv = groups.get(e.id);
+        if (gv) gv.gfx.zIndex = zVal;
+      } else {
+        const s = sprites.find((sp) => sp.__id === e.id);
+        if (s) {
+          s.zIndex = zVal;
+          (s as any).__baseZ = zVal;
+        }
+      }
+      zVal += 1;
+    }
+  }
+  (window as any).__mtgNormalizeZ = normalizeContentZ;
+
   function bringGroupsToFrontPersistent(groupIds: number[]) {
     if (!groupIds || !groupIds.length) return;
+    // Normalize first so we operate on a compact, bounded range and preserve relative order
+    try {
+      normalizeContentZ();
+    } catch {}
     const ids = Array.from(new Set(groupIds));
     const draggedGroupIds = new Set<number>(ids);
     const draggedCardIds = new Set<number>();
@@ -1434,7 +1493,7 @@ const splashEl = document.getElementById("splash");
     el.id = "group-info-panel";
     // Match card info panel geometry, anchored bottom-right
     el.style.cssText =
-      "position:fixed;right:14px;bottom:14px;width:420px;max-width:45vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
+      "position:fixed;right:14px;bottom:14px;width:520px;max-width:55vw;max-height:80vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:18px;";
     el.className = "ui-panel";
 
     // Header (mirrors card panel header)
@@ -1611,17 +1670,17 @@ const splashEl = document.getElementById("splash");
     el.id = "card-info-panel";
     // Auto-height panel anchored to bottom-right; capped height; contents scroll if needed
     el.style.cssText =
-      "position:fixed;right:14px;bottom:14px;width:420px;max-width:45vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
+      "position:fixed;right:14px;bottom:14px;width:560px;max-width:60vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
     el.className = "ui-panel";
     el.innerHTML =
-      '<div id="cip-header" style="padding:10px 14px 6px;font-size:14px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:8px;">Card</div>' +
-      '<div id="cip-scroll" style="overflow:auto;padding:0 14px 18px;display:flex;flex-direction:column;gap:14px;">' +
-      '<div id="cip-empty" style="opacity:.55;padding:14px 4px;font-size:14px;">No card selected</div>' +
-      '<div id="cip-content" style="display:none;flex-direction:column;gap:28px;">' +
-      '<div id="cip-name" style="font-size:32px;font-weight:600;line-height:1.2;"></div>' +
-      '<div id="cip-meta" style="display:flex;flex-direction:column;gap:8px;font-size:18px;line-height:1.5;opacity:.9;"></div>' +
-      '<div id="cip-type" style="font-size:18px;opacity:.8;"></div>' +
-      '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:18px;line-height:1.6;padding:16px 18px;min-height:160px;"></div>' +
+      '<div id="cip-header" style="padding:12px 18px 8px;font-size:16px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:10px;">Card</div>' +
+      '<div id="cip-scroll" style="overflow:auto;padding:0 18px 22px;display:flex;flex-direction:column;gap:18px;">' +
+      '<div id="cip-empty" style="opacity:.55;padding:18px 6px;font-size:16px;">No card selected</div>' +
+      '<div id="cip-content" style="display:none;flex-direction:column;gap:32px;">' +
+      '<div id="cip-name" style="font-size:40px;font-weight:600;line-height:1.25;"></div>' +
+      '<div id="cip-meta" style="display:flex;flex-direction:column;gap:12px;font-size:20px;line-height:1.6;opacity:.95;"></div>' +
+      '<div id="cip-type" style="font-size:20px;opacity:.85;"></div>' +
+      '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:20px;line-height:1.75;padding:18px 20px;min-height:220px;"></div>' +
       "</div>" +
       "</div>";
     document.body.appendChild(el);
@@ -1663,14 +1722,14 @@ const splashEl = document.getElementById("splash");
     if (typeEl) typeEl.textContent = card.type_line || "";
     const oracleEl = panel.querySelector("#cip-oracle") as HTMLElement | null;
     if (oracleEl)
-      oracleEl.innerHTML = renderTextWithManaIcons(card.oracle_text || "");
+      oracleEl.innerHTML = renderTextWithManaIcons(card.oracle_text || "", 24);
     const metaEl = panel.querySelector("#cip-meta") as HTMLElement | null;
     if (metaEl) {
       const rows: string[] = [];
       // Cost with real mana icons
       if (card.mana_cost) {
         rows.push(
-          `<div><span style="font-weight:600;">Cost:</span> ${renderManaCostHTML(card.mana_cost)}</div>`,
+          `<div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:600;">Cost:</span> ${renderManaCostHTML(card.mana_cost, 26)}</div>`,
         );
       }
       // Price (USD or USD Foil)
@@ -1692,7 +1751,7 @@ const splashEl = document.getElementById("splash");
       // Color identity as icons
       if (Array.isArray(card.color_identity) && card.color_identity.length)
         rows.push(
-          `<div><span style="font-weight:600;">CI:</span> ${renderColorIdentityIcons(card.color_identity)}</div>`,
+          `<div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:600;">Color Identity:</span> ${renderColorIdentityIcons(card.color_identity, 26)}</div>`,
         );
       // Rarity
       if (card.rarity)
@@ -1703,7 +1762,7 @@ const splashEl = document.getElementById("splash");
       if (card.set) {
         const setCode = String(card.set).toLowerCase();
         const setName = escapeHtml(card.set_name || "");
-        const setImg = `<img src="https://svgs.scryfall.io/sets/${setCode}.svg" alt="${setCode.toUpperCase()}" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px;filter:drop-shadow(0 0 0 rgba(0,0,0,0.15));"/>`;
+        const setImg = `<img class="cip-set-icon" src="https://svgs.scryfall.io/sets/${setCode}.svg" alt="${setCode.toUpperCase()}" style="width:38px;height:38px;vertical-align:-9px;margin-right:12px;"/>`;
         const label = setName
           ? `${setName} (${setCode.toUpperCase()})`
           : setCode.toUpperCase();
@@ -1834,7 +1893,7 @@ const splashEl = document.getElementById("splash");
     };
   }
   // Render mana cost like "{1}{U}{U}" into inline SVG icons from Scryfall.
-  function renderManaCostHTML(cost: string): string {
+  function renderManaCostHTML(cost: string, size: number = 22): string {
     // Begin background load of symbology in case we need exact mappings
     try {
       ensureSymbologyLoaded();
@@ -1846,14 +1905,14 @@ const splashEl = document.getElementById("splash");
       const raw = m[1];
       const { src, code } = chooseSymbolUrl(raw);
       out.push(
-        `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(raw)}}" title="{${escapeHtml(raw)}}" style="width:22px;height:22px;vertical-align:-5px;margin:0 2px;" loading="lazy" decoding="async"/>`,
+        `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(raw)}}" title="{${escapeHtml(raw)}}" style="width:${size}px;height:${size}px;vertical-align:-7px;margin:0 1px;" loading="lazy" decoding="async"/>`,
       );
     }
     if (!out.length) return escapeHtml(cost);
     return out.join("");
   }
   // Render any text with embedded mana symbols like "Tap: {T}: Add {G}{G}" into HTML with icons, preserving newlines as <br>.
-  function renderTextWithManaIcons(text: string): string {
+  function renderTextWithManaIcons(text: string, size: number = 22): string {
     try {
       ensureSymbologyLoaded();
     } catch {}
@@ -1868,7 +1927,7 @@ const splashEl = document.getElementById("splash");
       const raw = m[1];
       const { src, code } = chooseSymbolUrl(raw);
       out.push(
-        `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(raw)}}" title="{${escapeHtml(raw)}}" style="width:22px;height:22px;vertical-align:-5px;margin:0 2px;" loading="lazy" decoding="async"/>`,
+        `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(raw)}}" title="{${escapeHtml(raw)}}" style="width:${size}px;height:${size}px;vertical-align:-7px;margin:0 1px;" loading="lazy" decoding="async"/>`,
       );
       last = re.lastIndex;
     }
@@ -1896,7 +1955,7 @@ const splashEl = document.getElementById("splash");
       };
     });
   }
-  function renderColorIdentityIcons(ci: string[]): string {
+  function renderColorIdentityIcons(ci: string[], size: number = 22): string {
     const order = ["W", "U", "B", "R", "G"];
     const sorted = ci
       .slice()
@@ -1905,7 +1964,7 @@ const splashEl = document.getElementById("splash");
       .map((sym) => {
         const raw = sym.toUpperCase();
         const { src, code } = chooseSymbolUrl(raw);
-        return `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(sym)}}" title="${escapeHtml(sym)}" style="width:22px;height:22px;vertical-align:-5px;margin:0 2px;opacity:.95;" loading="lazy" decoding="async"/>`;
+        return `<img class="mana-icon" data-code="${encodeURIComponent(code)}" src="${src}" alt="{${escapeHtml(sym)}}" title="${escapeHtml(sym)}" style="width:${size}px;height:${size}px;vertical-align:-7px;margin:0 1px;opacity:.97;" loading="lazy" decoding="async"/>`;
       })
       .join("");
   }
@@ -3530,6 +3589,10 @@ const splashEl = document.getElementById("splash");
       });
     }
     const usage = (perfEl as any).__usage;
+    const zMin = currentMinContentZ();
+    const zMax = (window as any).__mtgMaxContentZ
+      ? Number((window as any).__mtgMaxContentZ())
+      : 0;
     perfEl.textContent =
       `Status / Performance\n` +
       ` FPS: ${fps}\n` +
@@ -3537,6 +3600,7 @@ const splashEl = document.getElementById("splash");
       ` JS Heap: ${jsHeapLine.replace("JS ", "")}\n` +
       `\nCards\n` +
       ` Total Cards: ${sprites.length}\n` +
+      ` Z Min/Max: ${zMin} / ${zMax}\n` +
       `\nImages / Textures\n` +
       ` GPU Tex Mem: ${texLine.replace("Tex ", "")}\n` +
       ` Unique Tex Res: ${texResLine.replace("TexRes ", "")}\n` +

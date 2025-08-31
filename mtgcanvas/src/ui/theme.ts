@@ -244,7 +244,9 @@ export function ensureThemeStyles() {
     --btn-bg:${d.btnBg}; --btn-border:${d.btnBorder}; --btn-fg:${d.btnFg}; --btn-bg-hover:${d.btnBgHover};
     --danger-bg:${d.dangerBg}; --danger-border:${d.dangerBorder};
     --menu-hover-bg:${d.menuHoverBg}; --menu-divider-bg:${d.menuDividerBg};
-    --pill-bg:${d.pillBg}; --pill-border:${d.pillBorder}; --pill-fg:${d.pillFg}; --pill-active-outline:${d.pillActiveOutline};
+  --pill-bg:${d.pillBg}; --pill-border:${d.pillBorder}; --pill-fg:${d.pillFg}; --pill-active-outline:${d.pillActiveOutline};
+  /* Make set icons light on dark */
+  --set-icon-filter: invert(1) brightness(1.1) contrast(1.05);
   }
   /* LIGHT THEME */
   .theme-light {
@@ -264,7 +266,9 @@ export function ensureThemeStyles() {
     --btn-bg:${l.btnBg}; --btn-border:${l.btnBorder}; --btn-fg:${l.btnFg}; --btn-bg-hover:${l.btnBgHover};
     --danger-bg:${l.dangerBg}; --danger-border:${l.dangerBorder};
     --menu-hover-bg:${l.menuHoverBg}; --menu-divider-bg:${l.menuDividerBg};
-    --pill-bg:${l.pillBg}; --pill-border:${l.pillBorder}; --pill-fg:${l.pillFg}; --pill-active-outline:${l.pillActiveOutline};
+  --pill-bg:${l.pillBg}; --pill-border:${l.pillBorder}; --pill-fg:${l.pillFg}; --pill-active-outline:${l.pillActiveOutline};
+  /* Leave set icons unfiltered in light theme */
+  --set-icon-filter: none;
   }
   /* BLACK & YELLOW THEME */
   .theme-blackYellow {
@@ -285,7 +289,9 @@ export function ensureThemeStyles() {
     --btn-bg:${y.btnBg}; --btn-border:${y.btnBorder}; --btn-fg:${y.btnFg}; --btn-bg-hover:${y.btnBgHover};
     --danger-bg:${y.dangerBg}; --danger-border:${y.dangerBorder};
     --menu-hover-bg:${y.menuHoverBg}; --menu-divider-bg:${y.menuDividerBg};
-    --pill-bg:${y.pillBg}; --pill-border:${y.pillBorder}; --pill-fg:${y.pillFg}; --pill-active-outline:${y.pillActiveOutline};
+  --pill-bg:${y.pillBg}; --pill-border:${y.pillBorder}; --pill-fg:${y.pillFg}; --pill-active-outline:${y.pillActiveOutline};
+  /* High-contrast theme: ensure bright set icons */
+  --set-icon-filter: invert(1) sepia(0.2) saturate(1.2) brightness(1.15);
   }
   /* Panels */
   .ui-panel { background:var(--panel-bg-alt); backdrop-filter:blur(6px) saturate(1.2); -webkit-backdrop-filter:blur(6px) saturate(1.2); color:var(--panel-fg); border:1px solid var(--panel-border); border-radius:var(--panel-radius); font:18px/1.7 var(--panel-font); box-shadow:var(--panel-shadow); padding:22px 24px; }
@@ -320,6 +326,8 @@ export function ensureThemeStyles() {
   .theme-toggle-btn{ position:fixed; bottom:14px; left:14px; width:54px; height:54px; border-radius:50%; background:var(--fab-bg); color:var(--fab-fg); border:1px solid var(--fab-border); font:26px/54px var(--panel-font); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:var(--panel-shadow); transition:filter .2s, box-shadow .2s, background .2s; }
   .theme-toggle-btn:hover{ filter:brightness(1.06); box-shadow:${l.fabHoverShadow}; }
   body{ background:var(--canvas-bg); color:var(--panel-fg); }
+  /* Card Info Panel set icon */
+  .cip-set-icon{ filter: var(--set-icon-filter); }
   `;
   document.head.appendChild(style);
   // Restore persisted theme
