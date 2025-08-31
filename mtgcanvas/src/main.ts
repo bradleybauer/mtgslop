@@ -84,6 +84,8 @@ const GAP_X_GLOBAL = 4,
   GAP_Y_GLOBAL = 4; // minimal gaps achieving grid alignment
 const SPACING_X = CARD_W_GLOBAL + GAP_X_GLOBAL;
 const SPACING_Y = CARD_H_GLOBAL + GAP_Y_GLOBAL;
+// Global hard cap on number of card sprites in the scene
+const MAX_CARD_SPRITES = 40000;
 function snap(v: number) {
   return Math.round(v / GRID_SIZE) * GRID_SIZE;
 }
@@ -514,6 +516,9 @@ const splashEl = document.getElementById("splash");
 
   // Card layer & data (persisted instances)
   const sprites: CardSprite[] = [];
+  function remainingCapacity() {
+    return Math.max(0, MAX_CARD_SPRITES - sprites.length);
+  }
   // Groups container + visuals (initialized early so camera fit can consider them)
   const groups = new Map<number, GroupVisual>();
   // Transient z-order rules during drag: use very high z values below HUD/banner
@@ -617,6 +622,10 @@ const splashEl = document.getElementById("splash");
     }[],
   ): CardSprite[] {
     if (!items.length) return [];
+    // Enforce global cap: truncate items if needed
+    const cap = remainingCapacity();
+    if (cap <= 0) return [];
+    if (items.length > cap) items = items.slice(0, cap);
     const created: CardSprite[] = [];
     // Temporarily suppress UI saves and overlays churn
     const prevSuppress = SUPPRESS_SAVES;
@@ -824,10 +833,12 @@ const splashEl = document.getElementById("splash");
     }
     // Create sprites strictly based on saved positions per Scryfall id
     for (const card of cards) {
+      if (remainingCapacity() <= 0) break;
       const sid = String(card?.id || "");
       const pool = sid && savedByScry.get(sid);
       if (!pool || !pool.length) continue; // no saved instances -> don't recreate
       for (const entry of pool) {
+        if (remainingCapacity() <= 0) break;
         let id = entry.id;
         const x = entry.x;
         const y = entry.y;
@@ -971,7 +982,10 @@ const splashEl = document.getElementById("splash");
     tryInitialFit();
     finishStartup();
   } else {
-    loaded.instances.forEach((inst: any) => createSpriteForInstance(inst));
+    for (const inst of loaded.instances) {
+      if (remainingCapacity() <= 0) break;
+      createSpriteForInstance(inst as any);
+    }
     // Also add imported cards in memory mode even if repo returned instances (browser fallback only)
     await rehydrateImportedCards();
     applyStoredPositionsMemory();
@@ -1757,8 +1771,9 @@ const splashEl = document.getElementById("splash");
       // Set icon + full name + abbrev
       if (card.set) {
         const setCode = String(card.set).toLowerCase();
-        const setName = escapeHtml(card.set_name || "");
-        const setImg = `<img class="cip-set-icon" src="https://svgs.scryfall.io/sets/${setCode}.svg" alt="${setCode.toUpperCase()}" style="width:38px;height:38px;vertical-align:-9px;margin-right:12px;"/>`;
+        const setNameRaw = card.set_name || "";
+        const setName = escapeHtml(setNameRaw);
+        const setImg = `<img class="cip-set-icon" data-code="${encodeURIComponent(setCode)}" data-setname="${encodeURIComponent(setNameRaw)}" src="https://svgs.scryfall.io/sets/${setCode}.svg" alt="${setCode.toUpperCase()}" style="width:38px;height:38px;vertical-align:-9px;margin-right:12px;"/>`;
         const label = setName
           ? `${setName} (${setCode.toUpperCase()})`
           : setCode.toUpperCase();
@@ -1771,9 +1786,21 @@ const splashEl = document.getElementById("splash");
         rows.push(
           `<div><span style="font-weight:600;">Lang:</span> ${escapeHtml(card.lang)}</div>`,
         );
+      // Scryfall link
+      try {
+        const scryUrl =
+          (card as any).scryfall_uri || (card as any).id
+            ? `https://scryfall.com/cards/${encodeURIComponent((card as any).id)}`
+            : null;
+        if (scryUrl)
+          rows.push(
+            `<div><span style="font-weight:600;">Scryfall:</span> <a href="${scryUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--panel-accent);font-weight:600;">Open</a></div>`,
+          );
+      } catch {}
       metaEl.innerHTML = rows.join("");
       try {
         attachManaIconFallbacks(metaEl);
+        attachSetIconFallbacks(metaEl);
         const oracle = panel.querySelector("#cip-oracle") as HTMLElement | null;
         if (oracle) attachManaIconFallbacks(oracle);
         const faces = panel.querySelector("#cip-faces") as HTMLElement | null;
@@ -1797,6 +1824,77 @@ const splashEl = document.getElementById("splash");
           }) as any
         )[c] || c,
     );
+  }
+
+  // Cache for set icon URIs fetched from Scryfall Set API
+  const __setIconCache: Record<string, string> = Object.create(null);
+  const __setIconFetches: Record<
+    string,
+    Promise<string | null>
+  > = Object.create(null);
+  async function fetchSetIconUri(code: string): Promise<string | null> {
+    const k = String(code || "").toLowerCase();
+    if (!k) return null;
+    if (__setIconCache[k]) return __setIconCache[k];
+    if (Object.prototype.hasOwnProperty.call(__setIconFetches, k))
+      return __setIconFetches[k];
+    __setIconFetches[k] = (async () => {
+      try {
+        const res = await fetch(
+          `https://api.scryfall.com/sets/${encodeURIComponent(k)}`,
+        );
+        if (!res.ok) return null;
+        const json: any = await res.json();
+        const uri =
+          json && json.icon_svg_uri ? String(json.icon_svg_uri) : null;
+        if (uri) __setIconCache[k] = uri;
+        return uri;
+      } catch {
+        return null;
+      }
+    })();
+    return __setIconFetches[k];
+  }
+
+  // Resolver + fallback loader for set icons (handles API-provided icon, Secret Lair, and alternate CDN)
+  function attachSetIconFallbacks(scope: HTMLElement) {
+    const imgs = scope.querySelectorAll("img.cip-set-icon");
+    imgs.forEach((img) => {
+      let tries = 0;
+      const code = decodeURIComponent(img.getAttribute("data-code") || "");
+      const setName = decodeURIComponent(
+        img.getAttribute("data-setname") || "",
+      ).toLowerCase();
+      const primary = `https://svgs.scryfall.io/sets/${code}.svg`;
+      const altCdn = `https://c2.scryfall.com/file/scryfall-symbols/sets/${code}.svg`;
+      const secretLair = `https://svgs.scryfall.io/sets/sld.svg`;
+      const handler = () => {
+        tries++;
+        if (tries === 1) {
+          (img as HTMLImageElement).src = altCdn;
+          return;
+        }
+        if (
+          tries === 2 &&
+          (code.startsWith("sl") || setName.includes("secret lair"))
+        ) {
+          (img as HTMLImageElement).src = secretLair;
+          return;
+        }
+        // Give up: hide the icon to avoid a broken image
+        img.removeEventListener("error", handler);
+        (img as HTMLImageElement).src = primary; // reset to deterministic
+        (img as HTMLElement).style.display = "none";
+      };
+      // attach non-once so it can handle multiple fallbacks
+      img.addEventListener("error", handler);
+      // Try to resolve the authoritative icon URL via Scryfall Set API
+      fetchSetIconUri(code).then((uri) => {
+        if (uri && (img as HTMLImageElement).src !== uri) {
+          (img as HTMLImageElement).src = uri;
+        }
+      });
+    });
   }
 
   // --- Scryfall Symbology mapping (optional, to guarantee exact URIs) ---
@@ -2762,42 +2860,7 @@ const splashEl = document.getElementById("splash");
           }
         });
     }
-    if (card.__groupId) {
-      const divider = document.createElement("div");
-      divider.style.cssText =
-        "height:1px;background:var(--menu-divider-bg);margin:6px 4px;";
-      el.appendChild(divider);
-      addItem("Remove from current group", () => {
-        const old = card.__groupId ? groups.get(card.__groupId) : null;
-        if (old) {
-          console.log(
-            "[cardMenu] remove card",
-            card.__id,
-            "from group",
-            old.id,
-          );
-          removeCardFromGroup(old, card.__id);
-          card.__groupId = undefined;
-          try {
-            InstancesRepo.updateMany([{ id: card.__id, group_id: null }]);
-          } catch {}
-          // Ensure sprite reappears and is interactive after removal
-          (card as any).__groupOverlayActive = false;
-          (card as any).eventMode = "static";
-          card.cursor = "pointer";
-          card.alpha = 1;
-          card.visible = true;
-          card.renderable = true;
-          updateGroupMetrics(old, sprites);
-          drawGroup(old, SelectionStore.state.groupIds.has(old.id));
-          scheduleGroupSave();
-          updateCardSpriteAppearance(
-            card,
-            SelectionStore.state.cardIds.has(card.__id),
-          );
-        }
-      });
-    }
+    // Intentionally no "Remove from current group" option per request
     const bounds = app.renderer.canvas.getBoundingClientRect();
     el.style.left = `${bounds.left + globalPt.x + 4}px`;
     el.style.top = `${bounds.top + globalPt.y + 4}px`;
@@ -3269,10 +3332,9 @@ const splashEl = document.getElementById("splash");
     { passive: true },
   );
 
-  // Pan modes: space+left, middle button, or right button drag (on empty canvas/world area)
+  // Pan modes: space+left or right button drag (on empty canvas/world area)
   let panning = false; // spacebar modifier for left button
   let rightPanning = false; // active right-button pan
-  let midPanning = false; // active middle-button pan
   let lastX = 0;
   let lastY = 0;
   window.addEventListener("keydown", (e) => {
@@ -3285,7 +3347,7 @@ const splashEl = document.getElementById("splash");
     if (e.code === "Space") {
       panning = false;
       camera.endPan();
-      if (!rightPanning && !midPanning) document.body.style.cursor = "default";
+      if (!rightPanning) document.body.style.cursor = "default";
     }
   });
   app.stage.eventMode = "static";
@@ -3320,46 +3382,21 @@ const splashEl = document.getElementById("splash");
     }
   });
   app.stage.on("pointermove", (e) => {
-    if (
-      (panning && e.buttons & 1) ||
-      (rightPanning && e.buttons & 2) ||
-      (midPanning && e.buttons & 4)
-    )
+    if ((panning && e.buttons & 1) || (rightPanning && e.buttons & 2))
       applyPan(e);
   });
   const endPan = (e: PIXI.FederatedPointerEvent) => {
     if (e.button === 2 && rightPanning) {
       rightPanning = false;
-      if (!panning && !midPanning) document.body.style.cursor = "default";
+      if (!panning) document.body.style.cursor = "default";
     }
     // End of any pan gesture -> let camera glide if velocity is sufficient
-    if (!(e.buttons & 1) && !(e.buttons & 2) && !(e.buttons & 4))
-      camera.endPan();
+    if (!(e.buttons & 1) && !(e.buttons & 2)) camera.endPan();
   };
   app.stage.on("pointerup", endPan);
   app.stage.on("pointerupoutside", endPan);
-  // Middle button (direct on canvas element)
-  app.canvas.addEventListener("pointerdown", (ev) => {
-    const pev = ev as PointerEvent;
-    try {
-      camera.stopMomentum();
-    } catch {}
-    if (pev.button === 1) {
-      midPanning = true;
-      beginPan(pev.clientX, pev.clientY);
-    }
-  });
-  app.canvas.addEventListener("pointerup", (ev) => {
-    const pev = ev as PointerEvent;
-    if (pev.button === 1) {
-      midPanning = false;
-      camera.endPan();
-      if (!panning && !rightPanning) document.body.style.cursor = "default";
-    }
-  });
   app.canvas.addEventListener("mouseleave", () => {
-    if (midPanning || rightPanning) {
-      midPanning = false;
+    if (rightPanning) {
       rightPanning = false;
       camera.endPan();
       if (!panning) document.body.style.cursor = "default";
@@ -4991,9 +5028,11 @@ const splashEl = document.getElementById("splash");
       const ungroupedCards = resolveCards(data.ungrouped);
       // unknown was already computed from Scryfall not_found (if any).
       let imported = 0;
+      let limited = 0;
       // Create groups with cards
       for (const g of groupDefs) {
         if (!g.cards.length) continue;
+        if (remainingCapacity() <= 0) break;
         // Create instances for these cards; leverage existing placement/group helper
         const ids: number[] = [];
         let maxId = sprites.length
@@ -5001,6 +5040,10 @@ const splashEl = document.getElementById("splash");
           : 0;
         // Place temporarily at origin (they’ll be moved by group placement helper)
         for (const card of g.cards) {
+          if (remainingCapacity() <= 0) {
+            limited += 1;
+            break;
+          }
           let id: number;
           const x = 0,
             y = 0;
@@ -5019,11 +5062,12 @@ const splashEl = document.getElementById("splash");
         } catch {}
       }
       // Place ungrouped cards using the shared import planner (flow-around when applicable)
-      if (ungroupedCards.length) {
-        const planned = planImportPositions(
-          ungroupedCards.length,
-          buildPlacementContext(),
-        );
+      if (ungroupedCards.length && remainingCapacity() > 0) {
+        const cap = remainingCapacity();
+        const take = Math.min(cap, ungroupedCards.length);
+        if (take < ungroupedCards.length)
+          limited += ungroupedCards.length - take;
+        const planned = planImportPositions(take, buildPlacementContext());
         const positions = planned.positions;
         let maxId = sprites.length
           ? Math.max(...sprites.map((s) => s.__id))
@@ -5075,7 +5119,7 @@ const splashEl = document.getElementById("splash");
           localStorage.setItem(LS_KEY, JSON.stringify(data));
         }
       } catch {}
-      return { imported, unknown };
+      return { imported, unknown, limited } as any;
     },
     importByNames: async (items, opt) => {
       // Build lookup from currently loaded sprites by lowercase name -> card object
@@ -5092,6 +5136,7 @@ const splashEl = document.getElementById("splash");
       let placed = 0;
       let maxId = sprites.length ? Math.max(...sprites.map((s) => s.__id)) : 0;
       const created: CardSprite[] = [];
+      let limited = 0;
       const toPlace: { card: any; count: number }[] = [];
       const originalUnknown: string[] = [];
       for (const it of items) {
@@ -5130,7 +5175,12 @@ const splashEl = document.getElementById("splash");
         }
       }
       // Decide final block anchor and plan positions
-      const totalToPlace = toPlace.reduce((sum, p) => sum + p.count, 0);
+      let totalToPlace = toPlace.reduce((sum, p) => sum + p.count, 0);
+      if (remainingCapacity() <= 0) totalToPlace = 0;
+      else if (totalToPlace > remainingCapacity()) {
+        limited += totalToPlace - remainingCapacity();
+        totalToPlace = remainingCapacity();
+      }
       const { positions: planned, block: blk } = planImportPositions(
         totalToPlace,
         buildPlacementContext(),
@@ -5144,8 +5194,11 @@ const splashEl = document.getElementById("splash");
         z: number;
         card: any;
       }[] = [];
+      let capLeft = totalToPlace;
       for (const pl of toPlace) {
-        for (let i = 0; i < pl.count; i++) {
+        if (capLeft <= 0) break;
+        const n = Math.min(pl.count, capLeft);
+        for (let i = 0; i < n; i++) {
           const pos = planned[placed++];
           const x = pos.x,
             y = pos.y;
@@ -5158,6 +5211,7 @@ const splashEl = document.getElementById("splash");
           bulkItems.push({ id, x, y, z: zCounter++, card: pl.card });
           persistedCards.push(pl.card);
         }
+        capLeft -= n;
       }
       const bulkSprites = createSpritesBulk(bulkItems);
       created.push(...bulkSprites);
@@ -5185,7 +5239,7 @@ const splashEl = document.getElementById("splash");
       if (created.length) {
         camera.fitBounds(blk, { w: window.innerWidth, h: window.innerHeight });
       }
-      return { imported: created.length, unknown };
+      return { imported: created.length, unknown, limited } as any;
     },
     scryfallSearchAndPlace: async (query, opt) => {
       // Prevent overlapping runs at the backend level as well
@@ -5199,8 +5253,11 @@ const splashEl = document.getElementById("splash");
       try {
         anyWin.__mtg_scry_inflight = true;
         // Fetch cards from Scryfall with paging
+        // Determine allowed fetch size based on remaining capacity
+        const cap = remainingCapacity();
+        const fetchMax = Math.max(0, Math.min(cap, opt.maxCards ?? Infinity));
         const cards = await searchScryfall(query, {
-          maxCards: opt.maxCards,
+          maxCards: fetchMax,
           signal: (opt as any).signal,
           onProgress: (n, total) => {
             opt.onProgress?.(n, total);
@@ -5268,7 +5325,8 @@ const splashEl = document.getElementById("splash");
             h: window.innerHeight,
           });
         }
-        return { imported: created.length };
+        const limited = (opt.maxCards ?? Infinity) > fetchMax;
+        return { imported: created.length, limited } as any;
       } catch (e: any) {
         console.warn("[scryfall] search failed", e);
         return { imported: 0, error: e?.message || String(e) };

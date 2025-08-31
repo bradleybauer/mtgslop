@@ -287,7 +287,7 @@ export function installImportExport(
           },
         });
         if (statusEl)
-          statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+          statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
         importBtn.disabled = false;
         importBtn.textContent = prevLabel || "Import";
         return;
@@ -311,7 +311,7 @@ export function installImportExport(
           },
         });
         if (statusEl)
-          statusEl.textContent = `Imported ${res.imported}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+          statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
       } finally {
         importBtn.disabled = false;
         importBtn.textContent = prevLabel || "Import";
@@ -368,7 +368,7 @@ export function installImportExport(
           scryStatus &&
             (scryStatus.textContent = res.error
               ? res.error
-              : `Imported ${res.imported} cards.`);
+              : `Imported ${res.imported} cards${(res as any).limited ? " (limited by cap)" : ""}.`);
         } catch (e: any) {
           if (
             e &&

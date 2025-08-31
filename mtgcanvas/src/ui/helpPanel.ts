@@ -10,7 +10,7 @@ const HELP_SECTIONS = [
   {
     title: "Navigation",
     items: [
-      ["Pan", "Space+Drag / Middle Mouse Drag / Right Mouse Drag"],
+      ["Pan", "Space+Drag / Right Mouse Drag"],
       ["Zoom", "Mouse Wheel"],
       ["Zoom In / Out", "Ctrl + (+ / -)"],
       ["Fit All", "F"],
