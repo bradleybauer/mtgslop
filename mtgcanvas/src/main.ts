@@ -83,6 +83,7 @@ import {
 } from "./services/cardStore";
 import { clearImageCache } from "./services/imageCache";
 import { disableSpellAndGrammarGlobally } from "./ui/inputs";
+import { getEffectiveDpr, watchDpr } from "./ui/dpr";
 
 // Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
 
@@ -147,10 +148,28 @@ const splashEl = document.getElementById("splash");
     background: Colors.canvasBg() as any,
     resizeTo: window,
     antialias: true,
-    resolution: window.devicePixelRatio || 1,
+    resolution: getEffectiveDpr(),
     // Prefer WebGL over WebGPU on Linux for stability; can be toggled later if needed
     preference: "webgl" as any,
   });
+  // Favor rounding to device pixels for crisper sampling at stable zoom
+  try {
+    (app.renderer as any).roundPixels = true;
+  } catch {}
+  // React to DPR changes (monitor swaps, OS scale changes, browser zoom) and re-init resolution
+  try {
+    const onDprChange = () => {
+      const eff = getEffectiveDpr();
+      if ((app.renderer as any).resolution !== eff) {
+        (app.renderer as any).resolution = eff;
+        // Trigger a resize to apply new backbuffer size
+        try { app.resize(); } catch {}
+      }
+    };
+    const unwatch = watchDpr(onDprChange);
+    // Also expose for manual debug
+    (window as any).__unwatchDpr = unwatch;
+  } catch {}
   // Auto-detect a conservative GPU texture budget for this device (user override via localStorage: gpuBudgetMB)
   try {
     autoConfigureTextureBudget(app.renderer);
@@ -189,6 +208,11 @@ const splashEl = document.getElementById("splash");
   // Keep canvas hidden until ready (avoid pre-restore flicker)
   app.canvas.style.visibility = "hidden";
   document.body.appendChild(app.canvas);
+  // Guard against accidental CSS scaling of the WebGL canvas (which would blur)
+  try {
+    app.canvas.style.imageRendering = "auto"; // let WebGL handle filtering
+    app.canvas.style.transform = ""; // ensure we don't have CSS transforms
+  } catch {}
   // WebGL context loss handling: pause ticker and surface a message; try to recover on restore
   try {
     const canvas: any = app.renderer?.canvas || app.canvas;
@@ -6814,6 +6838,17 @@ const splashEl = document.getElementById("splash");
     (window as any).__frameDiag = {};
     const fStart = now;
     camera.update(dt);
+    // Align world transform to device pixels when camera is not actively moving to reduce subpixel blur
+    try {
+      const moving: boolean = !!(window as any).__camIsMoving;
+      if (!moving) {
+        const dpr = (app.renderer as any).resolution || getEffectiveDpr();
+        if (isFinite(dpr) && dpr > 0) {
+          world.position.x = Math.round(world.position.x * dpr) / dpr;
+          world.position.y = Math.round(world.position.y * dpr) / dpr;
+        }
+      }
+    } catch {}
     const tAfterCam = performance.now();
     // Track camera movement in world units to detect active panning/zooming and throttle work while moving
     try {
@@ -6889,6 +6924,17 @@ const splashEl = document.getElementById("splash");
     const tBudget0 = performance.now();
     try {
       enforceGpuBudgetForSprites(sprites);
+    } catch {}
+    // Optional: lightweight debug surface
+    try {
+      (window as any).__renderInfo = {
+        dpr: getEffectiveDpr(),
+        res: (app.renderer as any).resolution,
+        size: {
+          w: (app.renderer as any).width,
+          h: (app.renderer as any).height,
+        },
+      };
     } catch {}
     // If we're near the GPU cliff (>97% of budget), run the coalesced budget pass to carve headroom.
     try {

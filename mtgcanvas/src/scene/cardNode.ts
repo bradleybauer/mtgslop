@@ -3,6 +3,7 @@ import { SelectionStore } from "../state/selectionStore";
 import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
+import { getEffectiveDpr } from "../ui/dpr";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -976,11 +977,11 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
   if (!sprite.__card) return;
   const myGen = (sprite as any).__loadGen ?? 0;
   // Estimate on-screen pixel height
-  const deviceRatio = globalThis.devicePixelRatio || 1;
+  const deviceRatio = getEffectiveDpr();
   const pxHeight = 140 * scale * deviceRatio;
   let desired = 0;
   // Lower thresholds so we promote quality sooner (helps moderate zoom levels remain crisp)
-  if (pxHeight > 140)
+  if (pxHeight >= 140)
     desired = 2; // promote to png at lower on-screen size
   else if (pxHeight > 90) desired = 1; // switch to normal sooner
   // Avoid downgrade churn
