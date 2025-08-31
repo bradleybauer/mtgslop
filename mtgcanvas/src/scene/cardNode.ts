@@ -415,10 +415,6 @@ export function flushPendingTextureDestroys() {
       __pendingDestroySet.delete(ent.url);
       continue;
     }
-    // Still unreferenced: destroy now
-    try {
-      // ent.tex.destroy(true); // fuc
-    } catch {}
     textureCache.delete(ent.url);
     __pendingDestroySet.delete(ent.url);
     totalTextureBytes -= ent.bytes;
@@ -661,7 +657,7 @@ export function ensureCardImage(sprite: CardSprite) {
         }
         (sprite as any).__currentTexUrl = url;
       } catch {}
-  if (isTextureUsable(tex)) sprite.texture = tex;
+      if (isTextureUsable(tex)) sprite.texture = tex;
       sprite.width = 100;
       sprite.height = 140;
       sprite.__imgLoaded = true;
@@ -864,7 +860,7 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
           if (pe) pe.refs = Math.max(0, pe.refs - 1);
         }
       } catch {}
-  if (isTextureUsable(tex)) sprite.texture = tex;
+      if (isTextureUsable(tex)) sprite.texture = tex;
       sprite.width = 100;
       sprite.height = 140;
       sprite.__qualityLevel = cappedDesired;
@@ -1144,6 +1140,9 @@ export function attachCardInteractions(
   startMarquee?: (global: PIXI.Point, additive: boolean) => void,
   onDragMove?: (moved: CardSprite[]) => void,
 ) {
+  // Small movement threshold before we consider a drag (screen-space, conservative)
+  const LEFT_DRAG_THRESHOLD_PX = 4;
+  let pendingStartLocal: { x: number; y: number } | null = null;
   let dragState: null | {
     sprites: CardSprite[];
     // Original positions at drag start (for rigid-body delta application)
@@ -1151,6 +1150,47 @@ export function attachCardInteractions(
     // Local position where drag started (to compute intended delta)
     startLocal: { x: number; y: number };
   } = null;
+  function beginDrag(atLocal: { x: number; y: number }) {
+    // Compute selected sprites lazily (only when we actually start dragging)
+    const ids = SelectionStore.getCards();
+    // Prefer O(1) lookup via prebuilt map; fallback to scan if absent
+    const idMap: Map<number, CardSprite> | undefined = (window as any)
+      .__mtgIdToSprite as Map<number, CardSprite> | undefined;
+    const dragSprites: CardSprite[] = [];
+    for (const id of ids) {
+      const sp = idMap?.get(id);
+      if (sp) dragSprites.push(sp);
+    }
+    if (dragSprites.length !== ids.length) {
+      // Fallback for any missing
+      const all = getAll();
+      const missing = new Set(ids.filter((id) => !idMap?.has(id)));
+      if (missing.size) {
+        for (const s of all) if (missing.has(s.__id)) dragSprites.push(s);
+      }
+    }
+    // Raise above current content using global max z; avoid full normalization on drag start
+    try {
+      const w: any = window as any;
+      const getMax: any = w.__mtgMaxContentZ;
+      let base = (typeof getMax === "function" ? Number(getMax()) : 0) + 1;
+      // Stable ordering: keep relative baseZ
+      const ordered = dragSprites
+        .slice()
+        .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
+      for (const cs of ordered) {
+        cs.zIndex = base;
+        (cs as any).__baseZ = base;
+        base += 1;
+      }
+    } catch {}
+    dragState = {
+      sprites: dragSprites,
+      starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
+      startLocal: { x: atLocal.x, y: atLocal.y },
+    };
+    // Visual elevation applied above; nothing else to do
+  }
   s.on("pointerdown", (e: any) => {
     if (e.button !== 0) return; // only left button selects / drags
     if (isPanning && isPanning()) return; // ignore clicks while panning with space
@@ -1164,73 +1204,9 @@ export function attachCardInteractions(
     if (!e.shiftKey && !SelectionStore.state.cardIds.has(s.__id))
       SelectionStore.selectOnlyCard(s.__id);
     else if (e.shiftKey) SelectionStore.toggleCard(s.__id);
-    const ids = SelectionStore.getCards();
-    const all = getAll();
-    const dragSprites = all.filter((c) => ids.includes(c.__id));
-    // Persistently bring selected set to the top immediately on interaction
-    try {
-      // Normalize z-range first to avoid unbounded growth while preserving relative order
-      try {
-        const w: any = window as any;
-        if (typeof w.__mtgNormalizeZ === "function") w.__mtgNormalizeZ();
-      } catch {}
-      const draggingIds = new Set(dragSprites.map((d) => d.__id));
-      let base = 0;
-      for (const c of all) {
-        if (draggingIds.has(c.__id)) continue;
-        const z = c.zIndex || 0;
-        if (z > base) base = z;
-      }
-      base += 1;
-      const ordered = dragSprites
-        .slice()
-        .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
-      for (const cs of ordered) {
-        cs.zIndex = base;
-        (cs as any).__baseZ = base;
-        base += 1;
-      }
-      // Persist to LS quickly
-      try {
-        const w: any = window as any;
-        const sprites: any[] = (w.__mtgGetSprites && w.__mtgGetSprites()) || [];
-        const data = {
-          instances: sprites.map((sp: any) => ({
-            id: sp.__id,
-            x: sp.x,
-            y: sp.y,
-            z: sp.zIndex || sp.__baseZ || 0,
-            group_id: sp.__groupId ?? null,
-            scryfall_id: sp.__scryfallId || (sp.__card?.id ?? null),
-          })),
-          byIndex: sprites.map((sp: any) => ({ x: sp.x, y: sp.y })),
-        };
-        localStorage.setItem("mtgcanvas_positions_v1", JSON.stringify(data));
-      } catch {}
-    } catch {}
+    // Record local start; we’ll start drag only after a tiny movement threshold
     const startLocal = world.toLocal(e.global);
-    dragState = {
-      sprites: dragSprites,
-      starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
-      startLocal: { x: startLocal.x, y: startLocal.y },
-    };
-    // Elevate dragged cards above everything else using the current max content z
-    try {
-      const w: any = window as any;
-      const getMax: any = w.__mtgMaxContentZ;
-      const startBase =
-        (typeof getMax === "function" ? Number(getMax()) : 0) + 1;
-      // Stable ordering: keep their relative baseZ order for nicer visuals
-      const ordered = dragSprites
-        .slice()
-        .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
-      let base = startBase;
-      for (const cs of ordered) {
-        cs.zIndex = base++;
-      }
-    } catch {
-      // Fallback: leave z as-is if anything goes wrong
-    }
+    pendingStartLocal = { x: startLocal.x, y: startLocal.y };
   });
   const endDrag = (commit: boolean) => {
     if (!dragState) return;
@@ -1304,9 +1280,29 @@ export function attachCardInteractions(
     }
     dragState = null;
   };
-  stage.on("pointerup", () => endDrag(true));
-  stage.on("pointerupoutside", () => endDrag(true));
+  stage.on("pointerup", () => {
+    pendingStartLocal = null;
+    endDrag(true);
+  });
+  stage.on("pointerupoutside", () => {
+    pendingStartLocal = null;
+    endDrag(true);
+  });
   stage.on("pointermove", (e: any) => {
+    // If we have a pending click and no drag yet, check if movement exceeds threshold to begin drag
+    if (!dragState && pendingStartLocal) {
+      const localNow = world.toLocal(e.global);
+      // Convert world-space delta to screen-space approx using stage scale
+      const sc = (world as any)?.scale?.x || 1;
+      const dx = (localNow.x - pendingStartLocal.x) * sc;
+      const dy = (localNow.y - pendingStartLocal.y) * sc;
+      if (Math.hypot(dx, dy) >= LEFT_DRAG_THRESHOLD_PX) {
+        beginDrag(localNow);
+        // fall-through to apply first move below in same tick
+      } else {
+        return;
+      }
+    }
     if (!dragState) return;
     const local = world.toLocal(e.global);
     let moved = false;

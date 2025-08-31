@@ -19,6 +19,8 @@ export interface GroupRow {
 }
 
 const mem = { instances: [] as CardInstance[], groups: [] as GroupRow[] };
+// Fast id lookup for instances to avoid O(N) scans in hot update paths
+const instById = new Map<number, CardInstance>();
 let memInstanceId = 1;
 let memGroupId = 1;
 
@@ -36,6 +38,7 @@ export const InstancesRepo = {
       tags: null,
     };
     mem.instances.push(inst);
+  instById.set(inst.id, inst);
     return inst.id;
   },
   // Memory-only: create an instance with an explicit id (used to restore stable ids). No-op override for DB.
@@ -64,6 +67,7 @@ export const InstancesRepo = {
     // Avoid id collisions on subsequent creates
     if (row.id >= memInstanceId) memInstanceId = row.id + 1;
     mem.instances.push(inst);
+    instById.set(inst.id, inst);
     return inst.id;
   },
   list() {
@@ -71,12 +75,16 @@ export const InstancesRepo = {
   },
   deleteMany(ids: number[]) {
     if (!ids.length) return;
-    mem.instances = mem.instances.filter((i) => !ids.includes(i.id));
+    mem.instances = mem.instances.filter((i) => {
+      const keep = !ids.includes(i.id);
+      if (!keep) instById.delete(i.id);
+      return keep;
+    });
   },
   updatePositions(batch: { id: number; x: number; y: number }[]) {
     if (!batch.length) return;
     batch.forEach((r) => {
-      const inst = mem.instances.find((i) => i.id === r.id);
+      const inst = instById.get(r.id);
       if (inst) {
         inst.x = r.x;
         inst.y = r.y;
@@ -94,7 +102,7 @@ export const InstancesRepo = {
   ) {
     if (!batch.length) return;
     batch.forEach((r) => {
-      const inst = mem.instances.find((i) => i.id === r.id);
+      const inst = instById.get(r.id);
       if (inst) {
         if (r.x !== undefined) inst.x = r.x;
         if (r.y !== undefined) inst.y = r.y;
@@ -103,6 +111,42 @@ export const InstancesRepo = {
       }
     });
   },
+  // Optional debounced updater for very large batches across a frame.
+  updateManyDebounced: (function () {
+    let buf: {
+      id: number;
+      x?: number;
+      y?: number;
+      z?: number;
+      group_id?: number | null;
+    }[] = [];
+    let timer: any = null;
+    function flush() {
+      if (!buf.length) return;
+      const batch = buf;
+      buf = [];
+      InstancesRepo.updateMany(batch as any);
+    }
+    return function queue(batch: {
+      id: number;
+      x?: number;
+      y?: number;
+      z?: number;
+      group_id?: number | null;
+    }[]) {
+      if (batch && batch.length) buf.push(...batch);
+      if (timer) return;
+      timer = (globalThis as any).requestAnimationFrame
+        ? requestAnimationFrame(() => {
+            timer = null;
+            flush();
+          })
+        : setTimeout(() => {
+            timer = null;
+            flush();
+          }, 0);
+    };
+  })(),
   // Memory-only: ensure the next generated instance id is at least `min`
   ensureNextId(min: number) {
     if (typeof min === "number" && isFinite(min)) {

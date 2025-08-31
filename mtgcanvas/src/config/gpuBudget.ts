@@ -20,9 +20,7 @@ function getWebGLInfo(renderer: any): { vendor?: string; renderer?: string } {
     const gl: any = renderer?.gl || renderer?.context?.gl || undefined;
     if (!gl) return {};
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
-    const vendor = gl.getParameter(
-      dbg?.UNMASKED_VENDOR_WEBGL ?? gl.VENDOR,
-    );
+    const vendor = gl.getParameter(dbg?.UNMASKED_VENDOR_WEBGL ?? gl.VENDOR);
     const rendererStr = gl.getParameter(
       dbg?.UNMASKED_RENDERER_WEBGL ?? gl.RENDERER,
     );
@@ -38,7 +36,12 @@ function getWebGLInfo(renderer: any): { vendor?: string; renderer?: string } {
 export function detectGpuInfo(renderer: any): GpuInfo {
   const dm = getDeviceMemoryGB();
   const { vendor, renderer: r } = getWebGLInfo(renderer);
-  const info: GpuInfo = { api: "webgl", vendor, renderer: r, deviceMemoryGB: dm };
+  const info: GpuInfo = {
+    api: "webgl",
+    vendor,
+    renderer: r,
+    deviceMemoryGB: dm,
+  };
   try {
     (window as any).__gpuInfo = info;
   } catch {}
@@ -49,7 +52,9 @@ export function estimateGpuBudgetMB(info: GpuInfo): number {
   const sysGB = info.deviceMemoryGB ?? 8;
   const ven = (info.vendor || "").toLowerCase();
   const ren = (info.renderer || "").toLowerCase();
-  const isDiscrete = /(nvidia|geforce|rtx|gtx|amd|radeon|arc)/.test(ven + " " + ren);
+  const isDiscrete = /(nvidia|geforce|rtx|gtx|amd|radeon|arc)/.test(
+    ven + " " + ren,
+  );
   // Start from a fraction of system memory to play nicely with UMA and shared setups.
   // Use ~1/3 of reported system memory as a safe upper bound for texture budget.
   let mb = Math.floor((sysGB * 1024) / 3);
@@ -72,7 +77,9 @@ export function estimateGpuBudgetMB(info: GpuInfo): number {
 export function autoConfigureTextureBudget(renderer: any) {
   try {
     // Respect explicit user override
-    const overrideStr = localStorage.getItem("gpuBudgetMB") || localStorage.getItem("gpuBudgetMBOverride");
+    const overrideStr =
+      localStorage.getItem("gpuBudgetMB") ||
+      localStorage.getItem("gpuBudgetMBOverride");
     const ov = overrideStr ? Number(overrideStr) : NaN;
     if (Number.isFinite(ov) && ov > 0) {
       configureTextureSettings({ gpuBudgetMB: Math.floor(ov) });

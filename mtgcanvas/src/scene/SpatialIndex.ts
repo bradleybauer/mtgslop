@@ -29,6 +29,14 @@ export class SpatialIndex {
     this.remove(item.id);
     this.insert(item);
   }
+  // Update many items efficiently in one pass
+  bulkUpdate(items: SpatialItem[]) {
+    if (!items || !items.length) return;
+    // Remove previous entries by id (custom equals compares ids)
+    for (const it of items) this.remove(it.id);
+    // Then bulk load the new bounds
+    this.bulkLoad(items);
+  }
   search(minX: number, minY: number, maxX: number, maxY: number) {
     return this.tree.search({ minX, minY, maxX, maxY });
   }

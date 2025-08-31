@@ -367,9 +367,7 @@ export function layoutGroup(
   onMoved?: (s: CardSprite) => void,
 ) {
   if (gv.collapsed) return;
-  const items = gv.order
-    .map((id) => sprites.find((s) => s.__id === id))
-    .filter(Boolean) as CardSprite[];
+  const items = fastLookupSprites(gv.order, sprites);
   if (!items.length) return;
   const usableW = Math.max(1, gv.w - PAD_X * 2);
   const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
@@ -454,17 +452,17 @@ function memberSprites(
   sprites: CardSprite[],
   excludeId?: number,
 ): CardSprite[] {
-  return gv.order
-    .map((id) => sprites.find((s) => s.__id === id))
-    .filter((s): s is CardSprite => !!s && s.__id !== excludeId);
+  const list = fastLookupSprites(gv.order, sprites);
+  return excludeId == null ? list : list.filter((s) => s.__id !== excludeId);
 }
 
 // Ensure all member sprites render above the group's own graphics (frame/header/overlay).
 // Useful after restoring membership from persistence where zIndex wasn't adjusted by layout.
 export function ensureMembersZOrder(gv: GroupVisual, sprites: CardSprite[]) {
   const desired = (gv.gfx.zIndex ?? 0) + 1;
+  const idMap = getIdMapFast(sprites);
   for (const id of gv.items) {
-    const s = sprites.find((sp) => sp.__id === id);
+    const s = idMap.get(id);
     if (!s) continue;
     if (s.zIndex < desired) {
       s.zIndex = desired;
@@ -586,9 +584,7 @@ export function autoPackGroup(
   sprites: CardSprite[],
   onMoved?: (s: CardSprite) => void,
 ) {
-  const items = gv.order
-    .map((id) => sprites.find((s) => s.__id === id))
-    .filter(Boolean) as CardSprite[];
+  const items = fastLookupSprites(gv.order, sprites);
   if (!items.length) return;
   const n = items.length;
   const idealCols = Math.max(1, Math.round(Math.sqrt(n * (CARD_H / CARD_W))));
@@ -700,8 +696,9 @@ export function updateGroupTextQuality(
 // ---- Metrics (price + count) ----
 export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
   let total = 0;
+  const idMap = getIdMapFast(sprites);
   for (const id of gv.items) {
-    const sp = sprites.find((s) => s.__id === id);
+    const sp = idMap.get(id);
     const card = sp?.__card;
     if (card) {
       // Scryfall style pricing: card.prices.usd (string or null)
@@ -715,6 +712,35 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
   gv.totalPrice = total;
   // Refresh overlay (visible only) so totals stay in sync at macro zoom
   if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
+}
+
+// ---- Fast lookup helpers for large group ops ----
+function getIdMapFast(
+  sprites: CardSprite[],
+): Map<number, CardSprite> {
+  try {
+    const m = (window as any).__mtgIdToSprite as
+      | Map<number, CardSprite>
+      | undefined;
+    if (m && typeof m.get === "function") return m;
+  } catch {}
+  // Fallback: build a local index once
+  const idx = new Map<number, CardSprite>();
+  for (let i = 0; i < sprites.length; i++) idx.set(sprites[i].__id, sprites[i]);
+  return idx;
+}
+
+function fastLookupSprites(
+  ids: number[],
+  sprites: CardSprite[],
+): CardSprite[] {
+  const map = getIdMapFast(sprites);
+  const out: CardSprite[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const s = map.get(ids[i]);
+    if (s) out.push(s);
+  }
+  return out;
 }
 
 // ---------------- Zoom-Out Presentation -----------------
