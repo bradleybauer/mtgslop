@@ -112,6 +112,12 @@ export function createGroupVisual(
   gfx.y = y;
   gfx.eventMode = "static";
   gfx.cursor = "default";
+  // Enable Pixi built-in culling for the group container itself.
+  // Note: member cards are top-level siblings (not children) so their visibility is controlled elsewhere.
+  try {
+    (gfx as any).cullable = true;
+    (gfx as any).cullArea = new PIXI.Rectangle(0, 0, w, h);
+  } catch {}
   // Render groups beneath their member cards; cards will be assigned zIndex >= (group zIndex + 1)
   gfx.zIndex = 40; // elevated but still below dynamically raised dragging cards
   const frame = new PIXI.Graphics();
@@ -319,6 +325,22 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   resize.visible = false;
   resize.eventMode = "none";
   resize.hitArea = null as any;
+  // Keep the group container's culling bounds in sync with current size/state
+  try {
+    const gAny: any = gv.gfx as any;
+    gAny.cullable = true;
+    // When collapsed, only the header is visible and should participate in culling.
+    const cullH = collapsed ? HEADER_HEIGHT : h;
+    const ca = gAny.cullArea as PIXI.Rectangle | undefined;
+    if (ca) {
+      ca.x = 0;
+      ca.y = 0;
+      ca.width = w;
+      ca.height = cullH;
+    } else {
+      gAny.cullArea = new PIXI.Rectangle(0, 0, w, cullH);
+    }
+  } catch {}
   // If overlay could be visible, mark for reflow next tick.
   if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
@@ -337,7 +359,7 @@ function truncateLabelIfNeeded(gv: GroupVisual) {
 }
 
 // Layout cards into a grid inside group body.
-// Note: For freeform-in-group behavior, prefer ensureGroupEncapsulates() + placeCardInGroup().
+// Note: For freeform-in-group behavior
 // Regardless of strategy, card positions are always snapped to the global grid.
 export function layoutGroup(
   gv: GroupVisual,
@@ -437,43 +459,6 @@ function memberSprites(
     .filter((s): s is CardSprite => !!s && s.__id !== excludeId);
 }
 
-// Expand/shift the group to encapsulate all its member cards with padding, without moving cards.
-export function ensureGroupEncapsulates(
-  gv: GroupVisual,
-  sprites: CardSprite[],
-) {
-  if (!GROUP_AUTO_RESIZE) return; // respect global toggle (no auto-resize)
-  const items = memberSprites(gv, sprites);
-  if (!items.length) return;
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const s of items) {
-    if (s.x < minX) minX = s.x;
-    if (s.y < minY) minY = s.y;
-    if (s.x + CARD_W > maxX) maxX = s.x + CARD_W;
-    if (s.y + CARD_H > maxY) maxY = s.y + CARD_H;
-  }
-  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY))
-    return;
-  const desiredX = Math.floor(minX - PAD_X);
-  const desiredY = Math.floor(minY - HEADER_HEIGHT - PAD_Y);
-  const desiredW = Math.max(160, Math.ceil(maxX - minX + PAD_X * 2));
-  const desiredH = Math.max(
-    HEADER_HEIGHT + 80,
-    Math.ceil(HEADER_HEIGHT + PAD_Y + (maxY - minY) + PAD_Y + PAD_BOTTOM_EXTRA),
-  );
-  // Snap size to grid; position can remain freeform for smoother feel.
-  gv.w = snap(desiredW);
-  gv.h = snap(desiredH);
-  gv._expandedH = gv.h;
-  gv.gfx.x = desiredX;
-  gv.gfx.y = desiredY;
-  drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-  if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
-}
-
 // Ensure all member sprites render above the group's own graphics (frame/header/overlay).
 // Useful after restoring membership from persistence where zIndex wasn't adjusted by layout.
 export function ensureMembersZOrder(gv: GroupVisual, sprites: CardSprite[]) {
@@ -559,30 +544,7 @@ export function placeCardInGroup(
       }
     }
   }
-  if (!placed && GROUP_AUTO_RESIZE) {
-    // Make room: extend height by one row and place at first slot in new bottom row
-    const added = CARD_H + GAP_Y;
-    gv.h = snap(gv.h + added);
-    gv._expandedH = gv.h;
-    // New inner bottom
-    const newBottom = snap(gv.gfx.y + gv.h - PAD_Y - PAD_BOTTOM_EXTRA - CARD_H);
-    // Scan left->right for first fit in new bottom row
-    for (let x = snap(left); x <= right - CARD_W; x += step) {
-      if (fitsAt(x, newBottom)) {
-        px = x;
-        py = newBottom;
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      px = snap(left);
-      py = newBottom;
-      placed = true;
-    }
-    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-    positionZoomOverlay(gv);
-  } else if (!placed) {
+  if (!placed) {
     // No resize allowed: choose the least-overlapping grid slot within bounds
     let bestX = snap(left),
       bestY = snap(top);
@@ -617,45 +579,6 @@ export function placeCardInGroup(
     sprite.zIndex = desiredZ;
     (sprite as any).__baseZ = desiredZ;
   }
-}
-
-// ---- Global behavior toggles ----
-export let GROUP_AUTO_RESIZE = false; // default off per user preference
-export function setGroupAutoResize(v: boolean) {
-  GROUP_AUTO_RESIZE = !!v;
-}
-
-export function setGroupCollapsed(
-  gv: GroupVisual,
-  collapsed: boolean,
-  sprites: CardSprite[],
-) {
-  if (gv.collapsed === collapsed) return;
-  gv.collapsed = collapsed;
-  // Reset overlay phase when collapse state toggles to avoid stale presentation
-  gv._lastZoomPhase = 0;
-  if (collapsed) {
-    gv._expandedH = gv.h;
-    gv.h = HEADER_HEIGHT; // collapse to header only
-    // Hide children
-    for (const id of gv.items) {
-      const s = sprites.find((sp) => sp.__id === id);
-      if (s) {
-        s.visible = false;
-        s.renderable = false;
-      }
-    }
-  } else {
-    gv.h = gv._expandedH || gv.h;
-    for (const id of gv.items) {
-      const s = sprites.find((sp) => sp.__id === id);
-      if (s) {
-        s.visible = true;
-        s.renderable = true;
-      }
-    }
-  }
-  drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
 }
 
 export function autoPackGroup(
@@ -799,36 +722,8 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
 // whole group becomes a readable info tile at macro scale.
 // Thresholds (world scale): below HIGH start fade; at/below LOW overlay fully active.
 // Hard-coded to "kick in sharply at zooms < 1" per request.
-export let ZOOM_OVERLAY_HIGH = 0.85; // deactivate when zooming in past this
-export let ZOOM_OVERLAY_LOW = 0.75; // activate when zooming out past this
-export let ZOOM_OVERLAY_CURVE = 2.0; // >1 sharper, =1 linear
-
-// Developer override (e.g. via console) if future tuning desired; no persistence side effects.
-export function setGroupOverlayThresholds(
-  high: number,
-  low: number,
-  curve?: number,
-) {
-  if (!isFinite(high) || !isFinite(low)) return;
-  const MIN = 0.01,
-    MAX = 3;
-  high = Math.min(MAX, Math.max(MIN, high));
-  low = Math.min(MAX, Math.max(MIN, low));
-  if (low > high) [low, high] = [high, low];
-  ZOOM_OVERLAY_HIGH = high;
-  ZOOM_OVERLAY_LOW = low;
-  if (curve !== undefined && isFinite(curve) && curve > 0)
-    ZOOM_OVERLAY_CURVE = curve;
-  try {
-    const all: any[] = (window as any).__mtgGroups || [];
-    all.forEach((gv) => gv && (gv._lastZoomPhase = undefined));
-  } catch {}
-}
-
-// Convenience to force a true step function (no interpolation) at a threshold
-export function setGroupOverlayStep(threshold: number) {
-  setGroupOverlayThresholds(threshold, threshold, 1);
-}
+const ZOOM_OVERLAY_HIGH = 0.85; // deactivate when zooming in past this
+const ZOOM_OVERLAY_LOW = 0.75; // activate when zooming out past this
 
 function positionZoomOverlay(gv: GroupVisual) {
   if (!gv._zoomLabel) return;
@@ -979,8 +874,12 @@ export function updateGroupZoomPresentation(
       if (sp.alpha !== 0) sp.alpha = 0;
       if (sp.visible) {
         sp.visible = false;
-        sp.renderable = false;
         (sp as any).__hiddenAt = now;
+        // Mark overlay-hidden time for budget logic and optionally schedule a budget pass soon.
+        try {
+          (window as any).__overlayHiddenCount =
+            ((window as any).__overlayHiddenCount | 0) + 1;
+        } catch {}
       }
     } else {
       if (sp.cursor !== "pointer") sp.cursor = "pointer";
@@ -989,7 +888,6 @@ export function updateGroupZoomPresentation(
         sp.visible = true;
         (sp as any).__hiddenAt = undefined;
       }
-      if (!sp.renderable) sp.renderable = true;
     }
   }
   // Dim frame + header consistently (same opacity whether overlay is active or not)

@@ -10,11 +10,11 @@ export interface TextureSettings {
 
 // Defaults are conservative; can be tuned at runtime via configureTextureSettings()
 export const textureSettings: TextureSettings = {
-  gpuBudgetMB: 5096, // ~5 GB default budget
+  gpuBudgetMB: 4000, // 2 GB default budget to reduce pressure on typical GPUs
   disablePngTier: true,
   allowEvict: true,
   decodeParallelLimit: 32,
-  hiResLimit: Number.POSITIVE_INFINITY, // unlimited; rely on GPU budget for eviction
+  hiResLimit: 2000, // unlimited; rely on GPU budget for eviction
 };
 
 export function configureTextureSettings(p: Partial<TextureSettings>) {

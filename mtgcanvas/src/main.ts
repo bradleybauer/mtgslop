@@ -17,12 +17,18 @@ import {
   getHiResQueueLength,
   getInflightTextureCount,
   enforceGpuBudgetForSprites,
+  enforceTextureBudgetNow,
   getDecodeQueueSize,
   getHiResQueueDiagnostics,
   getDecodeQueueStats,
-  forceCompactHiResQueue,
+  getTextureBudgetStats,
+  flushPendingTextureDestroys,
 } from "./scene/cardNode";
-import { configureTextureSettings } from "./config/rendering";
+import {
+  configureTextureSettings,
+  textureSettings as texSettings,
+} from "./config/rendering";
+import { autoConfigureTextureBudget } from "./config/gpuBudget";
 import {
   getImageCacheStats,
   getCacheUsage,
@@ -40,7 +46,6 @@ import {
   updateGroupTextQuality,
   updateGroupMetrics,
   updateGroupZoomPresentation,
-  ensureGroupEncapsulates,
   ensureMembersZOrder,
   placeCardInGroup,
 } from "./scene/groupNode";
@@ -102,7 +107,13 @@ const splashEl = document.getElementById("splash");
     resizeTo: window,
     antialias: true,
     resolution: window.devicePixelRatio || 1,
+    // Prefer WebGL over WebGPU on Linux for stability; can be toggled later if needed
+    preference: "webgl" as any,
   });
+  // Auto-detect a conservative GPU texture budget for this device (user override via localStorage: gpuBudgetMB)
+  try {
+    autoConfigureTextureBudget(app.renderer);
+  } catch {}
   function parseCssHexColor(v: string): number | null {
     try {
       const s = (v || "").trim();
@@ -137,6 +148,49 @@ const splashEl = document.getElementById("splash");
   // Keep canvas hidden until ready (avoid pre-restore flicker)
   app.canvas.style.visibility = "hidden";
   document.body.appendChild(app.canvas);
+  // WebGL context loss handling: pause ticker and surface a message; try to recover on restore
+  try {
+    const canvas: any = app.renderer?.canvas || app.canvas;
+    let ctxLostBanner: HTMLDivElement | null = null;
+    function showCtxLostBanner(msg: string) {
+      if (!ctxLostBanner) {
+        ctxLostBanner = document.createElement("div");
+        ctxLostBanner.style.cssText =
+          "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:10050;padding:10px 14px;border-radius:8px;background:var(--panel-bg);color:var(--panel-fg);border:1px solid var(--panel-border);font:14px/1.4 var(--panel-font);";
+        document.body.appendChild(ctxLostBanner);
+      }
+      ctxLostBanner.textContent = msg;
+      ctxLostBanner.style.display = "block";
+    }
+    function hideCtxLostBanner() {
+      if (ctxLostBanner) ctxLostBanner.style.display = "none";
+    }
+    canvas.addEventListener(
+      "webglcontextlost",
+      (ev: any) => {
+        try {
+          ev.preventDefault();
+        } catch {}
+        try {
+          app.ticker.stop();
+        } catch {}
+        showCtxLostBanner("Graphics context lost. Attempting to recover…");
+      },
+      false,
+    );
+    canvas.addEventListener(
+      "webglcontextrestored",
+      (ev: any) => {
+        try {
+          hideCtxLostBanner();
+        } catch {}
+        try {
+          app.ticker.start();
+        } catch {}
+      },
+      false,
+    );
+  } catch {}
 
   const world = new PIXI.Container();
   app.stage.addChild(world);
@@ -446,73 +500,6 @@ const splashEl = document.getElementById("splash");
   }
   (window as any).__mtgNormalizeZ = normalizeContentZ;
 
-  function bringGroupsToFrontPersistent(groupIds: number[]) {
-    if (!groupIds || !groupIds.length) return;
-    // Normalize first so we operate on a compact, bounded range and preserve relative order
-    try {
-      normalizeContentZ();
-    } catch {}
-    const ids = Array.from(new Set(groupIds));
-    const draggedGroupIds = new Set<number>(ids);
-    const draggedCardIds = new Set<number>();
-    ids.forEach((id) => {
-      const gg = groups.get(id);
-      if (!gg) return;
-      gg.items.forEach((cid) => draggedCardIds.add(cid));
-    });
-    // Compute baseline excluding these groups and their members
-    let base = 0;
-    sprites.forEach((s) => {
-      if (draggedCardIds.has(s.__id)) return;
-      const z = s.zIndex || 0;
-      if (z > base) base = z;
-    });
-    groups.forEach((gv, id) => {
-      if (draggedGroupIds.has(id)) return;
-      const z = gv.gfx?.zIndex || 0;
-      if (z > base) base = z;
-    });
-    base += 1;
-    // Stable order: by current z then id, to preserve relative order between raised groups
-    const ordered = ids
-      .map((id) => ({ id, z: groups.get(id)?.gfx?.zIndex || 0 }))
-      .sort((a, b) => (a.z === b.z ? a.id - b.id : a.z - b.z))
-      .map((e) => e.id);
-    for (const id of ordered) {
-      const gg = groups.get(id);
-      if (!gg) continue;
-      gg.gfx.zIndex = base++;
-      gg.order.forEach((cid) => {
-        const sp = sprites.find((s) => s.__id === cid);
-        if (!sp) return;
-        sp.zIndex = base;
-        (sp as any).__baseZ = base;
-        base += 1;
-      });
-    }
-    // Persist: instances z and groups (which now include z)
-    try {
-      const data = {
-        instances: sprites.map((s) => ({
-          id: s.__id,
-          x: s.x,
-          y: s.y,
-          z: s.zIndex || (s as any).__baseZ || 0,
-          group_id: (s as any).__groupId ?? null,
-          scryfall_id:
-            (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-        })),
-        byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-      };
-      try {
-        InstancesRepo.updateMany(
-          data.instances.map((r) => ({ id: r.id, z: r.z })) as any,
-        );
-      } catch {}
-      localStorage.setItem(LS_KEY, JSON.stringify(data));
-    } catch {}
-    scheduleGroupSave();
-  }
   // Lightweight visual raise without persistence; used on drag start only
   function bringGroupsToFrontVisual(groupIds: number[]) {
     if (!groupIds || !groupIds.length) return;
@@ -1146,7 +1133,6 @@ const splashEl = document.getElementById("splash");
           s.cursor = "default";
           s.alpha = 0;
           s.visible = false;
-          s.renderable = false;
           (s as any).__hiddenAt = now;
         }
       }
@@ -1167,7 +1153,6 @@ const splashEl = document.getElementById("splash");
       s.cursor = "pointer";
       s.alpha = 1;
       s.visible = true;
-      s.renderable = true;
       updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
       membershipUpdates.push({ id: s.__id, group_id: null });
     }
@@ -1191,7 +1176,6 @@ const splashEl = document.getElementById("splash");
         sp.cursor = "pointer";
         sp.alpha = 1;
         sp.visible = true;
-        sp.renderable = true;
         updateCardSpriteAppearance(
           sp,
           SelectionStore.state.cardIds.has(sp.__id),
@@ -1309,7 +1293,6 @@ const splashEl = document.getElementById("splash");
         const sp = sprites.find((s) => s.__id === cid);
         if (sp) (sp as any).__baseZ = sp.zIndex || (sp as any).__baseZ || 0;
       });
-      ensureGroupEncapsulates(gv, sprites);
       updateGroupMetrics(gv, sprites);
       drawGroup(gv, false);
     });
@@ -1355,7 +1338,6 @@ const splashEl = document.getElementById("splash");
     // Layout groups with their members and ensure z-order above frames
     groups.forEach((gv) => {
       ensureMembersZOrder(gv, sprites);
-      ensureGroupEncapsulates(gv, sprites);
       updateGroupMetrics(gv, sprites);
       drawGroup(gv, false);
     });
@@ -1383,11 +1365,11 @@ const splashEl = document.getElementById("splash");
 
   // Runtime texture/gpu settings (no localStorage). Tune here as needed.
   configureTextureSettings({
-    gpuBudgetMB: 5096, // ~60% of 8GB
-    allowEvict: true, // reclaim unreferenced textures
-    disablePngTier: true, // keep medium-tier only for big boards; toggle off for small projects
-    decodeParallelLimit: 8, // safer default to avoid driver/decoder stress on huge datasets
-    hiResLimit: 2000, // cap number of hi-res textures retained concurrently
+    // Keep other runtime defaults; do not overwrite auto-detected budget here
+    allowEvict: true,
+    disablePngTier: false,
+    decodeParallelLimit: 16,
+    hiResLimit: 6000, // allow more level-1 textures resident to reduce churn with many groups
   });
   // (Ticker added later to include overlay presentation updates.)
 
@@ -2462,8 +2444,8 @@ const splashEl = document.getElementById("splash");
     let drag = false;
     let maybeDrag = false;
     let startLocal: { x: number; y: number } | null = null;
-    let startGX = 0,
-      startGY = 0;
+  let startGX = 0;
+  let startGY = 0;
     let dx = 0;
     let dy = 0;
     const g = gv.gfx;
@@ -2536,7 +2518,7 @@ const splashEl = document.getElementById("splash");
     // Reuse same drag logic; only trigger if overlay phase recently > 0 (tracked via _lastZoomPhase).
     gv.frame.cursor = "default";
     gv.frame.eventMode = "static";
-  gv.frame.on("pointerdown", (e: any) => {
+    gv.frame.on("pointerdown", (e: any) => {
       if (e.button !== 0) return;
       // Only consider using the frame as a drag surface if overlay is active AND there's no dedicated drag surface.
       if (!gv._lastZoomPhase || gv._lastZoomPhase < 0.05) return; // overlay not active enough
@@ -2561,13 +2543,13 @@ const splashEl = document.getElementById("splash");
       e.stopPropagation();
       if (!SelectionStore.state.groupIds.has(gv.id))
         SelectionStore.selectOnlyGroup(gv.id);
-  const local = world.toLocal(e.global);
-  startLocal = { x: local.x, y: local.y };
-  startGX = g.x;
-  startGY = g.y;
-  dx = local.x - g.x;
-  dy = local.y - g.y;
-  maybeDrag = true;
+      const local = world.toLocal(e.global);
+      startLocal = { x: local.x, y: local.y };
+      startGX = g.x;
+      startGY = g.y;
+      dx = local.x - g.x;
+      dy = local.y - g.y;
+      maybeDrag = true;
     });
     // Click body (non-overlay zoom): select group without starting a drag
     gv.frame.on("pointertap", (e: any) => {
@@ -2861,7 +2843,6 @@ const splashEl = document.getElementById("splash");
               card.cursor = "pointer";
               card.alpha = 1;
               card.visible = true;
-              card.renderable = true;
               updateCardSpriteAppearance(
                 card,
                 SelectionStore.state.cardIds.has(card.__id),
@@ -3154,12 +3135,6 @@ const splashEl = document.getElementById("splash");
         try {
           if (cardIds.length) InstancesRepo.deleteMany(cardIds);
         } catch {}
-        touchedGroups.forEach((gid) => {
-          const gv = groups.get(gid);
-          if (gv) {
-            ensureGroupEncapsulates(gv, sprites);
-          }
-        });
         if (touchedGroups.size) scheduleGroupSave();
         // If no cards and no groups remain, surface overlay
         updateEmptyStateOverlay();
@@ -3490,18 +3465,80 @@ const splashEl = document.getElementById("splash");
       console.warn("dumpDecodeQ failed", e);
     }
   };
-  (window as any).__forceCompact = () => {
-    try {
-      forceCompactHiResQueue();
-      console.log("[HiRes] forced compaction");
-    } catch (e) {
-      console.warn("forceCompact failed", e);
+  // One-call aggregated snapshot for bug reports
+  function buildPerfSnapshot() {
+    const scale = world.scale.x;
+    const fps = (window as any).__lastFps || 60;
+    const cam = {
+      scale,
+      wx: -world.position.x / scale,
+      wy: -world.position.y / scale,
+      moving: !!(window as any).__camIsMoving,
+    };
+    // Counts and quality/pending
+    const targetMaxLevel = texSettings.disablePngTier ? 1 : 2;
+    let q0 = 0,
+      q1 = 0,
+      q2 = 0,
+      loading = 0,
+      pending = 0,
+      vis = 0;
+    for (const s of sprites) {
+      if (s.visible) vis++;
+      const q = s.__qualityLevel ?? 0;
+      if (q === 0) q0++;
+      else if (q === 1) q1++;
+      else if (q === 2) q2++;
+      if (s.__hiResLoading || s.__imgLoading) loading++;
+      if (s.__imgLoaded && q < targetMaxLevel) pending++;
     }
+    const decodeQ = getDecodeQueueStats?.();
+    const hi = getHiResQueueDiagnostics?.();
+    const tex = getTextureBudgetStats?.();
+    const mem: any = (performance as any).memory;
+    const jsMB = mem ? mem.usedJSHeapSize / 1048576 : undefined;
+    const flags = {
+      safeMode: !!(window as any).__mtgSafeMode,
+      camMoving: !!(window as any).__camIsMoving,
+      decodeParallelLimit: texSettings.decodeParallelLimit,
+      hiResLimit: texSettings.hiResLimit,
+      disablePngTier: texSettings.disablePngTier,
+    };
+    const ops: any = (window as any).__frameDiag || {};
+    return {
+      ts: Date.now(),
+      fps,
+      cam,
+      counts: { cards: sprites.length, visible: vis, groups: groups.size },
+      quality: { small: q0, mid: q1, hi: q2, loading, pending },
+      decodeQ,
+      hiRes: hi,
+      texture: tex,
+      inflight: getInflightTextureCount(),
+      hiResQueueLen: getHiResQueueLength(),
+      flags,
+      ops,
+      jsHeapMB: jsMB,
+    };
+  }
+  (window as any).__mtgPerfSnapshot = () => buildPerfSnapshot();
+  (window as any).__mtgPerfCopy = async () => {
+    const snap = buildPerfSnapshot();
+    const json = JSON.stringify(snap, null, 2);
+    try {
+      await (navigator as any).clipboard?.writeText?.(json);
+      console.log("[mtgcanvas] Perf snapshot copied to clipboard.");
+    } catch {
+      console.log(json);
+    }
+    return snap;
   };
   let frameCount = 0;
   let lastFpsTime = performance.now();
   let fps = 0;
   let lsTimer: any = null;
+  // Keep a short history of FPS samples for watchdogs/throttles
+  (window as any).__fpsSamples = (window as any).__fpsSamples || [];
   function scheduleLocalSave() {
     if (SUPPRESS_SAVES) return;
     if (lsTimer) return;
@@ -3577,9 +3614,10 @@ const splashEl = document.getElementById("splash");
         else low++;
       }
     }
-    // Global pending (ignores visibility)
+    // Global pending (ignores visibility); respect PNG tier settings so 'pending' isn't inflated
+    const targetMaxLevel = texSettings.disablePngTier ? 1 : 2;
     for (const s of sprites) {
-      if (s.__imgLoaded && s.__qualityLevel !== 2) pending++;
+      if (s.__imgLoaded && (s.__qualityLevel ?? 0) < targetMaxLevel) pending++;
       const q = s.__qualityLevel;
       if (q === 0) q0++;
       else if (q === 1) q1++;
@@ -3614,6 +3652,13 @@ const splashEl = document.getElementById("splash");
       fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
       frameCount = 0;
       lastFpsTime = now;
+      try {
+        const samples: number[] = (window as any).__fpsSamples || [];
+        samples.push(fps);
+        while (samples.length > 20) samples.shift();
+        (window as any).__fpsSamples = samples;
+        (window as any).__lastFps = fps;
+      } catch {}
     }
     if (now - lastMemSample > 1000) {
       sampleMemory();
@@ -3631,11 +3676,11 @@ const splashEl = document.getElementById("splash");
     const zMax = (window as any).__mtgMaxContentZ
       ? Number((window as any).__mtgMaxContentZ())
       : 0;
-  // Throttle DOM update to ~4 Hz to avoid layout cost every frame
-  const lastPerfDom: number = (perfEl as any).__lastDomWrite || 0;
-  if (now - lastPerfDom < 250) return;
-  (perfEl as any).__lastDomWrite = now;
-  perfEl.textContent =
+    // Throttle DOM update to ~4 Hz to avoid layout cost every frame
+    const lastPerfDom: number = (perfEl as any).__lastDomWrite || 0;
+    if (now - lastPerfDom < 250) return;
+    (perfEl as any).__lastDomWrite = now;
+    perfEl.textContent =
       `Status / Performance\n` +
       ` FPS: ${fps}\n` +
       ` Zoom: ${world.scale.x.toFixed(2)}x\n` +
@@ -3645,6 +3690,7 @@ const splashEl = document.getElementById("splash");
       ` Z Min/Max: ${zMin} / ${zMax}\n` +
       `\nImages / Textures\n` +
       ` GPU Tex Mem: ${texLine.replace("Tex ", "")}\n` +
+  ` GPU Budget: ${texSettings.gpuBudgetMB} MB\n` +
       ` Unique Tex Res: ${texResLine.replace("TexRes ", "")}\n` +
       ` Hi-Res Pending: ${hiResPendingLine.replace("GlobalPending ", "")}\n` +
       ` Quality Levels: ${qualLine.replace("Qual ", "").replace(/q0:/, "small:").replace(/q1:/, "mid:").replace(/q2:/, "hi:").replace("load:", "loading:")}\n` +
@@ -3653,6 +3699,16 @@ const splashEl = document.getElementById("splash");
       ` In-Flight Decodes: ${getInflightTextureCount()}\n` +
       ` Decode Queue: ${decodeQLine.replace("DecodeQ ", "")}\n` +
       ` ${decodeDiagLine}\n` +
+      (() => {
+        try {
+          const m = (window as any).__frameDiag || {};
+          const line = ` Ops upg:${m.upg || 0} load:${m.load || 0} down:${m.down || 0} budget:${(m.budgetMs || 0).toFixed?.(1) || 0}ms inflight:${m.inflight || 0}`;
+          (window as any).__frameDiag = {};
+          return ` ${line}\n`;
+        } catch {
+          return "";
+        }
+      })() +
       `\nCache Layers\n` +
       ` Session Hits: ${stats.sessionHits}  IDB Hits: ${stats.idbHits}  Canonical Hits: ${stats.canonicalHits}\n` +
       `\nNetwork\n` +
@@ -4009,14 +4065,13 @@ const splashEl = document.getElementById("splash");
         updates.push({ id: s.__id, group_id: null });
       }
       // Important: if zoom overlay was active, cards may be hidden/non-interactive -> restore defaults
-  if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
-  // Fully reset any hidden/renderable flags that may persist from overlay/group modes
-  if (!s.visible) s.visible = true;
-  if (!s.renderable) s.renderable = true;
-  if (s.alpha !== 1) s.alpha = 1;
-  (anyS).__hiddenAt = undefined;
-  (anyS).__inflightLevel = 0;
-  (anyS).__pendingLevel = 0;
+      if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
+      // Fully reset any hidden flags that may persist from overlay/group modes
+      if (!s.visible) s.visible = true;
+      if (s.alpha !== 1) s.alpha = 1;
+      anyS.__hiddenAt = undefined;
+      anyS.__inflightLevel = 0;
+      anyS.__pendingLevel = 0;
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       if (s.cursor !== "pointer") s.cursor = "pointer";
       // Refresh placeholder appearance & selection outline
@@ -4065,15 +4120,14 @@ const splashEl = document.getElementById("splash");
     sprites.forEach((s) => {
       const anyS: any = s as any;
       if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
-  if (anyS.__groupId) anyS.__groupId = undefined;
+      if (anyS.__groupId) anyS.__groupId = undefined;
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       s.cursor = "pointer";
       s.alpha = 1;
       s.visible = true;
-      s.renderable = true;
-  (anyS).__hiddenAt = undefined;
-  (anyS).__inflightLevel = 0;
-  (anyS).__pendingLevel = 0;
+      anyS.__hiddenAt = undefined;
+      anyS.__inflightLevel = 0;
+      anyS.__pendingLevel = 0;
       try {
         updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
       } catch {}
@@ -4812,22 +4866,25 @@ const splashEl = document.getElementById("splash");
       (s) => s.visible && s.__imgLoaded && !(s as any).__groupOverlayActive,
     );
     if (!visibles.length) return;
-  // Adaptive throughput based on decode queue pressure
+    // Adaptive throughput based on decode queue pressure and FPS
     const q = getDecodeQueueSize();
-    // Base throughput
-    let perFrame = anyOverlay ? 8 : 60;
-  // If zoom just changed very recently, keep throughput low to avoid jank
-  const lastAt: number = (window as any).__lastZoomChangedAt || 0;
-  if (performance.now() - lastAt < 150) perFrame = Math.min(perFrame, 8);
-    if (q > 600) perFrame = 10;
-    else if (q > 400) perFrame = 20;
-    else if (q > 200) perFrame = 40;
-    else if (q < 50) perFrame = 80;
-    if (anyOverlay) perFrame = Math.min(perFrame, 12);
-    if (scale > 5) perFrame = 90;
-    if (scale > 8) perFrame = 120;
-    if (scale > 10) perFrame = 160;
-    perFrame = Math.min(perFrame, visibles.length);
+    const curFps: number = (window as any).__lastFps || 60;
+    // Start with a hard cap that only decreases
+    let cap = anyOverlay ? 6 : 40;
+    if ((window as any).__mtgSafeMode) cap = Math.min(cap, 6);
+    if ((window as any).__camIsMoving) cap = Math.min(cap, 4);
+    if (curFps < 30) cap = Math.min(cap, 4);
+    if (curFps < 25) cap = Math.min(cap, 1);
+    // If zoom just changed very recently, keep throughput very low to avoid jank
+    const lastAt: number = (window as any).__lastZoomChangedAt || 0;
+    if (performance.now() - lastAt < 150) cap = Math.min(cap, 4);
+    // Suggestion based on decode queue; never increase above cap
+    let suggest = 12;
+    if (q > 600) suggest = 6;
+    else if (q > 400) suggest = 10;
+    else if (q > 200) suggest = 16;
+    else if (q < 50) suggest = 8;
+    const perFrame = Math.min(cap, suggest, visibles.length);
     // Boost priority using distance to the viewport center computed in world space (no per-sprite toGlobal)
     const cx = window.innerWidth / 2,
       cy = window.innerHeight / 2;
@@ -4843,19 +4900,36 @@ const splashEl = document.getElementById("splash");
     scored.sort((a, b) => a.dist2 - b.dist2);
     let processed = 0;
     // First pass: upgrade closest N, but stop early under extreme pressure
-    const burst = q > 600 ? 4 : q > 400 ? 8 : 20;
+    const burst =
+      (window as any).__mtgSafeMode ||
+      (window as any).__camIsMoving ||
+      curFps < 25
+        ? 1
+        : q > 600
+          ? 2
+          : q > 400
+            ? 4
+            : 8;
     for (
       let i = 0;
       i < scored.length && processed < Math.min(burst, perFrame);
       i++
     ) {
       updateCardTextureForScale(scored[i].s, scale);
+      try {
+        const d: any = ((window as any).__frameDiag ||= {});
+        d.upg = (d.upg || 0) + 1;
+      } catch {}
       processed++;
     }
     // Second pass: round-robin remainder to keep breadth
     for (let i = 0; i < visibles.length && processed < perFrame; i++) {
       hiResCursor = (hiResCursor + 1) % visibles.length;
       updateCardTextureForScale(visibles[hiResCursor], scale);
+      try {
+        const d: any = ((window as any).__frameDiag ||= {});
+        d.upg = (d.upg || 0) + 1;
+      } catch {}
       processed++;
     }
   }
@@ -5512,6 +5586,22 @@ const splashEl = document.getElementById("splash");
           } catch {}
         }
       }, 250);
+
+      // DevTools helpers: capture current per-frame diag and last profile buffer
+      (window as any).__mtgPerfDiag = () => {
+        try {
+          return { ...(window as any).__frameDiag };
+        } catch {
+          return {};
+        }
+      };
+      (window as any).__mtgPerfProfile = () => {
+        try {
+          return (window as any).__mtgPerfLastProfile || [];
+        } catch {
+          return [];
+        }
+      };
     }
     function wirePanelHover() {
       if (wiredPanel) return;
@@ -5658,7 +5748,6 @@ const splashEl = document.getElementById("splash");
       touchedOld.forEach((gid) => {
         const og = groups.get(gid);
         if (!og) return;
-        ensureGroupEncapsulates(og, sprites);
         updateGroupMetrics(og, sprites);
         drawGroup(og, SelectionStore.state.groupIds.has(og.id));
       });
@@ -5741,7 +5830,6 @@ const splashEl = document.getElementById("splash");
     touchedOld.forEach((gid) => {
       const og = groups.get(gid);
       if (!og) return;
-      ensureGroupEncapsulates(og, sprites);
       updateGroupMetrics(og, sprites);
       drawGroup(og, SelectionStore.state.groupIds.has(og.id));
     });
@@ -5765,7 +5853,7 @@ const splashEl = document.getElementById("splash");
 
   // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
   let last = performance.now();
-  // Basic culling (placeholder): hide sprites far outside viewport (>2x viewport bounds)
+  // Basic culling: hide sprites far outside viewport (>2x viewport bounds)
   // Cache last bounds to avoid redundant full scans on tiny camera moves
   let __lastCull = { left: NaN, top: NaN, right: NaN, bottom: NaN };
   function runCulling() {
@@ -5788,20 +5876,26 @@ const splashEl = document.getElementById("splash");
     }
     __lastCull = { left, top, right, bottom };
     const now = performance.now();
+    let checked = 0;
+    let toggled = 0;
     for (const s of sprites) {
+      checked++;
       const vis =
         s.x + CARD_W_GLOBAL >= left &&
         s.x <= right &&
         s.y + CARD_H_GLOBAL >= top &&
         s.y <= bottom;
       if (vis !== s.visible) {
-        s.renderable = vis;
         s.visible = vis; // toggle both for safety
         const anyS: any = s as any;
         if (!vis) anyS.__hiddenAt = now;
         else if (anyS.__hiddenAt) anyS.__hiddenAt = undefined;
+        toggled++;
       }
     }
+    const d: any = ((window as any).__frameDiag ||= {});
+    d.cullChecked = (d.cullChecked || 0) + checked;
+    d.cullToggled = (d.cullToggled || 0) + toggled;
   }
 
   // Lazy image loader: load some visible card images each frame
@@ -5814,22 +5908,32 @@ const splashEl = document.getElementById("splash");
     let attempts = 0;
     // Adapt based on decode queue size
     const q = getDecodeQueueSize();
-    if (q > 400) LOAD_PER_FRAME = 20;
-    else if (q > 200) LOAD_PER_FRAME = 40;
-    else if (q < 50) LOAD_PER_FRAME = 90;
-    else LOAD_PER_FRAME = 70;
+    const camMoving: boolean = !!(window as any).__camIsMoving;
+    const curFps: number = (window as any).__lastFps || 60;
+    if (q > 400) LOAD_PER_FRAME = camMoving ? 6 : 16;
+    else if (q > 200) LOAD_PER_FRAME = camMoving ? 10 : 28;
+    else if (q < 50) LOAD_PER_FRAME = camMoving ? 18 : 80;
+    else LOAD_PER_FRAME = camMoving ? 12 : 60;
+    if (curFps < 25)
+      LOAD_PER_FRAME = Math.min(LOAD_PER_FRAME, camMoving ? 4 : 10);
+    // While FPS is low, avoid doing many promotions from this loader; rely on the separate hi-res upgrader
+    const allowPromotions = curFps >= 25 && !camMoving;
+    let promoteBudget = allowPromotions ? 12 : 0; // hard cap promotions from loader per frame
     const scale = world.scale.x;
     // Compute an expanded culling rect to prefetch just-outside cards
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const inv = 1 / scale;
-    const pad = 300; // prefetch margin
+    const pad = (window as any).__camIsMoving ? 120 : 300; // smaller prefetch while moving
     const left = -world.position.x * inv - pad;
     const top = -world.position.y * inv - pad;
     const right = left + vw * inv + pad * 2;
     const bottom = top + vh * inv + pad * 2;
-  const MAX_ATTEMPTS = Math.min(len, LOAD_PER_FRAME * 6);
-  while (loaded < LOAD_PER_FRAME && attempts < MAX_ATTEMPTS) {
+    const MAX_ATTEMPTS = Math.min(
+      len,
+      curFps < 25 ? LOAD_PER_FRAME * 2 : LOAD_PER_FRAME * 6,
+    );
+    while (loaded < LOAD_PER_FRAME && attempts < MAX_ATTEMPTS) {
       imgCursor = (imgCursor + 1) % len;
       attempts++;
       const s = sprites[imgCursor];
@@ -5845,39 +5949,101 @@ const splashEl = document.getElementById("splash");
         if ((s as any).__groupOverlayActive) continue; // don't kick base loads for hidden-by-overlay items at macro zoom
         ensureCardImage(s);
         loaded++;
+        try {
+          const d: any = ((window as any).__frameDiag ||= {});
+          d.load = (d.load || 0) + 1;
+        } catch {}
       } else {
-        if (!(s as any).__groupOverlayActive)
+        // Avoid promotions while camera is moving to reduce churn
+        if (
+          !(s as any).__groupOverlayActive &&
+          allowPromotions &&
+          promoteBudget > 0
+        ) {
           updateCardTextureForScale(s, scale);
+          promoteBudget--;
+          try {
+            const d: any = ((window as any).__frameDiag ||= {});
+            d.upg = (d.upg || 0) + 1;
+          } catch {}
+        }
       }
     }
+    try {
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.loadAttempts = (d.loadAttempts || 0) + attempts;
+      d.loadLoaded = (d.loadLoaded || 0) + loaded;
+    } catch {}
   }
 
   // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
-  const __tmpCenter = new PIXI.Point();
-  let __lastZoomAt = 0;
   app.ticker.add(() => {
     const now = performance.now();
     const dt = now - last;
     last = now;
+    // reset per-frame diagnostics and mark frame start
+    (window as any).__frameDiag = {};
+    const fStart = now;
     camera.update(dt);
+    const tAfterCam = performance.now();
+    // Track camera movement in world units to detect active panning/zooming and throttle work while moving
+    try {
+      const scaleNow = world.scale.x;
+      const camWX = -world.position.x / scaleNow;
+      const camWY = -world.position.y / scaleNow;
+      const prevWX: number = (window as any).__camWX ?? camWX;
+      const prevWY: number = (window as any).__camWY ?? camWY;
+      const moved = Math.hypot(camWX - prevWX, camWY - prevWY);
+      (window as any).__camWX = camWX;
+      (window as any).__camWY = camWY;
+      if (moved > 2) (window as any).__lastCamMovedAt = now;
+      const lastCamMoved: number = (window as any).__lastCamMovedAt || 0;
+      (window as any).__camIsMoving = now - lastCamMoved < 220;
+    } catch {}
+    const tCull0 = performance.now();
     runCulling();
+    const tCull1 = performance.now();
+    const tLoad0 = tCull1;
     loadVisibleImages();
+    const tLoad1 = performance.now();
+    const tUpg0 = tLoad1;
     upgradeVisibleHiRes();
+    const tUpg1 = performance.now();
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
     (window as any).__fc = fc;
+    const tId0 = performance.now();
     if (fc % 12 === 0 || !(window as any).__mtgIdToSprite) {
       const idToSprite: Map<number, CardSprite> = new Map();
       for (const s of sprites) idToSprite.set(s.__id, s);
       (window as any).__mtgIdToSprite = idToSprite;
     }
+    const tId1 = performance.now();
     // Enforce GPU budget by demoting offscreen sprites when over the cap
+    const tBudget0 = performance.now();
     try {
       enforceGpuBudgetForSprites(sprites);
+    } catch {}
+    // If we're near the GPU cliff (>97% of budget), run the coalesced budget pass to carve headroom.
+    try {
+      const ts = getTextureBudgetStats?.();
+      if (ts && ts.budgetMB > 0) {
+        const overHigh = ts.totalTextureMB > ts.budgetMB * 0.97;
+        if (overHigh) enforceTextureBudgetNow();
+        // surface inflight count in per-frame diag as well
+        const d: any = ((window as any).__frameDiag ||= {});
+        d.inflight = getInflightTextureCount();
+      }
+    } catch {}
+    const tBudget1 = performance.now();
+    // Flush any pending texture destruction safely once per frame.
+    try {
+      flushPendingTextureDestroys();
     } catch {}
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
+    const tGrp0 = performance.now();
     if (Math.abs(scale - lastScale) > 0.01) {
       (window as any).__lastZoomChangedAt = now;
       // Compute expanded viewport bounds once (world space)
@@ -5889,18 +6055,25 @@ const splashEl = document.getElementById("splash");
       const top = -world.position.y * inv - pad;
       const right = left + vw * inv + pad * 2;
       const bottom = top + vh * inv + pad * 2;
+      let groupsUpdated = 0;
       groups.forEach((gv) => {
         const gx1 = gv.gfx.x;
         const gy1 = gv.gfx.y;
         const gx2 = gx1 + gv.w;
         const gy2 = gy1 + gv.h;
-        const inView = gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
+        const inView =
+          gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
         const overlayActive = (gv._lastZoomPhase || 0) > 0.05;
         if (inView && !overlayActive) updateGroupTextQuality(gv, scale);
         if (inView) updateGroupZoomPresentation(gv, scale, sprites);
         (gv as any).__lastInView = inView;
+        if (inView) groupsUpdated++;
       });
       (window as any).__lastGroupUpdateScale = scale;
+      try {
+        const d: any = ((window as any).__frameDiag ||= {});
+        d.groupsUpdated = (d.groupsUpdated || 0) + groupsUpdated;
+      } catch {}
     }
     // If scale hasn't changed, still fix up groups that just entered the viewport so their overlay state is correct.
     {
@@ -5912,12 +6085,14 @@ const splashEl = document.getElementById("splash");
       const top = -world.position.y * inv - pad;
       const right = left + vw * inv + pad * 2;
       const bottom = top + vh * inv + pad * 2;
+      let groupsChecked2 = 0;
       groups.forEach((gv) => {
         const gx1 = gv.gfx.x;
         const gy1 = gv.gfx.y;
         const gx2 = gx1 + gv.w;
         const gy2 = gy1 + gv.h;
-        const inView = gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
+        const inView =
+          gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
         const wasInView: boolean = !!(gv as any).__lastInView;
         if (inView && !wasInView) {
           const overlayActive = (gv._lastZoomPhase || 0) > 0.05;
@@ -5925,10 +6100,64 @@ const splashEl = document.getElementById("splash");
           updateGroupZoomPresentation(gv, scale, sprites);
         }
         (gv as any).__lastInView = inView;
+        groupsChecked2++;
       });
+      try {
+        const d: any = ((window as any).__frameDiag ||= {});
+        d.groupsChecked = (d.groupsChecked || 0) + groupsChecked2;
+      } catch {}
     }
+    const tGrp1 = performance.now();
+    // Aggregate timings and expose optional N-frame profiler buffer
+    try {
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.camMs = (d.camMs || 0) + (tAfterCam - fStart);
+      d.cullMs = (d.cullMs || 0) + (tCull1 - tCull0);
+      d.loadMs = (d.loadMs || 0) + (tLoad1 - tLoad0);
+      d.upgMs = (d.upgMs || 0) + (tUpg1 - tUpg0);
+      d.idMapMs = (d.idMapMs || 0) + (tId1 - tId0);
+      d.budgetMs = (d.budgetMs || 0) + (tBudget1 - tBudget0);
+      d.groupsMs = (d.groupsMs || 0) + (tGrp1 - tGrp0);
+      d.frameMs = dt;
+      const userMs =
+        tAfterCam -
+        fStart +
+        (tCull1 - tCull0) +
+        (tLoad1 - tLoad0) +
+        (tUpg1 - tUpg0) +
+        (tId1 - tId0) +
+        (tBudget1 - tBudget0) +
+        (tGrp1 - tGrp0);
+      d.userMs = userMs;
+      d.otherMs = Math.max(0, dt - userMs);
+      const left = (window as any).__mtgProfileLeft || 0;
+      if (left > 0) {
+        ((window as any).__mtgProfileData ||= []).push({
+          ...(window as any).__frameDiag,
+        });
+        (window as any).__mtgProfileLeft = left - 1;
+        if (left - 1 === 0)
+          (window as any).__mtgPerfLastProfile = (
+            window as any
+          ).__mtgProfileData;
+      }
+    } catch {}
     updatePerf();
   });
+
+  // Expose a helper to capture the next N frames of __frameDiag into window.__mtgPerfLastProfile
+  (window as any).__mtgProfile = (n = 60) => {
+    try {
+      (window as any).__mtgProfileData = [];
+      (window as any).__mtgProfileLeft = Math.max(
+        1,
+        Math.min(600, Math.floor(n)),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
   // Periodically ensure any new sprites have context listeners
   setInterval(() => {
     try {
