@@ -65,7 +65,13 @@ type DecodeTask = {
 const decodeQueue: DecodeTask[] = [];
 // Small helper to get current limit (adaptive or UI-defined)
 function currentDecodeLimit() {
-  return settings.decodeParallelLimit;
+  let lim = settings.decodeParallelLimit;
+  try {
+    const q = getDecodeQueueSize();
+    if (q > 600) lim = Math.min(lim, 8);
+    else if (q > 400) lim = Math.min(lim, 12);
+  } catch {}
+  return lim;
 }
 
 function scheduleDecode(
@@ -199,13 +205,54 @@ function shouldThrottle(priority: number) {
 }
 
 function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
-  // Lower numbers == higher priority
+  // Lower numbers == higher priority. Visible center-most cards get the lowest values.
+  // Offscreen cards get neutral/positive values so they are throttled first.
+  if (!s) return 0;
   let p = 0;
-  if (s && s.visible) p -= 50; // on-screen work first
-  if (desiredLevel >= 2) p -= 10; // bias hi-tier slightly
-  // Recent hide grace: do not prioritize if just hidden
+  // Strongly prioritize on-screen work
+  if (s.visible) p -= 80;
+  // Slight boost for higher desired tier
+  if (desiredLevel >= 2) p -= 10;
+  // Distance-from-center shaping using per-frame view data (set by main loop)
+  try {
+    const view: any = (window as any).__mtgView;
+    if (view) {
+      const cx = view.cx, cy = view.cy;
+      const sx = s.x + 50; // card center x
+      const sy = s.y + 70; // card center y
+      const dx = sx - cx;
+      const dy = sy - cy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      // Convert distance into additive priority using viewport-based radii (2R near, 3R far)
+      const near = (view.padNear ?? 300) * 1.0;
+      const far = (view.padFar ?? 1200) * 1.0;
+      let w = 0;
+      if (d <= near) w = -45; // very near center: stronger boost to reduce placeholders
+      else if (d <= far) {
+        const t = (d - near) / Math.max(1, far - near);
+        w = -45 + t * 35; // blend up toward ~ -10
+      } else {
+        w = 12; // far away -> de-prioritize a bit more
+      }
+      p += w;
+      // If just outside viewport, still slightly prioritize to prewarm edges
+      if (!s.visible && view) {
+        const pad = view.padNear ?? 300;
+        const x1 = s.x, y1 = s.y, x2 = x1 + 100, y2 = y1 + 140;
+        const inNear =
+          x2 >= view.left - pad && x1 <= view.right + pad &&
+          y2 >= view.top - pad && y1 <= view.bottom + pad;
+        if (inNear) p -= 6;
+      }
+    }
+  } catch {}
+  // Recent hide grace: reduce priority briefly to avoid churn right after cull
   const hidAt: number | undefined = (s as any)?.__hiddenAt;
   if (hidAt && performance.now() - hidAt < 800) p += 5;
+  // Selection bias: prioritize selected cards so they sharpen first
+  try {
+    if (SelectionStore.state.cardIds.has(s.__id)) p -= 8;
+  } catch {}
   return p;
 }
 
@@ -355,8 +402,8 @@ function enforceTextureBudget() {
   const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
   if (!isFinite(budgetBytes)) return;
   // Watermarks: when we exceed highWater, evict until we reach lowWater to create headroom
-  const pctLow = 0.9;
-  const pctHigh = 0.97;
+  const pctLow = 0.85;
+  const pctHigh = 0.92;
   const lowWater = Math.floor(budgetBytes * pctLow);
   const highWater = Math.floor(budgetBytes * pctHigh);
   if (totalTextureBytes <= highWater) return;
@@ -560,6 +607,7 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
   // skip doing another full O(n) scan for a short interval to prevent permanent per-frame cost.
   if (!__lastBudgetHadCandidates && now - __lastBudgetCheckAt < 1000) return;
   // Build candidate list: offscreen sprites holding a texture, prefer highest quality and least-recently-used textures
+  const view: any = (window as any).__mtgView;
   const candidates = sprites.filter((s) => {
     if (s.visible) return false;
     if (!(s as any).__currentTexUrl) return false;
@@ -578,6 +626,15 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
     // Grace period: if just hidden (e.g., due to scroll/zoom), give ~800ms before demotion to avoid churn.
     const hidAt: number | undefined = (s as any).__hiddenAt;
     if (hidAt && now - hidAt < 800) return false;
+    // Protect cards near the viewport bounds from demotion so they can enter smoothly
+    if (view) {
+      const pad = (view.padNear ?? 300) * 1.25; // a bit larger than upgrade near-pad
+      const x1 = s.x, y1 = s.y, x2 = x1 + 100, y2 = y1 + 140;
+      const nearViewport =
+        x2 >= view.left - pad && x1 <= view.right + pad &&
+        y2 >= view.top - pad && y1 <= view.bottom + pad;
+      if (nearViewport) return false;
+    }
     return true;
   });
   __lastBudgetHadCandidates = candidates.length > 0;
@@ -591,7 +648,16 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
       textureCache.get((a as any).__currentTexUrl || "")?.lastUsed ?? 0;
     const ub =
       textureCache.get((b as any).__currentTexUrl || "")?.lastUsed ?? 0;
-    return ua - ub;
+    if (ua !== ub) return ua - ub;
+    // Tiebreaker: furthest from center demotes first
+    if (view) {
+      const acx = a.x + 50, acy = a.y + 70;
+      const bcx = b.x + 50, bcy = b.y + 70;
+      const ad2 = (acx - view.cx) * (acx - view.cx) + (acy - view.cy) * (acy - view.cy);
+      const bd2 = (bcx - view.cx) * (bcx - view.cx) + (bcy - view.cy) * (bcy - view.cy);
+      return bd2 - ad2; // larger distance first
+    }
+    return 0;
   });
   // Important: demoting doesn't immediately lower totalTextureBytes (we release refs first,
   // destruction happens in enforceTextureBudget). Track an estimated freed byte count so we stop early.
@@ -773,6 +839,118 @@ export function getHiResQueueDiagnostics() {
     newestMs: newest,
     sample,
   };
+}
+
+// Proactively taper hi-tier (png) textures to medium when far from viewport.
+// This runs even when not over budget to reduce VRAM churn and favor nearby detail.
+let __taperCursor = 0;
+export function taperHiResByDistance(maxPerFrame = 16) {
+  if (settings.disablePngTier) return; // nothing to taper if PNG tier capped
+  if (!hiResQueue.length) return;
+  const view: any = (window as any).__mtgView;
+  if (!view) return;
+  const near = (view.padNear ?? 300) * 1.0;
+  const start = __taperCursor % hiResQueue.length;
+  let processed = 0;
+  let downgraded = 0;
+  const now = performance.now();
+  for (let i = 0; i < hiResQueue.length && processed < maxPerFrame; i++) {
+    const idx = (start + i) % hiResQueue.length;
+    const s = hiResQueue[idx];
+    if (!s || (s as any)._destroyed) continue;
+    processed++;
+    // Only consider true hi tier
+    if ((s.__qualityLevel ?? 0) < 2) continue;
+    // Avoid very fresh upgrades to prevent instant oscillation
+    if (s.__hiResAt && now - (s.__hiResAt || 0) < 800) continue;
+    // Compute center distance
+    const sx = s.x + 50;
+    const sy = s.y + 70;
+    const dx = sx - view.cx;
+    const dy = sy - view.cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    // Not close to viewport: beyond 2 radii; prefer offscreen to avoid visible swaps
+    if (dist > near && !s.visible) {
+      const ok = tryDowngradeSpriteTexture(s, /*immediateOnly*/ true);
+      if (ok) downgraded++;
+    }
+  }
+  __taperCursor = (start + processed) % Math.max(1, hiResQueue.length);
+  if (downgraded) {
+    try {
+      compactHiResQueue();
+    } catch {}
+    scheduleEnforceTextureBudget();
+  }
+}
+
+// Medium taper: gently step 1->0 for far and offscreen cards to keep VRAM below cliff.
+let __medTaperCursor = 0;
+export function taperMediumByDistance(maxPerFrame = 12) {
+  const view: any = (window as any).__mtgView;
+  if (!view) return;
+  // Walk texture cache indirectly via hiResQueue plus sprite registry map for breadth.
+  // We’ll scan the same hiResQueue and also include a global id->sprite map if available.
+  const pool: CardSprite[] = [];
+  try {
+    // Prefer visible data structures we already maintain
+    if (Array.isArray(hiResQueue) && hiResQueue.length) pool.push(...hiResQueue);
+    const idMap: Map<number, CardSprite> | undefined = (window as any)
+      .__mtgIdToSprite as Map<number, CardSprite> | undefined;
+    if (idMap) {
+      for (const s of idMap.values()) pool.push(s);
+    }
+  } catch {}
+  if (!pool.length) return;
+  // Dedup lightweight by id
+  const seen = new Set<number>();
+  const list: CardSprite[] = [];
+  for (const s of pool) {
+    if (!s || (s as any)._destroyed) continue;
+    if (seen.has(s.__id)) continue;
+    seen.add(s.__id);
+    list.push(s);
+  }
+  if (!list.length) return;
+  const start = __medTaperCursor % list.length;
+  let processed = 0;
+  let action = 0;
+  const near = (view.padNear ?? 300) * 1.0;
+  const now = performance.now();
+  for (let i = 0; i < list.length && processed < maxPerFrame; i++) {
+    const s = list[(start + i) % list.length];
+    processed++;
+    const q = s.__qualityLevel ?? 0;
+    if (q !== 1) continue; // only medium
+    if (s.visible) continue; // avoid visible swaps
+    const sx = s.x + 50;
+    const sy = s.y + 70;
+    const dx = sx - view.cx;
+    const dy = sy - view.cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    // Only far outside 2R and leaning toward 3R
+    if (dist <= near) continue;
+    // Recently loaded/changed? give it a moment to avoid churn
+    const hidAt: number | undefined = (s as any).__hiddenAt;
+    if (hidAt && now - hidAt < 800) continue;
+    if (demoteSpriteOneStep(s, /*allowPlaceholder*/ false)) action++;
+  }
+  __medTaperCursor = (start + processed) % list.length;
+  if (action) scheduleEnforceTextureBudget();
+}
+
+// Public helper: demote one step if possible; optionally drop to placeholder when far and lower-tier isn't cached.
+export function demoteSpriteOneStep(
+  s: CardSprite,
+  allowPlaceholder = false,
+): boolean {
+  const ok = tryDowngradeSpriteTexture(s, /*immediateOnly*/ true);
+  if (ok) return true;
+  if (allowPlaceholder) {
+    demoteSpriteTextureToPlaceholder(s);
+    return true;
+  }
+  return false;
 }
 
 // Multi-tier quality loader: 0=small,1=normal/large,2=png (highest)
@@ -970,7 +1148,6 @@ const TRUE_DFC_LAYOUTS = new Set([
   "modal_dfc",
   "double_faced_token",
   "battle",
-  "meld",
 ]);
 function isDoubleSided(card: any): boolean {
   if (!card) return false;
@@ -982,7 +1159,8 @@ function isDoubleSided(card: any): boolean {
     card.card_faces.length === 2 &&
     card.card_faces.every((f: any) => f.image_uris)
   ) {
-    if (/^(adventure|split|aftermath|flip|prototype)$/.test(layout))
+  // Exclude non-reversible multi-face layouts (including meld components)
+  if (/^(adventure|split|aftermath|flip|prototype|meld)$/.test(layout))
       return false;
     return true;
   }

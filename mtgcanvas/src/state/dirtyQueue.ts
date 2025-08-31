@@ -11,13 +11,31 @@ let timer: any = null;
 function flush() {
   const batch = [...dirty.values()];
   dirty.clear();
-  InstancesRepo.updatePositions(batch);
   timer = null;
-  // eslint-disable-next-line no-console
-  console.log(`Flushed ${batch.length} instances`);
+  try {
+    if (batch.length) InstancesRepo.updatePositions(batch);
+  } catch {
+    // swallow persistence errors; will retry on next dirty mark
+  }
 }
 
 export function markDirtyPosition(id: number, x: number, y: number) {
   dirty.set(id, { id, x, y });
   if (!timer) timer = setTimeout(flush, 400);
+}
+
+// Testability helpers
+export function flushNow() {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  flush();
+}
+export function resetDirtyQueue() {
+  dirty.clear();
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
 }

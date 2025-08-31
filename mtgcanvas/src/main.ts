@@ -23,6 +23,8 @@ import {
   getDecodeQueueStats,
   getTextureBudgetStats,
   flushPendingTextureDestroys,
+  taperHiResByDistance,
+  taperMediumByDistance,
 } from "./scene/cardNode";
 import {
   configureTextureSettings,
@@ -76,6 +78,7 @@ import {
   clearImportedCards,
 } from "./services/cardStore";
 import { clearImageCache } from "./services/imageCache";
+import { disableSpellAndGrammarGlobally } from "./ui/inputs";
 
 // Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
 
@@ -99,6 +102,8 @@ function snap(v: number) {
 // buildPlacementContext is defined later inside the app bootstrap where world/sprites/groups are available
 
 const app = new PIXI.Application();
+// Disable grammar/spellcheck in all text entry surfaces
+try { disableSpellAndGrammarGlobally({ includeContentEditable: true }); } catch {}
 // Splash management: keep canvas hidden until persisted layout + groups are restored
 const splashEl = document.getElementById("splash");
 (async () => {
@@ -180,7 +185,7 @@ const splashEl = document.getElementById("splash");
     );
     canvas.addEventListener(
       "webglcontextrestored",
-      (ev: any) => {
+      () => {
         try {
           hideCtxLostBanner();
         } catch {}
@@ -1543,6 +1548,12 @@ const splashEl = document.getElementById("splash");
     input.type = "text";
     input.value = gv.name;
     input.maxLength = 64;
+    // Opt-out of spell/grammar/autocap
+    input.spellcheck = false;
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("data-gramm", "false");
+    input.setAttribute("data-gramm_editor", "false");
     // Position over header using screen coordinates
     const bounds = app.renderer.canvas.getBoundingClientRect();
     // Transform group header position to screen
@@ -1646,8 +1657,15 @@ const splashEl = document.getElementById("splash");
     nameInput.type = "text";
     nameInput.maxLength = 64;
     nameInput.className = "ui-input";
+    // Opt-out spell/grammar/autocap
+    nameInput.spellcheck = false;
+    nameInput.setAttribute("autocapitalize", "off");
+    nameInput.setAttribute("autocorrect", "off");
+    nameInput.setAttribute("data-gramm", "false");
+    nameInput.setAttribute("data-gramm_editor", "false");
     nameInput.style.fontSize = "16px";
     nameInput.style.padding = "8px 10px";
+    nameInput.disabled = true;
     nameWrap.appendChild(nameInput);
     scroll.appendChild(nameWrap);
 
@@ -2747,8 +2765,6 @@ const splashEl = document.getElementById("splash");
     let dx = 0;
     let dy = 0;
     const g = gv.gfx;
-  let startGX = 0;
-  let startGY = 0;
     let memberOffsets: { sprite: CardSprite; ox: number; oy: number }[] = [];
     // For multi-group drags, precompute offsets for all selected groups once when drag begins
     let multiOffsets: Map<
@@ -2792,8 +2808,6 @@ const splashEl = document.getElementById("splash");
       // Prepare for potential drag; only activate after small movement threshold
       const local = world.toLocal(e.global);
       startLocal = { x: local.x, y: local.y };
-      startGX = g.x;
-      startGY = g.y;
       dx = local.x - g.x;
       dy = local.y - g.y;
       maybeDrag = true;
@@ -2812,8 +2826,6 @@ const splashEl = document.getElementById("splash");
           SelectionStore.selectOnlyGroup(gv.id);
         const local = world.toLocal(e.global);
         startLocal = { x: local.x, y: local.y };
-        startGX = g.x;
-        startGY = g.y;
         dx = local.x - g.x;
         dy = local.y - g.y;
         maybeDrag = true;
@@ -2850,8 +2862,6 @@ const splashEl = document.getElementById("splash");
         SelectionStore.selectOnlyGroup(gv.id);
       const local = world.toLocal(e.global);
       startLocal = { x: local.x, y: local.y };
-      startGX = g.x;
-      startGY = g.y;
       dx = local.x - g.x;
       dy = local.y - g.y;
       maybeDrag = true;
@@ -5346,16 +5356,12 @@ const splashEl = document.getElementById("splash");
       (s) => s.visible && s.__imgLoaded && !(s as any).__groupOverlayActive,
     );
     if (!visibles.length) return;
-    // Adaptive throughput based on decode queue pressure and FPS
+  // Adaptive throughput based on decode queue pressure
     const q = getDecodeQueueSize();
-    const curFps: number = (window as any).__lastFps || 60;
     // Start with a hard cap that only decreases
-    let cap = anyOverlay ? 6 : 40;
-    if ((window as any).__mtgSafeMode) cap = Math.min(cap, 6);
-    if ((window as any).__camIsMoving) cap = Math.min(cap, 4);
-    if (curFps < 30) cap = Math.min(cap, 4);
-    if (curFps < 25) cap = Math.min(cap, 1);
-    // If zoom just changed very recently, keep throughput very low to avoid jank
+  let cap = anyOverlay ? 6 : 40;
+  if ((window as any).__mtgSafeMode) cap = Math.min(cap, 6);
+  // If zoom just changed very recently, keep throughput very low to avoid jank
     const lastAt: number = (window as any).__lastZoomChangedAt || 0;
     if (performance.now() - lastAt < 150) cap = Math.min(cap, 4);
     // Suggestion based on decode queue; never increase above cap
@@ -5375,15 +5381,14 @@ const splashEl = document.getElementById("splash");
       const dx = sx - wc.x;
       const dy = sy - wc.y;
       const dist2 = dx * dx + dy * dy;
+      // Heavier weight to center proximity to align with priorityForSprite behavior
       return { s, dist2 };
     });
     scored.sort((a, b) => a.dist2 - b.dist2);
     let processed = 0;
     // First pass: upgrade closest N, but stop early under extreme pressure
     const burst =
-      (window as any).__mtgSafeMode ||
-      (window as any).__camIsMoving ||
-      curFps < 25
+      (window as any).__mtgSafeMode
         ? 1
         : q > 600
           ? 2
@@ -6413,32 +6418,48 @@ const splashEl = document.getElementById("splash");
     let loaded = 0;
     let attempts = 0;
     // Adapt based on decode queue size
-    const q = getDecodeQueueSize();
-    const camMoving: boolean = !!(window as any).__camIsMoving;
-    const curFps: number = (window as any).__lastFps || 60;
-    if (q > 400) LOAD_PER_FRAME = camMoving ? 6 : 16;
-    else if (q > 200) LOAD_PER_FRAME = camMoving ? 10 : 28;
-    else if (q < 50) LOAD_PER_FRAME = camMoving ? 18 : 80;
-    else LOAD_PER_FRAME = camMoving ? 12 : 60;
-    if (curFps < 25)
-      LOAD_PER_FRAME = Math.min(LOAD_PER_FRAME, camMoving ? 4 : 10);
-    // While FPS is low, avoid doing many promotions from this loader; rely on the separate hi-res upgrader
-    const allowPromotions = curFps >= 25 && !camMoving;
+  const q = getDecodeQueueSize();
+  if (q > 400) LOAD_PER_FRAME = 24;
+  else if (q > 200) LOAD_PER_FRAME = 48;
+  else if (q < 50) LOAD_PER_FRAME = 140;
+  else LOAD_PER_FRAME = 90;
+  const allowPromotions = true;
     let promoteBudget = allowPromotions ? 12 : 0; // hard cap promotions from loader per frame
     const scale = world.scale.x;
     // Compute an expanded culling rect to prefetch just-outside cards
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const inv = 1 / scale;
-    const pad = (window as any).__camIsMoving ? 120 : 300; // smaller prefetch while moving
-    const left = -world.position.x * inv - pad;
-    const top = -world.position.y * inv - pad;
-    const right = left + vw * inv + pad * 2;
-    const bottom = top + vh * inv + pad * 2;
-    const MAX_ATTEMPTS = Math.min(
-      len,
-      curFps < 25 ? LOAD_PER_FRAME * 2 : LOAD_PER_FRAME * 6,
-    );
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const inv = 1 / scale;
+  const basePad = 300; // fallback when view metadata missing
+  const view: any = (window as any).__mtgView;
+  const left = view ? view.left - (view.padNear || 0) : -world.position.x * inv - basePad;
+  const top = view ? view.top - (view.padNear || 0) : -world.position.y * inv - basePad;
+  const right = view ? view.right + (view.padNear || 0) : left + vw * inv + basePad * 2;
+  const bottom = view ? view.bottom + (view.padNear || 0) : top + vh * inv + basePad * 2;
+  const MAX_ATTEMPTS = Math.min(len, LOAD_PER_FRAME * 10);
+    // Snapshot network pressure and pending upgrade need
+    const net = getImageCacheStats?.();
+    const netBusy = !!net && net.activeFetches > 24 && net.queuedFetches > 0;
+    let upgradesPending = false;
+    try {
+      const dpr = globalThis.devicePixelRatio || 1;
+      const scaleNow = world.scale.x;
+      const pxH = 140 * scaleNow * dpr;
+      const desired = pxH > 140 ? 2 : pxH > 90 ? 1 : 0;
+      if (desired > 0) {
+        // Limit scan to a small window around cursor for perf
+        for (let i = 0; i < Math.min(len, 256); i++) {
+          const s = sprites[(imgCursor + i) % len];
+          if (!s || !s.visible || !s.__imgLoaded) continue;
+          if ((s as any).__groupOverlayActive) continue;
+          const q = s.__qualityLevel ?? 0;
+          if (q < desired) {
+            upgradesPending = true;
+            break;
+          }
+        }
+      }
+    } catch {}
     while (loaded < LOAD_PER_FRAME && attempts < MAX_ATTEMPTS) {
       imgCursor = (imgCursor + 1) % len;
       attempts++;
@@ -6451,10 +6472,30 @@ const splashEl = document.getElementById("splash");
         s.y + CARD_H_GLOBAL >= top &&
         s.y <= bottom;
       if (!inPrefetch) continue;
+      // Further prioritize by center distance; skip promotions for far-off-center even if visible, when pressure
+      const view: any = (window as any).__mtgView;
+      let farOffCenter = false;
+      let inNear = false;
+      if (view) {
+        const sx = s.x + CARD_W_GLOBAL / 2;
+        const sy = s.y + CARD_H_GLOBAL / 2;
+        const dx = sx - view.cx;
+        const dy = sy - view.cy;
+        const d2 = dx * dx + dy * dy;
+        const far2 = (view.padFar ?? 1200) * (view.padFar ?? 1200);
+        const near2 = (view.padNear ?? 300) * (view.padNear ?? 300);
+        farOffCenter = d2 > far2;
+        inNear = d2 <= near2;
+      }
       if (!s.__imgLoaded) {
         if ((s as any).__groupOverlayActive) continue; // don't kick base loads for hidden-by-overlay items at macro zoom
+        // If network saturated & upgrades pending, defer offscreen small fetches to free bandwidth for upgrades
+        if (!s.visible && netBusy && upgradesPending) {
+          continue;
+        }
         ensureCardImage(s);
-        loaded++;
+  // Count near-region loads slightly more aggressively to push them through even if attempts are high
+  loaded += inNear ? 1 : 1;
         try {
           const d: any = ((window as any).__frameDiag ||= {});
           d.load = (d.load || 0) + 1;
@@ -6466,6 +6507,8 @@ const splashEl = document.getElementById("splash");
           allowPromotions &&
           promoteBudget > 0
         ) {
+          // During movement we continue loading; under heavy decode pressure we still skip far-off-center
+          if (farOffCenter && q > 200) continue;
           updateCardTextureForScale(s, scale);
           promoteBudget--;
           try {
@@ -6510,11 +6553,48 @@ const splashEl = document.getElementById("splash");
     runCulling();
     const tCull1 = performance.now();
     const tLoad0 = tCull1;
+    // Publish viewport info for priority decisions elsewhere (world-space bounds and center)
+    try {
+      const scale = world.scale.x;
+      const inv = 1 / scale;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const left = -world.position.x * inv;
+      const top = -world.position.y * inv;
+      const vwWorld = vw * inv;
+      const vhWorld = vh * inv;
+      const right = left + vwWorld;
+      const bottom = top + vhWorld;
+      const wc = world.toLocal(new PIXI.Point(vw / 2, vh / 2));
+      // Define a viewport radius in world units as half the screen diagonal
+      const radius = Math.hypot(vwWorld, vhWorld) * 0.5;
+      const padNear = 2 * radius; // "within 2 viewport radii"
+      const padFar = 3 * radius; // "within 3 viewport radii"
+      (window as any).__mtgView = {
+        left,
+        top,
+        right,
+        bottom,
+        cx: wc.x,
+        cy: wc.y,
+        radius,
+        padNear,
+        padFar,
+      };
+    } catch {}
     loadVisibleImages();
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
     upgradeVisibleHiRes();
     const tUpg1 = performance.now();
+    // Proactive hi-tier taper: gently downgrade far-away hi-tier to medium
+    try {
+      taperHiResByDistance?.(24);
+    } catch {}
+    // Proactive medium taper: gently downgrade far-away medium to small
+    try {
+      taperMediumByDistance?.(16);
+    } catch {}
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
     (window as any).__fc = fc;

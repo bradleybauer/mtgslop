@@ -50,6 +50,12 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       'Search cards (Scryfall syntax). Examples: t:creature o:"draw a card" c>=ug. Enter=Group, Esc=Close';
     inputEl.className = "ui-input ui-input-lg";
     inputEl.style.width = "100%";
+    // opt-out spell/grammar/autocap
+    inputEl.spellcheck = false;
+    inputEl.setAttribute("autocapitalize", "off");
+    inputEl.setAttribute("autocorrect", "off");
+    inputEl.setAttribute("data-gramm", "false");
+    inputEl.setAttribute("data-gramm_editor", "false");
     wrap.appendChild(inputEl);
     // Filter pills
     filtersEl = document.createElement("div");

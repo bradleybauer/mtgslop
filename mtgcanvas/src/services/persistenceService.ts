@@ -61,13 +61,6 @@ export function persistGroupTransform(
     GroupsRepo.updateTransform(id, t);
   } catch {}
 }
-export function persistGroupCollapsed(id: number, collapsed: boolean) {
-  try {
-    GroupsRepo.setCollapsed(id, collapsed);
-  } catch {
-    /* */
-  }
-}
 export function persistGroupRename(id: number, name: string) {
   try {
     GroupsRepo.rename(id, name);

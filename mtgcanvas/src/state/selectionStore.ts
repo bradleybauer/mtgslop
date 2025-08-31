@@ -3,7 +3,21 @@ export interface SelectionState {
   groupIds: Set<number>;
 }
 
-class SelectionStoreImpl {
+export interface ISelectionStore {
+  readonly state: SelectionState;
+  replace(next: SelectionState): void;
+  clear(): void;
+  toggleCard(id: number): void;
+  toggleGroup(id: number): void;
+  selectOnlyCard(id: number): void;
+  selectOnlyGroup(id: number): void;
+  readonly isEmpty: boolean;
+  getCards(): number[];
+  getGroups(): number[];
+  on(cb: () => void): () => void;
+}
+
+class SelectionStoreImpl implements ISelectionStore {
   state: SelectionState = { cardIds: new Set(), groupIds: new Set() };
   listeners: Set<() => void> = new Set();
 
@@ -56,4 +70,13 @@ class SelectionStoreImpl {
   }
 }
 
-export const SelectionStore = new SelectionStoreImpl();
+export function createSelectionStore(initial?: Partial<SelectionState>): ISelectionStore {
+  const s = new SelectionStoreImpl();
+  if (initial) {
+    s.state.cardIds = initial.cardIds ?? s.state.cardIds;
+    s.state.groupIds = initial.groupIds ?? s.state.groupIds;
+  }
+  return s;
+}
+
+export const SelectionStore: ISelectionStore = new SelectionStoreImpl();

@@ -1,4 +1,10 @@
 import { createPanel, ensureThemeStyles } from "./theme";
+import {
+  extractBaseCardName,
+  parseDecklist,
+  parseGroupsText,
+} from "../services/decklist";
+export { extractBaseCardName, parseDecklist };
 
 export interface ImportExportOptions {
   getAllNames: () => string[]; // all sprite names (one per sprite)
@@ -44,144 +50,6 @@ export interface ImportExportAPI {
   hide(): void;
 }
 
-// Strip trailing metadata often present in exports (set code, collector number, foil flags, etc.).
-// Examples handled:
-//   "Omo, Queen of Vesuva (M3C) 2 *F*" -> "Omo, Queen of Vesuva"
-//   "Forest (MH3) 318" -> "Forest"
-//   "Arcane Signet [M3C] 283" -> "Arcane Signet"
-// We intentionally avoid trimming around '//' to keep split/double-faced names intact.
-function extractBaseCardName(raw: string): string {
-  const s = (raw || "").trim();
-  if (!s) return s;
-  // Cut at first space+opening parenthesis or bracket
-  const paren = s.indexOf(" (");
-  const brack = s.indexOf(" [");
-  let cut = -1;
-  if (paren >= 0) cut = paren;
-  if (brack >= 0) cut = cut >= 0 ? Math.min(cut, brack) : brack;
-  // If not found, optionally cut at a trailing token like " *F*" or " *Foil*"
-  if (cut < 0) {
-    const foil1 = s.indexOf(" *F*");
-    const foil2 = s.toLowerCase().indexOf(" *foil*");
-    if (foil1 >= 0) cut = foil1;
-    if (foil2 >= 0) cut = cut >= 0 ? Math.min(cut, foil2) : foil2;
-  }
-  // Final guard: if still not found but there's a trailing number chunk after a space,
-  // and the part before looks non-empty, cut before that number (helps with "Name 123").
-  if (cut < 0) {
-    const m = s.match(/^(.*?)(\s+)(\d{1,4})(\s*.*)?$/);
-    if (m && m[1] && m[1].trim().length >= 2) cut = (m[1] as string).length;
-  }
-  const out = cut >= 0 ? s.slice(0, cut) : s;
-  return out.trim();
-}
-
-function parseDecklist(text: string): { name: string; count: number }[] {
-  const out: { name: string; count: number }[] = [];
-  const lines = text.split(/\r?\n/);
-  for (const rawLine of lines) {
-    let line = rawLine.trim();
-    if (!line) continue;
-    // Remove comments after '#'
-    const hash = line.indexOf("#");
-    if (hash >= 0) line = line.slice(0, hash).trim();
-    if (!line) continue;
-    // Accept variants: "3 Lightning Bolt", "Lightning Bolt x3", or just name
-    // Also accept leading count with 'x': "3x Lightning Bolt"
-    let m = line.match(/^(\d+)\s*[xX]\s+(.+)$/);
-    if (m) {
-      const base = extractBaseCardName(m[2]);
-      out.push({ count: Math.max(1, parseInt(m[1], 10)), name: base });
-      continue;
-    }
-    m = line.match(/^(\d+)\s+(.+)$/);
-    if (m) {
-      const base = extractBaseCardName(m[2]);
-      out.push({ count: Math.max(1, parseInt(m[1], 10)), name: base });
-      continue;
-    }
-    m = line.match(/^(.+?)\s*[xX]\s*(\d+)$/);
-    if (m) {
-      const base = extractBaseCardName(m[1]);
-      out.push({ name: base, count: Math.max(1, parseInt(m[2], 10)) });
-      continue;
-    }
-    out.push({ name: extractBaseCardName(line), count: 1 });
-  }
-  // Combine duplicates
-  const grouped = new Map<string, number>();
-  for (const it of out)
-    grouped.set(it.name, (grouped.get(it.name) || 0) + it.count);
-  return [...grouped.entries()].map(([name, count]) => ({ name, count }));
-}
-
-function parseGroupsText(
-  text: string,
-): { groups: { name: string; cards: string[] }[]; ungrouped: string[] } | null {
-  const lines = text.split(/\r?\n/);
-  let hasHeading = false;
-  const groups: { name: string; cards: string[] }[] = [];
-  const ungrouped: string[] = [];
-  let current: { name: string; cards: string[] } | null = null;
-  let inUngrouped = false;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    // Headings like "# Group Name"; special sentinel heading "#ungrouped" (no space)
-    if (line.startsWith("#")) {
-      hasHeading = true;
-      // Explicit ungrouped sentinel: exactly "#ungrouped" (case-insensitive)
-      if (/^#ungrouped$/i.test(line)) {
-        current = null;
-        inUngrouped = true;
-        continue;
-      }
-      const name = line.replace(/^#+\s*/, "").trim();
-      if (!name) {
-        current = null;
-        inUngrouped = false;
-        continue;
-      }
-      inUngrouped = false;
-      current = { name, cards: [] };
-      groups.push(current);
-      continue;
-    }
-    if (/^\((empty|none)\)$/i.test(line)) continue; // ignore placeholders
-    // List items: plain lines are now the canonical format (no leading '-'/'*').
-    // For backward compatibility, also accept lines starting with '-' or '*'.
-    // Also allow an optional leading count: "3 Lightning Bolt" duplicates the entry 3 times.
-    let item = line;
-    const m = line.match(/^[-*]\s*(.+)$/);
-    if (m) item = m[1].trim();
-    if (!item) continue;
-    let count = 1;
-    let cm = item.match(/^(\d+)\s*[xX]\s+(.+)$/);
-    if (cm) {
-      count = Math.max(1, parseInt(cm[1], 10));
-      item = cm[2].trim();
-    } else {
-      cm = item.match(/^(\d+)\s+(.+)$/);
-      if (cm) {
-        count = Math.max(1, parseInt(cm[1], 10));
-        item = cm[2].trim();
-      }
-    }
-    if (!item) continue;
-    const pushMany = (arr: string[]) => {
-      const base = extractBaseCardName(item);
-      for (let i = 0; i < count; i++) arr.push(base);
-    };
-    if (inUngrouped) pushMany(ungrouped);
-    else if (current) pushMany(current.cards);
-    else {
-      // No heading yet: treat as ungrouped list style
-      pushMany(ungrouped);
-    }
-  }
-  if (!hasHeading && !(ungrouped.length && groups.length === 0)) return null; // likely not a groups format
-  return { groups, ungrouped };
-}
 
 export function installImportExport(
   opts: ImportExportOptions,
@@ -199,6 +67,8 @@ export function installImportExport(
   let scryRunBtn: HTMLButtonElement | null = null;
   let scryQueryEl: HTMLInputElement | null = null;
   let scryStatusEl: HTMLDivElement | null = null;
+  // Abort controller for text import
+  let textAbort: AbortController | null = null;
 
   // Keep both panes in sync when one is busy
   const updateBusyUI = () => {
@@ -209,13 +79,18 @@ export function installImportExport(
       "#ie-import-btn",
     ) as HTMLButtonElement | null;
     if (importBtn) {
-      // Disable when our own import is running, or when Scryfall blocks it
-      importBtn.disabled = textInFlight || scryInFlight;
-      importBtn.title = scryInFlight
-        ? "Scryfall import is in progress. Cancel it to enable."
-        : textInFlight
-          ? "Import is in progress."
-          : "";
+      // Mirror Scryfall behavior: when running, show Cancel and keep enabled
+      if (textInFlight) {
+        importBtn.disabled = false;
+        importBtn.textContent = "Cancel";
+        importBtn.title = "Click to cancel the import.";
+      } else {
+        importBtn.disabled = !!scryInFlight;
+        importBtn.textContent = "Import";
+        importBtn.title = scryInFlight
+          ? "Scryfall import is in progress. Cancel it to enable."
+          : "Import cards from the text area.";
+      }
     }
     if (scryInFlight && statusEl && !textInFlight)
       statusEl.textContent = otherBusyMsg;
@@ -301,6 +176,21 @@ export function installImportExport(
     exportArea = el.querySelector("#ie-export") as HTMLTextAreaElement;
     importArea = el.querySelector("#ie-import") as HTMLTextAreaElement;
     statusEl = el.querySelector("#ie-status") as HTMLDivElement;
+    // Disable spell/grammar on text areas
+    if (exportArea) {
+      exportArea.spellcheck = false;
+      exportArea.setAttribute("autocapitalize", "off");
+      exportArea.setAttribute("autocorrect", "off");
+      exportArea.setAttribute("data-gramm", "false");
+      exportArea.setAttribute("data-gramm_editor", "false");
+    }
+    if (importArea) {
+      importArea.spellcheck = false;
+      importArea.setAttribute("autocapitalize", "off");
+      importArea.setAttribute("autocorrect", "off");
+      importArea.setAttribute("data-gramm", "false");
+      importArea.setAttribute("data-gramm_editor", "false");
+    }
     // no explicit close button; use Esc or moving cursor away from FAB area to hide
     const copyBtn = el.querySelector("#ie-copy") as HTMLButtonElement;
     const dlBtn = el.querySelector("#ie-download") as HTMLButtonElement;
@@ -359,6 +249,13 @@ export function installImportExport(
     // Panel can be closed via Esc key (handled below) or by FAB hover logic
     // Clear Data moved to Debug panel
     importBtn.onclick = async () => {
+      // If already running, treat as cancel
+      if (textInFlight) {
+        try {
+          textAbort?.abort();
+        } catch {}
+        return;
+      }
       if (!importArea) return;
       if (scryInFlight) {
         // Don't allow text import while Scryfall is running
@@ -372,40 +269,44 @@ export function installImportExport(
         if (statusEl) statusEl.textContent = "Nothing to import.";
         return;
       }
-      // Clear immediately to avoid accidental double import on rapid clicks
-      importArea.value = "";
-      // Disable button during import to prevent re-entry
-      const prevLabel = importBtn.textContent;
-      importBtn.disabled = true;
-      importBtn.textContent = "Importing…";
+      // Start import; allow cancel via AbortController
+      textAbort = new AbortController();
       textInFlight = true;
       updateBusyUI();
       // Try groups format first
       const asGroups = parseGroupsText(inputText);
       if (asGroups && opts.importGroups) {
         if (statusEl) statusEl.textContent = "Importing groups…";
-        const res = await opts.importGroups(asGroups, {
-          onProgress: (done, total) => {
-            if (!statusEl) return;
-            if (typeof total === "number" && total > 0)
-              statusEl.textContent = `Resolving ${done}/${total}…`;
-            else statusEl.textContent = `Resolving ${done}…`;
-          },
-        });
-        if (statusEl)
-          statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
-        importBtn.disabled = false;
-        importBtn.textContent = prevLabel || "Import";
-        textInFlight = false;
-        updateBusyUI();
+        try {
+          const res = await opts.importGroups(asGroups, {
+            onProgress: (done, total) => {
+              if (!statusEl) return;
+              if (typeof total === "number" && total > 0)
+                statusEl.textContent = `Resolving ${done}/${total}…`;
+              else statusEl.textContent = `Resolving ${done}…`;
+            },
+            signal: textAbort.signal,
+          });
+          if (statusEl)
+            statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+        } catch (e: any) {
+          if (e && (e.name === "AbortError" || /aborted/i.test(e.message || ""))) {
+            if (statusEl) statusEl.textContent = "Canceled.";
+          } else {
+            if (statusEl)
+              statusEl.textContent = "Import failed: " + (e?.message || String(e));
+          }
+        } finally {
+          textInFlight = false;
+          textAbort = null;
+          updateBusyUI();
+        }
         return;
       }
       // Fallback to decklist format
       const items = parseDecklist(inputText);
       if (!items.length) {
         if (statusEl) statusEl.textContent = "Nothing to import.";
-        importBtn.disabled = false;
-        importBtn.textContent = prevLabel || "Import";
         textInFlight = false;
         updateBusyUI();
         return;
@@ -419,13 +320,20 @@ export function installImportExport(
               statusEl.textContent = `Resolving ${done}/${total}…`;
             else statusEl.textContent = `Resolving ${done}…`;
           },
+          signal: textAbort.signal,
         });
         if (statusEl)
           statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+      } catch (e: any) {
+        if (e && (e.name === "AbortError" || /aborted/i.test(e.message || ""))) {
+          if (statusEl) statusEl.textContent = "Canceled.";
+        } else {
+          if (statusEl)
+            statusEl.textContent = "Import failed: " + (e?.message || String(e));
+        }
       } finally {
-        importBtn.disabled = false;
-        importBtn.textContent = prevLabel || "Import";
         textInFlight = false;
+        textAbort = null;
         updateBusyUI();
       }
     };
@@ -436,6 +344,14 @@ export function installImportExport(
       scryQueryEl = el.querySelector(
         "#ie-scry-query",
       ) as HTMLInputElement | null;
+      // opt-out spell/grammar/autocap on scryfall input
+      if (scryQueryEl) {
+        scryQueryEl.spellcheck = false;
+        scryQueryEl.setAttribute("autocapitalize", "off");
+        scryQueryEl.setAttribute("autocorrect", "off");
+        scryQueryEl.setAttribute("data-gramm", "false");
+        scryQueryEl.setAttribute("data-gramm_editor", "false");
+      }
       scryStatusEl = el.querySelector(
         "#ie-scry-status",
       ) as HTMLDivElement | null;

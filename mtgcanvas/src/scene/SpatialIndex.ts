@@ -40,4 +40,28 @@ export class SpatialIndex {
   search(minX: number, minY: number, maxX: number, maxY: number) {
     return this.tree.search({ minX, minY, maxX, maxY });
   }
+  count() {
+    return (this.tree as any).all().length as number;
+  }
+  clear() {
+    this.tree.clear();
+  }
+  // Nearest item center to a point, optionally within a radius
+  nearest(x: number, y: number, radius = Infinity): SpatialItem | null {
+    const r = Math.max(1, Number.isFinite(radius) ? radius : 1e9);
+    const hits = this.search(x - r, y - r, x + r, y + r);
+    if (!hits.length) return null;
+    let best: SpatialItem | null = null;
+    let bestD = Infinity;
+    for (const h of hits) {
+      const cx = (h.minX + h.maxX) / 2;
+      const cy = (h.minY + h.maxY) / 2;
+      const d = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+      if (d < bestD) {
+        bestD = d;
+        best = h;
+      }
+    }
+    return best;
+  }
 }
