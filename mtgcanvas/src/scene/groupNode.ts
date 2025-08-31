@@ -67,9 +67,7 @@ export function applyGroupTheme() {
   OVERLAY_TEXT_COLOR = Colors.overlayText();
 }
 // Initial sample (safe if executed before DOM ready; will be resampled on first theme ensure anyway)
-try {
-  applyGroupTheme();
-} catch {}
+applyGroupTheme();
 import { registerThemeListener } from "../ui/theme";
 registerThemeListener(() => applyGroupTheme());
 const FONT_FAMILY = "Inter, system-ui, sans-serif";
@@ -114,10 +112,8 @@ export function createGroupVisual(
   gfx.cursor = "default";
   // Enable Pixi built-in culling for the group container itself.
   // Note: member cards are top-level siblings (not children) so their visibility is controlled elsewhere.
-  try {
-    (gfx as any).cullable = true;
-    (gfx as any).cullArea = new PIXI.Rectangle(0, 0, w, h);
-  } catch {}
+  (gfx as any).cullable = true;
+  (gfx as any).cullArea = new PIXI.Rectangle(0, 0, w, h);
   // Render groups beneath their member cards; cards will be assigned zIndex >= (group zIndex + 1)
   gfx.zIndex = 40; // elevated but still below dynamically raised dragging cards
   const frame = new PIXI.Graphics();
@@ -242,10 +238,8 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   const bw = selected ? BORDER_WIDTH_SELECTED : BORDER_WIDTH;
 
   // Ensure header texts reflect current theme on every draw
-  try {
-    (label.style as any).fill = HEADER_TEXT_COLOR;
-    (count.style as any).fill = COUNT_TEXT_COLOR;
-  } catch {}
+  (label.style as any).fill = HEADER_TEXT_COLOR;
+  (count.style as any).fill = COUNT_TEXT_COLOR;
   // Keep default header text fully opaque unless overlay presentation dims them later
   label.alpha = 1;
   count.alpha = 1;
@@ -254,14 +248,12 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   const desiredCommonBase = 18; // previous comfortable size
   const desiredScaled = Math.round(desiredCommonBase * 1.5); // increase by 1.5x
   const commonSize = Math.max(12, Math.min(desiredScaled, innerHeaderH - 6));
-  try {
-    (label.style as any).fontSize = commonSize;
-    (label.style as any).fontWeight = "500";
-    (label.style as any).lineHeight = commonSize;
-    (count.style as any).fontSize = commonSize;
-    (count.style as any).fontWeight = "500";
-    (count.style as any).lineHeight = commonSize;
-  } catch {}
+  (label.style as any).fontSize = commonSize;
+  (label.style as any).fontWeight = "500";
+  (label.style as any).lineHeight = commonSize;
+  (count.style as any).fontSize = commonSize;
+  (count.style as any).fontWeight = "500";
+  (count.style as any).lineHeight = commonSize;
 
   // Body (hide card area when collapsed)
   const bodyH = collapsed ? HEADER_HEIGHT : h;
@@ -295,18 +287,14 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
 
   // Price & count text (always show) - price rightmost, count just left of it
   const price = gv.price;
-  try {
-    (price.style as any).fontSize = commonSize;
-    (price.style as any).fontWeight = "500";
-    (price.style as any).lineHeight = commonSize;
-  } catch {}
+  (price.style as any).fontSize = commonSize;
+  (price.style as any).fontWeight = "500";
+  (price.style as any).lineHeight = commonSize;
   price.text = `$${gv.totalPrice.toFixed(2)}`;
   price.x = w - bw - price.width - 8;
   // y set later with common baseline
   // Update price style and opacity after price is in scope
-  try {
-    (price.style as any).fill = PRICE_TEXT_COLOR;
-  } catch {}
+  (price.style as any).fill = PRICE_TEXT_COLOR;
   price.alpha = 1;
   count.text = gv.items.size.toString();
   count.x = Math.max(bw + 8, price.x - count.width - 6);
@@ -326,21 +314,19 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   resize.eventMode = "none";
   resize.hitArea = null as any;
   // Keep the group container's culling bounds in sync with current size/state
-  try {
-    const gAny: any = gv.gfx as any;
-    gAny.cullable = true;
-    // When collapsed, only the header is visible and should participate in culling.
-    const cullH = collapsed ? HEADER_HEIGHT : h;
-    const ca = gAny.cullArea as PIXI.Rectangle | undefined;
-    if (ca) {
-      ca.x = 0;
-      ca.y = 0;
-      ca.width = w;
-      ca.height = cullH;
-    } else {
-      gAny.cullArea = new PIXI.Rectangle(0, 0, w, cullH);
-    }
-  } catch {}
+  const gAny: any = gv.gfx as any;
+  gAny.cullable = true;
+  // When collapsed, only the header is visible and should participate in culling.
+  const cullH = collapsed ? HEADER_HEIGHT : h;
+  const ca = gAny.cullArea as PIXI.Rectangle | undefined;
+  if (ca) {
+    ca.x = 0;
+    ca.y = 0;
+    ca.width = w;
+    ca.height = cullH;
+  } else {
+    gAny.cullArea = new PIXI.Rectangle(0, 0, w, cullH);
+  }
   // If overlay could be visible, mark for reflow next tick.
   if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
@@ -679,15 +665,13 @@ export function updateGroupTextQuality(
     pr.texture.baseTexture.setResolution(target);
   // Ensure mipmaps & filtering for text base textures (helps minified readability when zoomed out)
   [lbl, cnt, pr].forEach((t) => {
-    try {
-      const bt: any = t.texture?.baseTexture;
-      if (bt?.style) {
-        bt.style.mipmap = "on";
-        bt.style.scaleMode = "linear";
-        if (bt.style.anisotropicLevel !== undefined)
-          bt.style.anisotropicLevel = 4;
-      }
-    } catch {}
+    const bt: any = t.texture?.baseTexture;
+    if (bt?.style) {
+      bt.style.mipmap = "on";
+      bt.style.scaleMode = "linear";
+      if (bt.style.anisotropicLevel !== undefined)
+        bt.style.anisotropicLevel = 4;
+    }
   });
   // After rebake widths may shift; re-truncate label if necessary.
   truncateLabelIfNeeded(gv);
@@ -716,12 +700,10 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
 
 // ---- Fast lookup helpers for large group ops ----
 function getIdMapFast(sprites: CardSprite[]): Map<number, CardSprite> {
-  try {
-    const m = (window as any).__mtgIdToSprite as
-      | Map<number, CardSprite>
-      | undefined;
-    if (m && typeof m.get === "function") return m;
-  } catch {}
+  const m = (window as any).__mtgIdToSprite as
+    | Map<number, CardSprite>
+    | undefined;
+  if (m && typeof m.get === "function") return m;
   // Fallback: build a local index once
   const idx = new Map<number, CardSprite>();
   for (let i = 0; i < sprites.length; i++) idx.set(sprites[i].__id, sprites[i]);
@@ -751,9 +733,7 @@ function positionZoomOverlay(gv: GroupVisual) {
   const zl = gv._zoomLabel;
   zl.text = `${gv.name}\n${gv.items.size} cards  $${gv.totalPrice.toFixed(2)}`;
   // Ensure color stays theme-appropriate (dark in light mode)
-  try {
-    (zl.style as any).fill = OVERLAY_TEXT_COLOR;
-  } catch {}
+  (zl.style as any).fill = OVERLAY_TEXT_COLOR;
   // Constrain width and adjust font size downward if necessary (simple heuristic)
   const pad = 16;
   const maxWidth = Math.max(60, gv.w - pad * 2);
@@ -871,10 +851,7 @@ export function updateGroupZoomPresentation(
   // If the overlay active state didn't change since last frame, skip per-card work entirely.
   if (overlayActive === prevOverlayActive) return;
   (gv as any).__overlayToggleAt = nowTs;
-  try {
-    (window as any).__overlayToggles =
-      ((window as any).__overlayToggles | 0) + 1;
-  } catch {}
+  (window as any).__overlayToggles = ((window as any).__overlayToggles | 0) + 1;
   // Adjust member card sprite visibility/alpha
   const idToSprite: Map<number, CardSprite> | undefined = (window as any)
     .__mtgIdToSprite;
@@ -897,10 +874,8 @@ export function updateGroupZoomPresentation(
         sp.visible = false;
         (sp as any).__hiddenAt = now;
         // Mark overlay-hidden time for budget logic and optionally schedule a budget pass soon.
-        try {
-          (window as any).__overlayHiddenCount =
-            ((window as any).__overlayHiddenCount | 0) + 1;
-        } catch {}
+        (window as any).__overlayHiddenCount =
+          ((window as any).__overlayHiddenCount | 0) + 1;
       }
     } else {
       if (sp.cursor !== "pointer") sp.cursor = "pointer";

@@ -101,16 +101,14 @@ export async function getEntry(url: string): Promise<CacheEntryMeta | null> {
 }
 
 async function putEntry(meta: CacheEntryMeta) {
-  try {
-    const db = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      store.put(meta);
-      tx.oncomplete = () => resolve();
-      tx.onabort = tx.onerror = () => reject(tx.error!);
-    });
-  } catch {}
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    store.put(meta);
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(tx.error!);
+  });
 }
 
 // Eviction disabled: keep function placeholders for compatibility.
@@ -358,11 +356,9 @@ export async function getCachedObjectURL(url: string): Promise<string> {
 
 // Utility to clear cache (not wired to UI yet)
 export async function clearImageCache() {
-  try {
-    const db = await openDB();
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).clear();
-  } catch {}
+  const db = await openDB();
+  const tx = db.transaction(STORE, "readwrite");
+  tx.objectStore(STORE).clear();
   objectUrlCache.forEach((u) => URL.revokeObjectURL(u));
   objectUrlCache.clear();
 }

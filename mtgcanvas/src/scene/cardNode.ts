@@ -67,11 +67,9 @@ const decodeQueue: DecodeTask[] = [];
 // Small helper to get current limit (adaptive or UI-defined)
 function currentDecodeLimit() {
   let lim = settings.decodeParallelLimit;
-  try {
-    const q = getDecodeQueueSize();
-    if (q > 600) lim = Math.min(lim, 8);
-    else if (q > 400) lim = Math.min(lim, 12);
-  } catch {}
+  const q = getDecodeQueueSize();
+  if (q > 600) lim = Math.min(lim, 8);
+  else if (q > 400) lim = Math.min(lim, 12);
   return lim;
 }
 
@@ -103,15 +101,11 @@ function scheduleDecode(
       }
       if (dropIdx >= 0) {
         const dropped = decodeQueue.splice(dropIdx, 1)[0];
-        try {
-          dropped.reject(new Error("decode queue overflow"));
-        } catch {}
+        dropped.reject(new Error("decode queue overflow"));
       }
     }
-    try {
-      const current = decodeQueue.length + activeDecodes;
-      if (current > __dbg.qPeak) __dbg.qPeak = current;
-    } catch {}
+    const current = decodeQueue.length + activeDecodes;
+    if (current > __dbg.qPeak) __dbg.qPeak = current;
     pumpDecodeQueue();
   });
 }
@@ -140,12 +134,10 @@ async function runDecodeTask(task: DecodeTask) {
       bt.style.anisotropicLevel = 8;
     }
     task.resolve(tex);
-    try {
-      const dt = performance.now() - t0;
-      __dbg.decode.count += 1;
-      __dbg.decode.totalMs += dt;
-      if (dt > __dbg.decode.maxMs) __dbg.decode.maxMs = dt;
-    } catch {}
+    const dt = performance.now() - t0;
+    __dbg.decode.count += 1;
+    __dbg.decode.totalMs += dt;
+    if (dt > __dbg.decode.maxMs) __dbg.decode.maxMs = dt;
   } catch (e) {
     task.reject(e);
   } finally {
@@ -215,52 +207,48 @@ function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
   // Slight boost for higher desired tier
   if (desiredLevel >= 2) p -= 10;
   // Distance-from-center shaping using per-frame view data (set by main loop)
-  try {
-    const view: any = (window as any).__mtgView;
-    if (view) {
-      const cx = view.cx,
-        cy = view.cy;
-      const sx = s.x + 50; // card center x
-      const sy = s.y + 70; // card center y
-      const dx = sx - cx;
-      const dy = sy - cy;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      // Convert distance into additive priority using viewport-based radii (2R near, 3R far)
-      const near = (view.padNear ?? 300) * 1.0;
-      const far = (view.padFar ?? 1200) * 1.0;
-      let w = 0;
-      if (d <= near)
-        w = -45; // very near center: stronger boost to reduce placeholders
-      else if (d <= far) {
-        const t = (d - near) / Math.max(1, far - near);
-        w = -45 + t * 35; // blend up toward ~ -10
-      } else {
-        w = 12; // far away -> de-prioritize a bit more
-      }
-      p += w;
-      // If just outside viewport, still slightly prioritize to prewarm edges
-      if (!s.visible && view) {
-        const pad = view.padNear ?? 300;
-        const x1 = s.x,
-          y1 = s.y,
-          x2 = x1 + 100,
-          y2 = y1 + 140;
-        const inNear =
-          x2 >= view.left - pad &&
-          x1 <= view.right + pad &&
-          y2 >= view.top - pad &&
-          y1 <= view.bottom + pad;
-        if (inNear) p -= 6;
-      }
+  const view: any = (window as any).__mtgView;
+  if (view) {
+    const cx = view.cx,
+      cy = view.cy;
+    const sx = s.x + 50; // card center x
+    const sy = s.y + 70; // card center y
+    const dx = sx - cx;
+    const dy = sy - cy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    // Convert distance into additive priority using viewport-based radii (2R near, 3R far)
+    const near = (view.padNear ?? 300) * 1.0;
+    const far = (view.padFar ?? 1200) * 1.0;
+    let w = 0;
+    if (d <= near)
+      w = -45; // very near center: stronger boost to reduce placeholders
+    else if (d <= far) {
+      const t = (d - near) / Math.max(1, far - near);
+      w = -45 + t * 35; // blend up toward ~ -10
+    } else {
+      w = 12; // far away -> de-prioritize a bit more
     }
-  } catch {}
+    p += w;
+    // If just outside viewport, still slightly prioritize to prewarm edges
+    if (!s.visible && view) {
+      const pad = view.padNear ?? 300;
+      const x1 = s.x,
+        y1 = s.y,
+        x2 = x1 + 100,
+        y2 = y1 + 140;
+      const inNear =
+        x2 >= view.left - pad &&
+        x1 <= view.right + pad &&
+        y2 >= view.top - pad &&
+        y1 <= view.bottom + pad;
+      if (inNear) p -= 6;
+    }
+  }
   // Recent hide grace: reduce priority briefly to avoid churn right after cull
   const hidAt: number | undefined = (s as any)?.__hiddenAt;
   if (hidAt && performance.now() - hidAt < 800) p += 5;
   // Selection bias: prioritize selected cards so they sharpen first
-  try {
-    if (SelectionStore.state.cardIds.has(s.__id)) p -= 8;
-  } catch {}
+  if (SelectionStore.state.cardIds.has(s.__id)) p -= 8;
   return p;
 }
 
@@ -382,10 +370,8 @@ export function createCardSprite(opts: CardVisualOptions) {
   sp.eventMode = "static";
   sp.cursor = "pointer";
   // Enable Pixi's built-in culling for render skipping when outside viewport.
-  try {
-    (sp as any).cullable = true;
-    (sp as any).cullArea = new PIXI.Rectangle(0, 0, 100, 140);
-  } catch {}
+  (sp as any).cullable = true;
+  (sp as any).cullArea = new PIXI.Rectangle(0, 0, 100, 140);
   // If card already provided and double sided, initialize face index + badge
   if (sp.__card && isDoubleSided(sp.__card)) {
     sp.__faceIndex = 0;
@@ -396,12 +382,10 @@ export function createCardSprite(opts: CardVisualOptions) {
 }
 
 function estimateTextureBytes(tex: PIXI.Texture): number {
-  try {
-    const bt: any = tex.baseTexture;
-    const w = bt?.width || tex.width;
-    const h = bt?.height || tex.height;
-    if (w && h) return w * h * 4;
-  } catch {}
+  const bt: any = tex.baseTexture;
+  const w = bt?.width || tex.width;
+  const h = bt?.height || tex.height;
+  if (w && h) return w * h * 4;
   return 0;
 }
 
@@ -434,16 +418,12 @@ function enforceTextureBudget() {
     droppedBytes += ent.bytes;
     droppedCount++;
   }
-  try {
-    compactHiResQueue();
-  } catch {}
-  try {
-    __dbg.evict.count += droppedCount;
-    __dbg.evict.bytes += droppedBytes;
-    __dbg.evict.lastMs = performance.now() - t0;
-    __dbg.totalBytes = totalTextureBytes;
-    __dbg.budgetMB = settings.gpuBudgetMB;
-  } catch {}
+  compactHiResQueue();
+  __dbg.evict.count += droppedCount;
+  __dbg.evict.bytes += droppedBytes;
+  __dbg.evict.lastMs = performance.now() - t0;
+  __dbg.totalBytes = totalTextureBytes;
+  __dbg.budgetMB = settings.gpuBudgetMB;
 }
 
 export function enforceTextureBudgetNow() {
@@ -510,13 +490,9 @@ function demoteSpriteTextureToPlaceholder(s: CardSprite) {
   s.__hiResUrl = undefined;
   s.__hiResAt = undefined;
   // Switch to placeholder visuals based on selection/grouping
-  try {
-    updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
-  } catch {}
+  updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
   // Keep tracking clean
-  try {
-    compactHiResQueue();
-  } catch {}
+  compactHiResQueue();
 }
 
 // Attempt to downgrade a sprite's texture by one tier (2->1 or 1->0) using cached lower-tier
@@ -525,80 +501,76 @@ function tryDowngradeSpriteTexture(
   s: CardSprite,
   immediateOnly = true,
 ): boolean {
-  try {
-    const q = s.__qualityLevel ?? 0;
-    if (q <= 0) return false; // nothing lower than small
-    const faceIdx = s.__faceIndex || 0;
-    const card = s.__card;
-    if (!card) return false;
-    // Helper to resolve a URL for a given level, honoring face index
-    const urlFor = (level: number): string | undefined => {
-      const face = (card.card_faces && card.card_faces[faceIdx]) || null;
-      if (level === 2)
-        return (
-          face?.image_uris?.png ||
-          card.image_uris?.png ||
-          face?.image_uris?.large ||
-          card.image_uris?.large
-        );
-      if (level === 1)
-        return (
-          face?.image_uris?.normal ||
-          card.image_uris?.normal ||
-          face?.image_uris?.large ||
-          card.image_uris?.large
-        );
+  const q = s.__qualityLevel ?? 0;
+  if (q <= 0) return false; // nothing lower than small
+  const faceIdx = s.__faceIndex || 0;
+  const card = s.__card;
+  if (!card) return false;
+  // Helper to resolve a URL for a given level, honoring face index
+  const urlFor = (level: number): string | undefined => {
+    const face = (card.card_faces && card.card_faces[faceIdx]) || null;
+    if (level === 2)
       return (
-        face?.image_uris?.small ||
-        card.image_uris?.small ||
-        face?.image_uris?.normal ||
-        card.image_uris?.normal
+        face?.image_uris?.png ||
+        card.image_uris?.png ||
+        face?.image_uris?.large ||
+        card.image_uris?.large
       );
-    };
-    const targets: number[] = q >= 2 ? [1, 0] : [0];
-    const currentUrl: string | undefined = (s as any).__currentTexUrl;
-    for (const target of targets) {
-      const url = urlFor(target);
-      if (!url || url === currentUrl) continue;
-      const cached = textureCache.get(url);
-      if (cached) {
-        // Apply cached lower-tier immediately
-        try {
-          cached.refs++;
-          cached.lastUsed = performance.now();
-        } catch {}
-        // Release previous reference; let budget pass clean up unreferenced entries
-        if (currentUrl && currentUrl !== url) {
-          const prev = textureCache.get(currentUrl);
-          if (prev) {
-            prev.refs = Math.max(0, prev.refs - 1);
-          }
+    if (level === 1)
+      return (
+        face?.image_uris?.normal ||
+        card.image_uris?.normal ||
+        face?.image_uris?.large ||
+        card.image_uris?.large
+      );
+    return (
+      face?.image_uris?.small ||
+      card.image_uris?.small ||
+      face?.image_uris?.normal ||
+      card.image_uris?.normal
+    );
+  };
+  const targets: number[] = q >= 2 ? [1, 0] : [0];
+  const currentUrl: string | undefined = (s as any).__currentTexUrl;
+  for (const target of targets) {
+    const url = urlFor(target);
+    if (!url || url === currentUrl) continue;
+    const cached = textureCache.get(url);
+    if (cached) {
+      // Apply cached lower-tier immediately
+      cached.refs++;
+      cached.lastUsed = performance.now();
+      // Release previous reference; let budget pass clean up unreferenced entries
+      if (currentUrl && currentUrl !== url) {
+        const prev = textureCache.get(currentUrl);
+        if (prev) {
+          prev.refs = Math.max(0, prev.refs - 1);
         }
-        (s as any).__currentTexUrl = url;
-        s.texture = cached.tex;
-        s.width = 100;
-        s.height = 140;
-        s.__qualityLevel = target;
-        if (target >= 1) {
-          s.__hiResLoaded = true;
-          s.__hiResUrl = url;
-          s.__hiResAt = performance.now();
-          hiResQueue.push(s);
-        } else {
-          s.__hiResLoaded = false;
-          s.__hiResUrl = undefined;
-          s.__hiResAt = undefined;
-        }
-        // Ensure eventual budget cleanup
-        scheduleEnforceTextureBudget();
-        return true;
-      } else if (!immediateOnly) {
-        // Under pressure we avoid extra decodes; caller may allow async reload of lower-tier
-        demoteSpriteTextureToPlaceholder(s);
-        return true; // action taken; lower-tier will be restored later by loader
       }
+      (s as any).__currentTexUrl = url;
+      s.texture = cached.tex;
+      s.width = 100;
+      s.height = 140;
+      s.__qualityLevel = target;
+      if (target >= 1) {
+        s.__hiResLoaded = true;
+        s.__hiResUrl = url;
+        s.__hiResAt = performance.now();
+        hiResQueue.push(s);
+      } else {
+        s.__hiResLoaded = false;
+        s.__hiResUrl = undefined;
+        s.__hiResAt = undefined;
+      }
+      // Ensure eventual budget cleanup
+      scheduleEnforceTextureBudget();
+      return true;
+    } else if (!immediateOnly) {
+      // Under pressure we avoid extra decodes; caller may allow async reload of lower-tier
+      demoteSpriteTextureToPlaceholder(s);
+      return true; // action taken; lower-tier will be restored later by loader
     }
-  } catch {}
+  }
   return false;
 }
 
@@ -625,10 +597,8 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
       if (!hidAt) return false;
       // Grace window when overlay first activates; default ~3s, adjustable via localStorage("overlayDemoteMs").
       let overlayMs = 3000;
-      try {
-        const v = Number(localStorage.getItem("overlayDemoteMs") || "");
-        if (Number.isFinite(v) && v >= 0) overlayMs = v;
-      } catch {}
+      const v = Number(localStorage.getItem("overlayDemoteMs") || "");
+      if (Number.isFinite(v) && v >= 0) overlayMs = v;
       if (performance.now() - hidAt < overlayMs) return false;
     }
     // Grace period: if just hidden (e.g., due to scroll/zoom), give ~800ms before demotion to avoid churn.
@@ -692,12 +662,10 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
   }
   // Final sweep of unreferenced textures (LRU) if still over
   scheduleEnforceTextureBudget();
-  try {
-    const diag: any = ((window as any).__frameDiag ||= {});
-    diag.down = (diag.down || 0) + downCount;
-    const t1 = performance.now();
-    diag.budgetMs = (diag.budgetMs || 0) + (t1 - t0);
-  } catch {}
+  const diag: any = ((window as any).__frameDiag ||= {});
+  diag.down = (diag.down || 0) + downCount;
+  const t1 = performance.now();
+  diag.budgetMs = (diag.budgetMs || 0) + (t1 - t0);
 }
 
 export function ensureCardImage(sprite: CardSprite) {
@@ -732,14 +700,12 @@ export function ensureCardImage(sprite: CardSprite) {
         return;
       }
       // Retain reference for base small texture
-      try {
-        const ent = textureCache.get(url);
-        if (ent) {
-          ent.refs++;
-          ent.lastUsed = performance.now();
-        }
-        (sprite as any).__currentTexUrl = url;
-      } catch {}
+      const ent = textureCache.get(url);
+      if (ent) {
+        ent.refs++;
+        ent.lastUsed = performance.now();
+      }
+      (sprite as any).__currentTexUrl = url;
       if (isTextureUsable(tex)) sprite.texture = tex;
       sprite.width = 100;
       sprite.height = 140;
@@ -770,13 +736,11 @@ function evictHiResIfNeeded() {
     const victim = hiResQueue.shift();
     if (victim && victim.__hiResLoaded) {
       // Proactively downgrade to reduce VRAM pressure. Prefer stepping down one tier; if unavailable, drop to placeholder.
-      try {
-        const downgraded = tryDowngradeSpriteTexture(
-          victim,
-          /*immediateOnly*/ true,
-        );
-        if (!downgraded) demoteSpriteTextureToPlaceholder(victim);
-      } catch {}
+      const downgraded = tryDowngradeSpriteTexture(
+        victim,
+        /*immediateOnly*/ true,
+      );
+      if (!downgraded) demoteSpriteTextureToPlaceholder(victim);
       // Clear hi-res bookkeeping either way.
       victim.__hiResLoaded = false;
       victim.__hiResUrl = undefined;
@@ -790,10 +754,8 @@ function compactHiResQueue() {
   let write = 0;
   const now = performance.now();
   let recentMs = 5 * 60 * 1000;
-  try {
-    const v = Number(localStorage.getItem("hiResRecentMs") || "");
-    if (Number.isFinite(v) && v >= 0) recentMs = v;
-  } catch {}
+  const v = Number(localStorage.getItem("hiResRecentMs") || "");
+  if (Number.isFinite(v) && v >= 0) recentMs = v;
   for (let i = 0; i < hiResQueue.length; i++) {
     const s = hiResQueue[i];
     if (!s || (s as any)._destroyed) continue;
@@ -894,9 +856,7 @@ export function taperHiResByDistance(maxPerFrame = 16) {
   }
   __taperCursor = (start + processed) % Math.max(1, hiResQueue.length);
   if (downgraded) {
-    try {
-      compactHiResQueue();
-    } catch {}
+    compactHiResQueue();
     scheduleEnforceTextureBudget();
   }
 }
@@ -909,16 +869,13 @@ export function taperMediumByDistance(maxPerFrame = 12) {
   // Walk texture cache indirectly via hiResQueue plus sprite registry map for breadth.
   // We’ll scan the same hiResQueue and also include a global id->sprite map if available.
   const pool: CardSprite[] = [];
-  try {
-    // Prefer visible data structures we already maintain
-    if (Array.isArray(hiResQueue) && hiResQueue.length)
-      pool.push(...hiResQueue);
-    const idMap: Map<number, CardSprite> | undefined = (window as any)
-      .__mtgIdToSprite as Map<number, CardSprite> | undefined;
-    if (idMap) {
-      for (const s of idMap.values()) pool.push(s);
-    }
-  } catch {}
+  // Prefer visible data structures we already maintain
+  if (Array.isArray(hiResQueue) && hiResQueue.length) pool.push(...hiResQueue);
+  const idMap: Map<number, CardSprite> | undefined = (window as any)
+    .__mtgIdToSprite as Map<number, CardSprite> | undefined;
+  if (idMap) {
+    for (const s of idMap.values()) pool.push(s);
+  }
   if (!pool.length) return;
   // Dedup lightweight by id
   const seen = new Set<number>();
@@ -1043,19 +1000,17 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
       sprite.__hiResLoading = false;
       if (!tex) return;
       if (((sprite as any).__loadGen ?? 0) !== myGen) return;
-      try {
-        const ent = textureCache.get(url);
-        if (ent) {
-          ent.refs++;
-          ent.level = cappedDesired;
-          ent.lastUsed = performance.now();
-        }
-        (sprite as any).__currentTexUrl = url;
-        if (prevUrl && prevUrl !== url) {
-          const pe = textureCache.get(prevUrl);
-          if (pe) pe.refs = Math.max(0, pe.refs - 1);
-        }
-      } catch {}
+      const ent = textureCache.get(url);
+      if (ent) {
+        ent.refs++;
+        ent.level = cappedDesired;
+        ent.lastUsed = performance.now();
+      }
+      (sprite as any).__currentTexUrl = url;
+      if (prevUrl && prevUrl !== url) {
+        const pe = textureCache.get(prevUrl);
+        if (pe) pe.refs = Math.max(0, pe.refs - 1);
+      }
       if (isTextureUsable(tex)) sprite.texture = tex;
       sprite.width = 100;
       sprite.height = 140;
@@ -1148,9 +1103,7 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
       : Colors.cardDefaultTint();
     // Hide legacy outline if present
     if (s.__outline) {
-      try {
-        s.__outline.visible = false;
-      } catch {}
+      s.__outline.visible = false;
     }
     return;
   }
@@ -1317,10 +1270,8 @@ function flipCardFace(sprite: CardSprite) {
   } catch {
     ensureCardImage(sprite);
     requestAnimationFrame(() => {
-      try {
-        const scale = (sprite.parent as any)?.scale?.x || 1;
-        updateCardTextureForScale(sprite, scale);
-      } catch {}
+      const scale = (sprite.parent as any)?.scale?.x || 1;
+      updateCardTextureForScale(sprite, scale);
     });
   }
   ensureDoubleSidedBadge(sprite); // reposition after flip
@@ -1366,20 +1317,18 @@ export function attachCardInteractions(
       }
     }
     // Raise above current content using global max z; avoid full normalization on drag start
-    try {
-      const w: any = window as any;
-      const getMax: any = w.__mtgMaxContentZ;
-      let base = (typeof getMax === "function" ? Number(getMax()) : 0) + 1;
-      // Stable ordering: keep relative baseZ
-      const ordered = dragSprites
-        .slice()
-        .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
-      for (const cs of ordered) {
-        cs.zIndex = base;
-        (cs as any).__baseZ = base;
-        base += 1;
-      }
-    } catch {}
+    const w: any = window as any;
+    const getMax: any = w.__mtgMaxContentZ;
+    let base = (typeof getMax === "function" ? Number(getMax()) : 0) + 1;
+    // Stable ordering: keep relative baseZ
+    const ordered = dragSprites
+      .slice()
+      .sort((a, b) => ((a as any).__baseZ || 0) - ((b as any).__baseZ || 0));
+    for (const cs of ordered) {
+      cs.zIndex = base;
+      (cs as any).__baseZ = base;
+      base += 1;
+    }
     dragState = {
       sprites: dragSprites,
       starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
@@ -1433,27 +1382,22 @@ export function attachCardInteractions(
     }
     if (commit) {
       // Persist new z-order to repository and local storage
-      try {
-        // InstancesRepo is imported in main; to avoid circular deps, update LS directly here
-        // The authoritative repo update will happen via main's periodic saves as well.
-        try {
-          const w: any = window as any;
-          const sprites: any[] =
-            (w.__mtgGetSprites && w.__mtgGetSprites()) || [];
-          const data = {
-            instances: sprites.map((s: any) => ({
-              id: s.__id,
-              x: s.x,
-              y: s.y,
-              z: s.zIndex || s.__baseZ || 0,
-              group_id: s.__groupId ?? null,
-              scryfall_id: s.__scryfallId || (s.__card?.id ?? null),
-            })),
-            byIndex: sprites.map((s: any) => ({ x: s.x, y: s.y })),
-          };
-          localStorage.setItem("mtgcanvas_positions_v1", JSON.stringify(data));
-        } catch {}
-      } catch {}
+      // InstancesRepo is imported in main; to avoid circular deps, update LS directly here
+      // The authoritative repo update will happen via main's periodic saves as well.
+      const w: any = window as any;
+      const sprites: any[] = (w.__mtgGetSprites && w.__mtgGetSprites()) || [];
+      const data = {
+        instances: sprites.map((s: any) => ({
+          id: s.__id,
+          x: s.x,
+          y: s.y,
+          z: s.zIndex || s.__baseZ || 0,
+          group_id: s.__groupId ?? null,
+          scryfall_id: s.__scryfallId || (s.__card?.id ?? null),
+        })),
+        byIndex: sprites.map((s: any) => ({ x: s.x, y: s.y })),
+      };
+      localStorage.setItem("mtgcanvas_positions_v1", JSON.stringify(data));
       const ha: any = (stage as any).hitArea as any;
       const hasBounds = ha && typeof ha.x === "number";
       const minX = hasBounds ? ha.x : -Infinity;

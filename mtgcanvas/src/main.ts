@@ -55,7 +55,6 @@ import {
 import { SpatialIndex } from "./scene/SpatialIndex";
 import { MarqueeSystem } from "./interaction/marquee";
 import { initHelp } from "./ui/helpPanel";
-import { installModeToggle } from "./ui/modeToggle";
 import {
   loadAll,
   queuePosition,
@@ -2786,7 +2785,7 @@ const splashEl = document.getElementById("splash");
       e.stopPropagation();
       if (e.button === 2) return; // right-click handled separately
       // If near resize edges, do not start drag (resize handler will take over)
-      try {
+      {
         const local = world.toLocal(e.global);
         const lx = local.x - gv.gfx.x;
         const ly = local.y - gv.gfx.y;
@@ -2796,11 +2795,12 @@ const splashEl = document.getElementById("splash");
         const nearRight = lx >= w - edgeWorld;
         const nearTop = ly <= edgeWorld;
         if (nearLeft || nearRight || nearTop) return; // let resize path handle
-      } catch {}
+      }
       if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id))
         SelectionStore.selectOnlyGroup(gv.id);
       else if (e.shiftKey) SelectionStore.toggleGroup(gv.id);
       // Prepare for potential drag; only activate after small movement threshold
+
       const local = world.toLocal(e.global);
       startLocal = { x: local.x, y: local.y };
       dx = local.x - g.x;
@@ -2836,7 +2836,7 @@ const splashEl = document.getElementById("splash");
       if (!gv._lastZoomPhase || gv._lastZoomPhase < 0.05) return; // overlay not active enough
       if ((gv as any)._overlayDrag) return; // defer to overlay drag surface to avoid conflicts with resize
       // Fallback: avoid starting drag when near edges so resize can take precedence
-      try {
+      {
         const local = world.toLocal(e.global);
         const lx = local.x - gv.gfx.x;
         const ly = local.y - gv.gfx.y;
@@ -2848,7 +2848,7 @@ const splashEl = document.getElementById("splash");
           ly <= edgeWorld ||
           ly >= gv.h - edgeWorld;
         if (nearEdge) return; // let resize path handle
-      } catch {}
+      }
       // Avoid starting drag when clicking resize triangle
       const hit = e.target;
       if (hit === gv.resize) return;
@@ -3209,9 +3209,7 @@ const splashEl = document.getElementById("splash");
             console.log("[cardMenu] add card", card.__id, "to group", gv.id);
             addCardToGroupOrdered(gv, card.__id, gv.order.length);
             card.__groupId = gv.id;
-            try {
-              InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]);
-            } catch {}
+            InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]);
             placeCardInGroup(gv, card, sprites, (s) =>
               spatial.update({
                 id: s.__id,
@@ -4009,11 +4007,9 @@ const splashEl = document.getElementById("splash");
         byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
       };
       // Mirror z into repository for in-memory consistency
-      try {
-        InstancesRepo.updateMany(
-          data.instances.map((r) => ({ id: r.id, z: r.z })) as any,
-        );
-      } catch {}
+      InstancesRepo.updateMany(
+        data.instances.map((r) => ({ id: r.id, z: r.z })) as any,
+      );
       localStorage.setItem(LS_KEY, JSON.stringify(data));
     } catch (e) {
       // Fallback: minimize payload to avoid quota errors and ensure at least positions + membership persist
@@ -4109,13 +4105,11 @@ const splashEl = document.getElementById("splash");
       fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
       frameCount = 0;
       lastFpsTime = now;
-      try {
-        const samples: number[] = (window as any).__fpsSamples || [];
-        samples.push(fps);
-        while (samples.length > 20) samples.shift();
-        (window as any).__fpsSamples = samples;
-        (window as any).__lastFps = fps;
-      } catch {}
+      const samples: number[] = (window as any).__fpsSamples || [];
+      samples.push(fps);
+      while (samples.length > 20) samples.shift();
+      (window as any).__fpsSamples = samples;
+      (window as any).__lastFps = fps;
     }
     if (now - lastMemSample > 1000) {
       sampleMemory();
@@ -4252,12 +4246,8 @@ const splashEl = document.getElementById("splash");
         btn.disabled = true;
         btn.textContent = "Clearing…";
       }
-      try {
-        (importExportUI as any)?.hide?.();
-      } catch {}
-      try {
-        await clearAllData();
-      } catch {}
+      (importExportUI as any)?.hide?.();
+      await clearAllData();
       setTimeout(() => location.reload(), 200);
     });
     document.body.appendChild(el);
@@ -4547,16 +4537,14 @@ const splashEl = document.getElementById("splash");
       gridRepositionGroups();
       timer.mark("tidy+reposition");
       // Persist transforms for new groups now that they have a final place
-      try {
-        created.forEach((gv) =>
-          persistGroupTransform(gv.id, {
-            x: gv.gfx.x,
-            y: gv.gfx.y,
-            w: gv.w,
-            h: gv.h,
-          }),
-        );
-      } catch {}
+      created.forEach((gv) =>
+        persistGroupTransform(gv.id, {
+          x: gv.gfx.x,
+          y: gv.gfx.y,
+          w: gv.w,
+          h: gv.h,
+        }),
+      );
       // Center the view on content to reveal the new arrangement
       focusViewOnContent(180);
       // One save after batch
@@ -4691,21 +4679,19 @@ const splashEl = document.getElementById("splash");
       InstancesRepo.updatePositions(batch);
     }
     if (!SUPPRESS_SAVES) {
-      try {
-        const data = {
-          instances: sprites.map((s) => ({
-            id: s.__id,
-            x: s.x,
-            y: s.y,
-            z: s.zIndex || (s as any).__baseZ || 0,
-            group_id: (s as any).__groupId ?? null,
-            scryfall_id:
-              (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-          })),
-          byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-        };
-        localStorage.setItem(LS_KEY, JSON.stringify(data));
-      } catch {}
+      const data = {
+        instances: sprites.map((s) => ({
+          id: s.__id,
+          x: s.x,
+          y: s.y,
+          z: s.zIndex || (s as any).__baseZ || 0,
+          group_id: (s as any).__groupId ?? null,
+          scryfall_id:
+            (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+        })),
+        byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
     }
     if (!alreadyCleared) clearGroupsOnly();
     // After resetting positions, move camera to frame the cards so it doesn't feel like teleporting
@@ -4788,26 +4774,22 @@ const splashEl = document.getElementById("splash");
       batch.push({ id: s.__id, x, y });
     });
     if (batch.length) {
-      try {
-        InstancesRepo.updatePositions(batch);
-      } catch {}
+      InstancesRepo.updatePositions(batch);
     }
     if (!SUPPRESS_SAVES) {
-      try {
-        const data = {
-          instances: sprites.map((s) => ({
-            id: s.__id,
-            x: s.x,
-            y: s.y,
-            z: s.zIndex || (s as any).__baseZ || 0,
-            group_id: (s as any).__groupId ?? null,
-            scryfall_id:
-              (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-          })),
-          byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-        };
-        localStorage.setItem(LS_KEY, JSON.stringify(data));
-      } catch {}
+      const data = {
+        instances: sprites.map((s) => ({
+          id: s.__id,
+          x: s.x,
+          y: s.y,
+          z: s.zIndex || (s as any).__baseZ || 0,
+          group_id: (s as any).__groupId ?? null,
+          scryfall_id:
+            (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+        })),
+        byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
     }
   }
   function gridRepositionGroups() {

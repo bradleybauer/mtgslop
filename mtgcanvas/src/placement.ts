@@ -253,27 +253,22 @@ export function findFreeSpotForBlock(
   // Prefer placement near the viewport center or nearby existing content
   let desiredX = b.x + b.w / 2 - w / 2;
   let desiredY = b.y + b.h / 2 - h / 2;
-  try {
-    const stage = (ctx.world.parent as any) || null;
-    const screenCenter = {
-      x: window.innerWidth / 2,
-      y: window.innerHeight / 2,
-    } as any;
-    const local = (ctx.world as any).toLocal
-      ? (ctx.world as any).toLocal(screenCenter, stage)
-      : null;
-    if (local && typeof local.x === "number") {
-      desiredX = local.x - w / 2;
-      desiredY = local.y - h / 2;
-    }
-  } catch {}
+  const stage = (ctx.world.parent as any) || null;
+  const screenCenter = {
+    x: window.innerWidth / 2,
+    y: window.innerHeight / 2,
+  } as any;
+  const local = (ctx.world as any).toLocal
+    ? (ctx.world as any).toLocal(screenCenter, stage)
+    : null;
+  if (local && typeof local.x === "number") {
+    desiredX = local.x - w / 2;
+    desiredY = local.y - h / 2;
+  }
   // Try a best-first search around the desired center using an obstacle index
-  try {
-    const tree = buildObstacleIndex(ctx);
-    const spot = bestFirstFreeSpot(ctx, desiredX, desiredY, w, h, tree, pad);
-    if (spot && !rectOverlapsIndex(tree, spot.x, spot.y, w, h, pad))
-      return spot;
-  } catch {}
+  const tree = buildObstacleIndex(ctx);
+  const spot = bestFirstFreeSpot(ctx, desiredX, desiredY, w, h, tree, pad);
+  if (spot && !rectOverlapsIndex(tree, spot.x, spot.y, w, h, pad)) return spot;
   // Exhaustive grid scan at gridSize resolution; return null if none found
   const di = Math.max(ctx.gridSize, Math.floor(ctx.spacingX / 2));
   const dj = Math.max(ctx.gridSize, Math.floor(ctx.spacingY / 2));
@@ -682,20 +677,18 @@ export function planRectangles(
     desiredX = opts.seed.x;
     desiredY = opts.seed.y;
   } else {
-    try {
-      const stage = (ctx.world.parent as any) || null;
-      const screenCenter = {
-        x: window.innerWidth / 2,
-        y: window.innerHeight / 2,
-      } as any;
-      const local = (ctx.world as any).toLocal
-        ? (ctx.world as any).toLocal(screenCenter, stage)
-        : null;
-      if (local && typeof local.x === "number") {
-        desiredX = local.x;
-        desiredY = local.y;
-      }
-    } catch {}
+    const stage = (ctx.world.parent as any) || null;
+    const screenCenter = {
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+    } as any;
+    const local = (ctx.world as any).toLocal
+      ? (ctx.world as any).toLocal(screenCenter, stage)
+      : null;
+    if (local && typeof local.x === "number") {
+      desiredX = local.x;
+      desiredY = local.y;
+    }
   }
   // Determine placement order
   const order = opts?.preserveOrder
