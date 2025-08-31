@@ -513,6 +513,39 @@ const splashEl = document.getElementById("splash");
     } catch {}
     scheduleGroupSave();
   }
+  // Lightweight visual raise without persistence; used on drag start only
+  function bringGroupsToFrontVisual(groupIds: number[]) {
+    if (!groupIds || !groupIds.length) return;
+    const ids = Array.from(new Set(groupIds));
+    // Find current max z across groups and sprites (cheap scan; no sorting/persistence)
+    let base = 0;
+    sprites.forEach((s) => {
+      const z = s.zIndex || 0;
+      if (z > base) base = z;
+    });
+    groups.forEach((gv) => {
+      const z = gv.gfx?.zIndex || 0;
+      if (z > base) base = z;
+    });
+    base += 1;
+    // Preserve relative order by current z then id
+    const ordered = ids
+      .map((id) => ({ id, z: groups.get(id)?.gfx?.zIndex || 0 }))
+      .sort((a, b) => (a.z === b.z ? a.id - b.id : a.z - b.z))
+      .map((e) => e.id);
+    for (const id of ordered) {
+      const gg = groups.get(id);
+      if (!gg) continue;
+      gg.gfx.zIndex = base++;
+      gg.order.forEach((cid) => {
+        const sp = sprites.find((s) => s.__id === cid);
+        if (!sp) return;
+        sp.zIndex = base;
+        (sp as any).__baseZ = base;
+        base += 1;
+      });
+    }
+  }
 
   // Card layer & data (persisted instances)
   const sprites: CardSprite[] = [];
@@ -2427,6 +2460,10 @@ const splashEl = document.getElementById("splash");
 
   function attachGroupInteractions(gv: GroupVisual) {
     let drag = false;
+    let maybeDrag = false;
+    let startLocal: { x: number; y: number } | null = null;
+    let startGX = 0,
+      startGY = 0;
     let dx = 0;
     let dy = 0;
     const g = gv.gfx;
@@ -2435,13 +2472,13 @@ const splashEl = document.getElementById("splash");
     const prevGroupZ = new Map<number, number>(); // groupId -> original z (pre-drag)
     const prevCardZ = new Map<number, number>(); // cardId -> original z (pre-drag)
     function beginGroupDragZRaise(primary: GroupVisual) {
-      // Persistently bring to front: primary + selected groups
+      // Visual raise only on drag start: primary + selected groups
       const dragging = new Set(SelectionStore.getGroups());
       dragging.add(primary.id);
-      bringGroupsToFrontPersistent([...dragging]);
+      bringGroupsToFrontVisual([...dragging]);
     }
     function endGroupDragZRestore() {
-      // No-op: we persistently raised on pointerdown
+      // No-op: we keep visual raise; persistence not needed unless desired elsewhere
       prevGroupZ.clear();
       prevCardZ.clear();
     }
@@ -2465,21 +2502,14 @@ const splashEl = document.getElementById("splash");
       if (!e.shiftKey && !SelectionStore.state.groupIds.has(gv.id))
         SelectionStore.selectOnlyGroup(gv.id);
       else if (e.shiftKey) SelectionStore.toggleGroup(gv.id);
-      // Persistently bring to front on click/drag start
-      const dragging = new Set(SelectionStore.getGroups());
-      dragging.add(gv.id);
-      bringGroupsToFrontPersistent([...dragging]);
+      // Prepare for potential drag; only activate after small movement threshold
       const local = world.toLocal(e.global);
-      drag = true;
+      startLocal = { x: local.x, y: local.y };
+      startGX = g.x;
+      startGY = g.y;
       dx = local.x - g.x;
       dy = local.y - g.y;
-      beginGroupDragZRaise(gv);
-      memberOffsets = [...gv.items]
-        .map((id) => {
-          const s = sprites.find((sp) => sp.__id === id);
-          return s ? { sprite: s, ox: s.x - g.x, oy: s.y - g.y } : null;
-        })
-        .filter(Boolean) as any;
+      maybeDrag = true;
     });
     gv.header.on("pointertap", (e: any) => {
       if (e.detail === 2 && e.button !== 2) startGroupRename(gv);
@@ -2493,28 +2523,20 @@ const splashEl = document.getElementById("splash");
         e.stopPropagation();
         if (!SelectionStore.state.groupIds.has(gv.id))
           SelectionStore.selectOnlyGroup(gv.id);
-        // Persistently bring to front on click/drag start
-        const dragging = new Set(SelectionStore.getGroups());
-        dragging.add(gv.id);
-        bringGroupsToFrontPersistent([...dragging]);
         const local = world.toLocal(e.global);
-        drag = true;
+        startLocal = { x: local.x, y: local.y };
+        startGX = g.x;
+        startGY = g.y;
         dx = local.x - g.x;
         dy = local.y - g.y;
-        beginGroupDragZRaise(gv);
-        memberOffsets = [...gv.items]
-          .map((id) => {
-            const s = sprites.find((sp) => sp.__id === id);
-            return s ? { sprite: s, ox: s.x - g.x, oy: s.y - g.y } : null;
-          })
-          .filter(Boolean) as any;
+        maybeDrag = true;
       });
     }
     // When zoom overlay active (cards hidden / faded) allow dragging from the whole body area.
     // Reuse same drag logic; only trigger if overlay phase recently > 0 (tracked via _lastZoomPhase).
     gv.frame.cursor = "default";
     gv.frame.eventMode = "static";
-    gv.frame.on("pointerdown", (e: any) => {
+  gv.frame.on("pointerdown", (e: any) => {
       if (e.button !== 0) return;
       // Only consider using the frame as a drag surface if overlay is active AND there's no dedicated drag surface.
       if (!gv._lastZoomPhase || gv._lastZoomPhase < 0.05) return; // overlay not active enough
@@ -2539,21 +2561,13 @@ const splashEl = document.getElementById("splash");
       e.stopPropagation();
       if (!SelectionStore.state.groupIds.has(gv.id))
         SelectionStore.selectOnlyGroup(gv.id);
-      // Persistently bring to front on click/drag start
-      const dragging = new Set(SelectionStore.getGroups());
-      dragging.add(gv.id);
-      bringGroupsToFrontPersistent([...dragging]);
-      const local = world.toLocal(e.global);
-      drag = true;
-      dx = local.x - g.x;
-      dy = local.y - g.y;
-      beginGroupDragZRaise(gv);
-      memberOffsets = [...gv.items]
-        .map((id) => {
-          const s = sprites.find((sp) => sp.__id === id);
-          return s ? { sprite: s, ox: s.x - g.x, oy: s.y - g.y } : null;
-        })
-        .filter(Boolean) as any;
+  const local = world.toLocal(e.global);
+  startLocal = { x: local.x, y: local.y };
+  startGX = g.x;
+  startGY = g.y;
+  dx = local.x - g.x;
+  dy = local.y - g.y;
+  maybeDrag = true;
     });
     // Click body (non-overlay zoom): select group without starting a drag
     gv.frame.on("pointertap", (e: any) => {
@@ -2577,6 +2591,27 @@ const splashEl = document.getElementById("splash");
     });
     // Group body interactions handled globally like canvas now.
     app.stage.on("pointermove", (e) => {
+      if (!drag && maybeDrag && startLocal) {
+        const local = world.toLocal(e.global);
+        const dpx = Math.abs(local.x - startLocal.x);
+        const dpy = Math.abs(local.y - startLocal.y);
+        const threshold = 3 / (world.scale.x || 1); // ~3px in screen space
+        if (dpx > threshold || dpy > threshold) {
+          drag = true;
+          maybeDrag = false;
+          beginGroupDragZRaise(gv);
+          // Build member offsets using O(1) id->sprite lookup when available
+          const idMap = (window as any).__mtgIdToSprite as
+            | Map<number, CardSprite>
+            | undefined;
+          memberOffsets = [...gv.items]
+            .map((id) => {
+              const s = idMap?.get(id) || sprites.find((sp) => sp.__id === id);
+              return s ? { sprite: s, ox: s.x - g.x, oy: s.y - g.y } : null;
+            })
+            .filter(Boolean) as any;
+        }
+      }
       if (!drag) return;
       const local = world.toLocal(e.global);
       let nx = local.x - dx;
@@ -2621,8 +2656,14 @@ const splashEl = document.getElementById("splash");
       }
     });
     const endGroupDrag = () => {
-      if (!drag) return;
+      if (!drag) {
+        maybeDrag = false;
+        startLocal = null;
+        return;
+      }
       drag = false;
+      maybeDrag = false;
+      startLocal = null;
       endGroupDragZRestore();
       // Snap and re-clamp to bounds the primary group
       const p = clampGroupXY(gv, snap(g.x), snap(g.y));
@@ -3590,7 +3631,11 @@ const splashEl = document.getElementById("splash");
     const zMax = (window as any).__mtgMaxContentZ
       ? Number((window as any).__mtgMaxContentZ())
       : 0;
-    perfEl.textContent =
+  // Throttle DOM update to ~4 Hz to avoid layout cost every frame
+  const lastPerfDom: number = (perfEl as any).__lastDomWrite || 0;
+  if (now - lastPerfDom < 250) return;
+  (perfEl as any).__lastDomWrite = now;
+  perfEl.textContent =
       `Status / Performance\n` +
       ` FPS: ${fps}\n` +
       ` Zoom: ${world.scale.x.toFixed(2)}x\n` +
@@ -3876,19 +3921,79 @@ const splashEl = document.getElementById("splash");
       if (b[1].length !== a[1].length) return b[1].length - a[1].length;
       return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
     });
-    let created = 0;
-    for (const [key, ids] of entries) {
-      if (!ids || (!includeSingles && ids.length < 2)) continue;
-      const name = labels.get(key) || key;
-      try {
-        (createGroupWithCardIds as any)(ids, name, { silent: true });
-        created++;
-      } catch {}
+    // Batch path: create all groups and assign membership with minimal side-effects
+    const idMap: Map<number, CardSprite> =
+      ((window as any).__mtgIdToSprite as Map<number, CardSprite>) ||
+      new Map(sprites.map((s) => [s.__id, s] as const));
+    const created: GroupVisual[] = [];
+    const posUpdates: { id: number; group_id: number }[] = [];
+    const prevSuppress = SUPPRESS_SAVES;
+    SUPPRESS_SAVES = true;
+    try {
+      for (const [key, ids] of entries) {
+        if (!ids || (!includeSingles && ids.length < 2)) continue;
+        const name = labels.get(key) || key;
+        // Allocate id (persist-lite) if possible, else derive
+        let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
+        try {
+          id = (GroupsRepo as any).create
+            ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
+            : id;
+        } catch {}
+        const gv = createGroupVisual(id, 0, 0, 300, 300);
+        gv.name = name;
+        groups.set(id, gv);
+        world.addChild(gv.gfx);
+        attachResizeHandle(gv);
+        attachGroupInteractions(gv);
+        // Assign membership (only ungrouped in this flow)
+        ids.forEach((cid) => {
+          const s = idMap.get(cid);
+          if (!s) return;
+          addCardToGroupOrdered(gv, cid, gv.order.length);
+          (s as any).__groupId = gv.id;
+          posUpdates.push({ id: cid, group_id: gv.id });
+        });
+        created.push(gv);
+      }
+      if (posUpdates.length) {
+        try {
+          InstancesRepo.updateMany(posUpdates as any);
+        } catch {}
+      }
+      // Pack each new group (layout within group)
+      created.forEach((gv) =>
+        autoPackGroup(gv, sprites, (s) =>
+          spatial.update({
+            id: s.__id,
+            minX: s.x,
+            minY: s.y,
+            maxX: s.x + CARD_W_GLOBAL,
+            maxY: s.y + CARD_H_GLOBAL,
+          }),
+        ),
+      );
+      // Arrange new groups compactly
+      if (created.length) gridRepositionGroups();
+    } finally {
+      SUPPRESS_SAVES = prevSuppress;
     }
-    if (created > 0) {
-      // Arrange the new groups compactly near ungrouped centroid
+    if (created.length) {
+      // Immediately compute overlay/text state for new groups at current zoom
+      try {
+        const scale = world.scale.x;
+        created.forEach((gv) => {
+          updateGroupTextQuality(gv, scale);
+          updateGroupZoomPresentation(gv, scale, sprites);
+        });
+      } catch {}
+      // After grouping, run a full Auto-Layout pass for a tidy canvas
+      gridUngroupedCards();
+      gridGroupedCards();
       gridRepositionGroups();
-      // Persist after batch
+      // Center the view on content to reveal the new arrangement
+      focusViewOnContent(180);
+      // One save after batch
       try {
         scheduleGroupSave();
       } catch {}
@@ -3904,12 +4009,16 @@ const splashEl = document.getElementById("splash");
         updates.push({ id: s.__id, group_id: null });
       }
       // Important: if zoom overlay was active, cards may be hidden/non-interactive -> restore defaults
-      if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
+  if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
+  // Fully reset any hidden/renderable flags that may persist from overlay/group modes
+  if (!s.visible) s.visible = true;
+  if (!s.renderable) s.renderable = true;
+  if (s.alpha !== 1) s.alpha = 1;
+  (anyS).__hiddenAt = undefined;
+  (anyS).__inflightLevel = 0;
+  (anyS).__pendingLevel = 0;
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       if (s.cursor !== "pointer") s.cursor = "pointer";
-      s.alpha = 1;
-      s.visible = true;
-      s.renderable = true;
       // Refresh placeholder appearance & selection outline
       try {
         updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
@@ -3925,6 +4034,17 @@ const splashEl = document.getElementById("splash");
     ids.forEach((id) => {
       const gv = groups.get(id);
       if (gv) {
+        try {
+          if (gv._zoomLabel) {
+            gv._zoomLabel.visible = false;
+            gv._zoomLabel.alpha = 0;
+          }
+          if (gv._overlayDrag) {
+            (gv._overlayDrag as any).eventMode = "none";
+            gv._overlayDrag.visible = false;
+          }
+          (gv as any)._lastZoomPhase = 0;
+        } catch {}
         gv.gfx.destroy();
       }
     });
@@ -3945,11 +4065,15 @@ const splashEl = document.getElementById("splash");
     sprites.forEach((s) => {
       const anyS: any = s as any;
       if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
+  if (anyS.__groupId) anyS.__groupId = undefined;
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       s.cursor = "pointer";
       s.alpha = 1;
       s.visible = true;
       s.renderable = true;
+  (anyS).__hiddenAt = undefined;
+  (anyS).__inflightLevel = 0;
+  (anyS).__pendingLevel = 0;
       try {
         updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
       } catch {}
@@ -4688,10 +4812,13 @@ const splashEl = document.getElementById("splash");
       (s) => s.visible && s.__imgLoaded && !(s as any).__groupOverlayActive,
     );
     if (!visibles.length) return;
-    // Adaptive throughput based on decode queue pressure
+  // Adaptive throughput based on decode queue pressure
     const q = getDecodeQueueSize();
     // Base throughput
     let perFrame = anyOverlay ? 8 : 60;
+  // If zoom just changed very recently, keep throughput low to avoid jank
+  const lastAt: number = (window as any).__lastZoomChangedAt || 0;
+  if (performance.now() - lastAt < 150) perFrame = Math.min(perFrame, 8);
     if (q > 600) perFrame = 10;
     else if (q > 400) perFrame = 20;
     else if (q > 200) perFrame = 40;
@@ -4701,15 +4828,15 @@ const splashEl = document.getElementById("splash");
     if (scale > 8) perFrame = 120;
     if (scale > 10) perFrame = 160;
     perFrame = Math.min(perFrame, visibles.length);
-    // Boost priority for sprites at or near the viewport center to prevent starvation
+    // Boost priority using distance to the viewport center computed in world space (no per-sprite toGlobal)
     const cx = window.innerWidth / 2,
       cy = window.innerHeight / 2;
+    const wc = world.toLocal(new PIXI.Point(cx, cy));
     const scored = visibles.map((s) => {
-      const gp =
-        (s.parent as any)?.toGlobal?.(new PIXI.Point(s.x, s.y)) ??
-        new PIXI.Point(0, 0);
-      const dx = gp.x - cx,
-        dy = gp.y - cy;
+      const sx = s.x + CARD_W_GLOBAL / 2;
+      const sy = s.y + CARD_H_GLOBAL / 2;
+      const dx = sx - wc.x;
+      const dy = sy - wc.y;
       const dist2 = dx * dx + dy * dy;
       return { s, dist2 };
     });
@@ -5639,6 +5766,8 @@ const splashEl = document.getElementById("splash");
   // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
   let last = performance.now();
   // Basic culling (placeholder): hide sprites far outside viewport (>2x viewport bounds)
+  // Cache last bounds to avoid redundant full scans on tiny camera moves
+  let __lastCull = { left: NaN, top: NaN, right: NaN, bottom: NaN };
   function runCulling() {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -5648,6 +5777,16 @@ const splashEl = document.getElementById("splash");
     const top = -world.position.y * invScale - margin;
     const right = left + vw * invScale + margin * 2;
     const bottom = top + vh * invScale + margin * 2;
+    // Early-out if bounds change is negligible in world units
+    if (
+      Math.abs(left - __lastCull.left) < 0.5 &&
+      Math.abs(top - __lastCull.top) < 0.5 &&
+      Math.abs(right - __lastCull.right) < 0.5 &&
+      Math.abs(bottom - __lastCull.bottom) < 0.5
+    ) {
+      return;
+    }
+    __lastCull = { left, top, right, bottom };
     const now = performance.now();
     for (const s of sprites) {
       const vis =
@@ -5689,7 +5828,8 @@ const splashEl = document.getElementById("splash");
     const top = -world.position.y * inv - pad;
     const right = left + vw * inv + pad * 2;
     const bottom = top + vh * inv + pad * 2;
-    while (loaded < LOAD_PER_FRAME && attempts < len) {
+  const MAX_ATTEMPTS = Math.min(len, LOAD_PER_FRAME * 6);
+  while (loaded < LOAD_PER_FRAME && attempts < MAX_ATTEMPTS) {
       imgCursor = (imgCursor + 1) % len;
       attempts++;
       const s = sprites[imgCursor];
@@ -5712,6 +5852,9 @@ const splashEl = document.getElementById("splash");
     }
   }
 
+  // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
+  const __tmpCenter = new PIXI.Point();
+  let __lastZoomAt = 0;
   app.ticker.add(() => {
     const now = performance.now();
     const dt = now - last;
@@ -5720,19 +5863,70 @@ const splashEl = document.getElementById("splash");
     runCulling();
     loadVisibleImages();
     upgradeVisibleHiRes();
-    // Build a per-frame id->sprite map to avoid repeated array scans in hot paths
-    const idToSprite: Map<number, CardSprite> = new Map();
-    for (const s of sprites) idToSprite.set(s.__id, s);
-    // Build a hidden reference used by groupNode to speed lookups
-    (window as any).__mtgIdToSprite = idToSprite;
+    // Build id->sprite map infrequently; sufficient for interaction lookups
+    const fc: number = ((window as any).__fc || 0) + 1;
+    (window as any).__fc = fc;
+    if (fc % 12 === 0 || !(window as any).__mtgIdToSprite) {
+      const idToSprite: Map<number, CardSprite> = new Map();
+      for (const s of sprites) idToSprite.set(s.__id, s);
+      (window as any).__mtgIdToSprite = idToSprite;
+    }
     // Enforce GPU budget by demoting offscreen sprites when over the cap
     try {
       enforceGpuBudgetForSprites(sprites);
     } catch {}
-    groups.forEach((gv) => {
-      updateGroupTextQuality(gv, world.scale.x);
-      updateGroupZoomPresentation(gv, world.scale.x, sprites);
-    });
+    // Only refresh group text quality and overlay presentation when zoom has materially changed.
+    const scale = world.scale.x;
+    const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
+    if (Math.abs(scale - lastScale) > 0.01) {
+      (window as any).__lastZoomChangedAt = now;
+      // Compute expanded viewport bounds once (world space)
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const inv = 1 / scale;
+      const pad = 600; // generous margin to avoid popping when near edges
+      const left = -world.position.x * inv - pad;
+      const top = -world.position.y * inv - pad;
+      const right = left + vw * inv + pad * 2;
+      const bottom = top + vh * inv + pad * 2;
+      groups.forEach((gv) => {
+        const gx1 = gv.gfx.x;
+        const gy1 = gv.gfx.y;
+        const gx2 = gx1 + gv.w;
+        const gy2 = gy1 + gv.h;
+        const inView = gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
+        const overlayActive = (gv._lastZoomPhase || 0) > 0.05;
+        if (inView && !overlayActive) updateGroupTextQuality(gv, scale);
+        if (inView) updateGroupZoomPresentation(gv, scale, sprites);
+        (gv as any).__lastInView = inView;
+      });
+      (window as any).__lastGroupUpdateScale = scale;
+    }
+    // If scale hasn't changed, still fix up groups that just entered the viewport so their overlay state is correct.
+    {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const inv = 1 / scale;
+      const pad = 400; // smaller margin for steady-state checks
+      const left = -world.position.x * inv - pad;
+      const top = -world.position.y * inv - pad;
+      const right = left + vw * inv + pad * 2;
+      const bottom = top + vh * inv + pad * 2;
+      groups.forEach((gv) => {
+        const gx1 = gv.gfx.x;
+        const gy1 = gv.gfx.y;
+        const gx2 = gx1 + gv.w;
+        const gy2 = gy1 + gv.h;
+        const inView = gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
+        const wasInView: boolean = !!(gv as any).__lastInView;
+        if (inView && !wasInView) {
+          const overlayActive = (gv._lastZoomPhase || 0) > 0.05;
+          if (!overlayActive) updateGroupTextQuality(gv, scale);
+          updateGroupZoomPresentation(gv, scale, sprites);
+        }
+        (gv as any).__lastInView = inView;
+      });
+    }
     updatePerf();
   });
   // Periodically ensure any new sprites have context listeners

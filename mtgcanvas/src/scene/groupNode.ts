@@ -319,6 +319,8 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   resize.visible = false;
   resize.eventMode = "none";
   resize.hitArea = null as any;
+  // If overlay could be visible, mark for reflow next tick.
+  if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
 
 function truncateLabelIfNeeded(gv: GroupVisual) {
@@ -382,7 +384,8 @@ export function layoutGroup(
     gv._expandedH = gv.h;
   }
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-  positionZoomOverlay(gv); // maintain overlay position after layout growth
+  // Maintain overlay position after layout growth when overlay is currently visible
+  if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
 
 // ---- Freeform helpers (no grid) ----
@@ -468,7 +471,7 @@ export function ensureGroupEncapsulates(
   gv.gfx.x = desiredX;
   gv.gfx.y = desiredY;
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-  positionZoomOverlay(gv);
+  if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
 
 // Ensure all member sprites render above the group's own graphics (frame/header/overlay).
@@ -629,6 +632,8 @@ export function setGroupCollapsed(
 ) {
   if (gv.collapsed === collapsed) return;
   gv.collapsed = collapsed;
+  // Reset overlay phase when collapse state toggles to avoid stale presentation
+  gv._lastZoomPhase = 0;
   if (collapsed) {
     gv._expandedH = gv.h;
     gv.h = HEADER_HEIGHT; // collapse to header only
@@ -673,7 +678,7 @@ export function autoPackGroup(
   gv._expandedH = gv.h;
   layoutGroup(gv, sprites, onMoved);
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-  positionZoomOverlay(gv);
+  if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
 
 export function insertionIndexForPoint(
@@ -785,6 +790,8 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
     }
   }
   gv.totalPrice = total;
+  // Refresh overlay (visible only) so totals stay in sync at macro zoom
+  if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
 
 // ---------------- Zoom-Out Presentation -----------------
@@ -880,50 +887,71 @@ export function updateGroupZoomPresentation(
     overlayActive = prevOverlayActive;
   }
   (gv as any).__lastOverlayScale = worldScale;
+  const toggled = overlayActive !== prevOverlayActive;
   gv._lastZoomPhase = overlayActive ? 1 : 0;
   const overlay = gv._zoomLabel;
   if (overlay) {
-    if (overlayActive && !overlay.visible) {
-      overlay.visible = true;
-      positionZoomOverlay(gv);
+    const wasVisible = overlay.visible;
+    if (toggled) {
+      if (overlayActive && !wasVisible) {
+        overlay.visible = true;
+        overlay.alpha = 1;
+        positionZoomOverlay(gv);
+      } else if (!overlayActive && wasVisible) {
+        overlay.alpha = 0;
+        overlay.visible = false;
+      }
     }
-    overlay.alpha = overlayActive ? 1 : 0;
-    if (!overlayActive) overlay.visible = false;
-    else positionZoomOverlay(gv); // ensure centered after any dimension changes
+    // Avoid expensive per-frame text reflow when many groups are visible.
+    // Layout routines call positionZoomOverlay(gv) on demand when dimensions/content change.
   }
-  // When overlay is active, hide the title bar and its texts; overlay acts as replacement
-  if (overlayActive) {
-    gv.header.visible = false;
-    gv.header.eventMode = "none" as any;
-    gv.label.visible = false;
-    gv.count.visible = false;
-    gv.price.visible = false;
-  } else {
-    gv.header.visible = true;
-    gv.header.eventMode = "static" as any;
-    gv.label.visible = true;
-    gv.count.visible = true;
-    gv.price.visible = true;
+  // When overlay active state changes, toggle chrome visibility once.
+  if (toggled) {
+    if (overlayActive) {
+      gv.header.visible = false;
+      gv.header.eventMode = "none" as any;
+      gv.label.visible = false;
+      gv.count.visible = false;
+      gv.price.visible = false;
+    } else {
+      gv.header.visible = true;
+      gv.header.eventMode = "static" as any;
+      gv.label.visible = true;
+      gv.count.visible = true;
+      gv.price.visible = true;
+    }
   }
   // Maintain a dedicated transparent drag surface with an inset hitArea so edges remain clickable.
   const dragSurf = gv._overlayDrag as PIXI.Graphics | undefined;
   if (dragSurf) {
     if (overlayActive) {
       const EDGE_PX = 16; // must match main.ts EDGE_PX
+      const prevScale: number = (gv as any).__lastDragScale ?? 0;
+      const prevW: number = (gv as any).__lastDragW ?? -1;
+      const prevH: number = (gv as any).__lastDragH ?? -1;
       const scale = Math.max(0.0001, worldScale);
-      const inset = Math.min(gv.w / 2, Math.min(gv.h / 2, EDGE_PX / scale));
-      const iw = Math.max(0, gv.w - inset * 2);
-      const ih = Math.max(0, gv.h - inset * 2);
-      (dragSurf as any).eventMode = "static";
-      (dragSurf as any).cursor = "move";
-      dragSurf.visible = true;
-      (dragSurf as any).hitArea = new PIXI.Rectangle(inset, inset, iw, ih);
-    } else {
+      const scaleDelta = Math.abs(scale - prevScale);
+      const sizeChanged = gv.w !== prevW || gv.h !== prevH;
+      if (toggled || scaleDelta > 0.05 || sizeChanged) {
+        const inset = Math.min(gv.w / 2, Math.min(gv.h / 2, EDGE_PX / scale));
+        const iw = Math.max(0, gv.w - inset * 2);
+        const ih = Math.max(0, gv.h - inset * 2);
+        (dragSurf as any).eventMode = "static";
+        (dragSurf as any).cursor = "move";
+        dragSurf.visible = true;
+        (dragSurf as any).hitArea = new PIXI.Rectangle(inset, inset, iw, ih);
+        (gv as any).__lastDragScale = scale;
+        (gv as any).__lastDragW = gv.w;
+        (gv as any).__lastDragH = gv.h;
+      }
+    } else if (toggled) {
       dragSurf.visible = false;
       (dragSurf as any).eventMode = "none";
       (dragSurf as any).hitArea = null as any;
     }
   }
+  // If nothing toggled and no drag update was needed, we’re done.
+  if (!toggled) return;
   // If the overlay active state didn't change since last frame, skip per-card work entirely.
   if (overlayActive === prevOverlayActive) return;
   (gv as any).__overlayToggleAt = nowTs;

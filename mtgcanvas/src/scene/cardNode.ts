@@ -368,11 +368,17 @@ function demoteSpriteTextureToPlaceholder(s: CardSprite) {
 }
 
 // Public: reduce GPU usage by demoting offscreen sprites until under budget.
+// Backoff state to avoid scanning all sprites every frame when over budget but no demotions are possible
+let __lastBudgetCheckAt = 0;
+let __lastBudgetHadCandidates = true;
 export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
   const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
   if (!isFinite(budgetBytes) || totalTextureBytes <= budgetBytes) return;
-  // Build candidate list: offscreen sprites holding a texture, prefer highest quality and least-recently-used textures
   const now = performance.now();
+  // If we were just over budget and previously found no candidates to demote (e.g., all visible),
+  // skip doing another full O(n) scan for a short interval to prevent permanent per-frame cost.
+  if (!__lastBudgetHadCandidates && now - __lastBudgetCheckAt < 1000) return;
+  // Build candidate list: offscreen sprites holding a texture, prefer highest quality and least-recently-used textures
   const candidates = sprites.filter((s) => {
     if (s.visible) return false;
     if (!(s as any).__currentTexUrl) return false;
@@ -383,6 +389,8 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
     if (hidAt && now - hidAt < 800) return false;
     return true;
   });
+  __lastBudgetHadCandidates = candidates.length > 0;
+  __lastBudgetCheckAt = now;
   // Sort by quality desc, then by texture lastUsed ascending (older first)
   candidates.sort((a, b) => {
     const qa = a.__qualityLevel ?? 0;
