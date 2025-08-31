@@ -1,6 +1,6 @@
 # MTG Slop
 
-MTG Slop is a fast, local-first web app to organize Magic: The Gathering cards on an infinite, zoomable canvas. Drag cards around, group them, search, and import/export decklists — all rendered with buttery-smooth WebGL via PixiJS.
+MTG Slop is a fast, local-first web app to organize Magic: The Gathering cards on an large, zoomable canvas. Drag cards around, group them, search, and import/export decklists — all rendered with buttery-smooth WebGL via PixiJS.
 
 Tech: TypeScript + Vite + PixiJS. Runs entirely in your browser; no server required.
 
