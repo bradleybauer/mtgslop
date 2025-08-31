@@ -33,10 +33,6 @@ export interface GroupVisual {
   _zoomLabel?: PIXI.Text; // large centered label when zoomed far out
   _lastZoomPhase?: number; // memo of last applied phase (0..1)
   _overlayDrag?: PIXI.Graphics; // transparent drag surface when overlay visible
-  // Faceted layout support
-  layoutMode?: "grid" | "faceted";
-  facet?: FacetKind;
-  _facetLayer?: PIXI.Container; // holds section labels for faceted layout
 }
 
 // Styling constants (tuned to approximate ComfyUI aesthetic while remaining generic)
@@ -185,7 +181,6 @@ export function createGroupVisual(
     items: new Set(),
     order: [],
     totalPrice: 0,
-    layoutMode: "grid",
   };
   // Zoom-out overlay label (initially hidden)
   const zoomLabel = new PIXI.Text({
@@ -210,18 +205,12 @@ export function createGroupVisual(
   (overlayDrag as any).eventMode = "none";
   overlayDrag.zIndex = 5;
   gv._overlayDrag = overlayDrag;
-  // Facet layer for section labels
-  const facetLayer = new PIXI.Container();
-  facetLayer.zIndex = 50;
-  facetLayer.eventMode = "none";
-  gv._facetLayer = facetLayer;
   gfx.addChild(
     frame,
     header,
     label,
     count,
     price,
-    facetLayer,
     resize,
     overlayDrag,
     zoomLabel,
@@ -354,12 +343,6 @@ export function layoutGroup(
   onMoved?: (s: CardSprite) => void,
 ) {
   if (gv.collapsed) return;
-  // Clear any previous facet labels if switching back to plain grid
-  if (gv._facetLayer) {
-    try {
-      gv._facetLayer.removeChildren().forEach((c) => (c as any).destroy?.());
-    } catch {}
-  }
   const items = gv.order
     .map((id) => sprites.find((s) => s.__id === id))
     .filter(Boolean) as CardSprite[];
@@ -400,183 +383,6 @@ export function layoutGroup(
   }
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
   positionZoomOverlay(gv); // maintain overlay position after layout growth
-}
-
-// ------------- Faceted Grid Layout -------------
-export type FacetKind = "color" | "type" | "set" | "mv";
-
-function getFacetKey(card: any, kind: FacetKind): string {
-  if (!card) return "Unknown";
-  switch (kind) {
-    case "color": {
-      const ci = Array.isArray(card.color_identity)
-        ? card.color_identity
-        : card.color_identity
-          ? String(card.color_identity).split("")
-          : [];
-      const up = (ci || [])
-        .map((c: string) => String(c).toUpperCase())
-        .filter(Boolean);
-      if (!up.length) return "Colorless";
-      if (up.length === 1) return up[0];
-      // Two or more -> e.g. "WU"; treat as Multicolor, but include exact combo label
-      return up.sort().join("");
-    }
-    case "type": {
-      const t = String(card.type_line || "");
-      const order = [
-        "Creature",
-        "Instant",
-        "Sorcery",
-        "Artifact",
-        "Enchantment",
-        "Planeswalker",
-        "Battle",
-        "Land",
-      ];
-      for (const k of order) {
-        if (new RegExp(`\\b${k}\\b`, "i").test(t)) return k;
-      }
-      return "Other";
-    }
-    case "set":
-      return (card.set || "—").toString().toUpperCase();
-    case "mv": {
-      const cmc = card.cmc;
-      const v = typeof cmc === "number" && isFinite(cmc) ? Math.floor(cmc) : -1;
-      return v >= 0 ? String(v) : "—";
-    }
-  }
-}
-
-function sectionSortOrder(kind: FacetKind, a: string, b: string): number {
-  if (kind === "color") {
-    const order = new Map<string, number>([
-      ["W", 0],
-      ["U", 1],
-      ["B", 2],
-      ["R", 3],
-      ["G", 4],
-      ["C", 5],
-    ]);
-    const ra = order.has(a) ? order.get(a)! : a.length > 1 ? 6 : 7;
-    const rb = order.has(b) ? order.get(b)! : b.length > 1 ? 6 : 7;
-    if (ra !== rb) return ra - rb;
-    return a.localeCompare(b);
-  }
-  if (kind === "type") {
-    const order = new Map<string, number>([
-      ["Creature", 0],
-      ["Instant", 1],
-      ["Sorcery", 2],
-      ["Artifact", 3],
-      ["Enchantment", 4],
-      ["Planeswalker", 5],
-      ["Battle", 6],
-      ["Land", 7],
-      ["Other", 8],
-    ]);
-    return (order.get(a) ?? 99) - (order.get(b) ?? 99);
-  }
-  if (kind === "mv") {
-    const na = parseInt(a, 10),
-      nb = parseInt(b, 10);
-    const ia = isFinite(na) ? na : 1e9;
-    const ib = isFinite(nb) ? nb : 1e9;
-    return ia - ib;
-  }
-  // set code
-  return a.localeCompare(b);
-}
-
-export function layoutFaceted(
-  gv: GroupVisual,
-  sprites: CardSprite[],
-  facet: FacetKind,
-  onMoved?: (s: CardSprite) => void,
-) {
-  if (gv.collapsed) return;
-  const items = gv.order
-    .map((id) => sprites.find((s) => s.__id === id))
-    .filter(Boolean) as CardSprite[];
-  // Clear previous labels
-  if (gv._facetLayer) {
-    try {
-      gv._facetLayer.removeChildren().forEach((c) => (c as any).destroy?.());
-    } catch {}
-  }
-  if (!items.length) {
-    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-    positionZoomOverlay(gv);
-    return;
-  }
-  // Partition by facet
-  const buckets = new Map<string, CardSprite[]>();
-  for (const s of items) {
-    const key = getFacetKey((s as any).__card, facet);
-    const list = buckets.get(key) || [];
-    list.push(s);
-    buckets.set(key, list);
-  }
-  const keys = [...buckets.keys()].sort((a, b) =>
-    sectionSortOrder(facet, a, b),
-  );
-  const usableW = Math.max(1, gv.w - PAD_X * 2);
-  const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
-  const SECTION_GAP = 10;
-  const LABEL_H = 18;
-  const LABEL_STYLE = {
-    fill: HEADER_TEXT_COLOR,
-    fontSize: 12,
-    fontFamily: FONT_FAMILY,
-    lineHeight: 12,
-  } as any;
-  let cursorY = gv.gfx.y + HEADER_HEIGHT + PAD_Y;
-  for (const key of keys) {
-    const arr = buckets.get(key)!;
-    // Draw section label
-    if (gv._facetLayer) {
-      const t = new PIXI.Text({ text: key, style: LABEL_STYLE });
-      // facetLayer is a child of gv.gfx, so use local coordinates.
-      t.x = PAD_X;
-      t.y = cursorY - gv.gfx.y; // convert world Y to local
-      gv._facetLayer.addChild(t);
-    }
-    const gridTop = cursorY + LABEL_H + 4;
-    arr.forEach((s, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const tx = gv.gfx.x + PAD_X + col * (CARD_W + GAP_X);
-      const ty = gridTop + row * (CARD_H + GAP_Y);
-      const nx = snap(tx),
-        ny = snap(ty);
-      if (s.x !== nx || s.y !== ny) {
-        s.x = nx;
-        s.y = ny;
-        onMoved && onMoved(s);
-      }
-      const desiredZ = gv.gfx.zIndex + 1;
-      if ((s as any).zIndex < desiredZ) {
-        (s as any).zIndex = desiredZ;
-        (s as any).__baseZ = desiredZ;
-      }
-    });
-    const rows = Math.ceil(arr.length / cols);
-    cursorY =
-      gridTop +
-      (rows ? rows * CARD_H + Math.max(0, rows - 1) * GAP_Y : 0) +
-      SECTION_GAP;
-  }
-  const innerTop = gv.gfx.y + HEADER_HEIGHT + PAD_Y;
-  const neededInner =
-    Math.max(0, cursorY - innerTop) + PAD_Y + PAD_BOTTOM_EXTRA - SECTION_GAP; // remove last gap
-  const neededH = HEADER_HEIGHT + neededInner;
-  if (neededH > gv.h) {
-    gv.h = snap(neededH);
-    gv._expandedH = gv.h;
-  }
-  drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-  positionZoomOverlay(gv);
 }
 
 // ---- Freeform helpers (no grid) ----
@@ -959,32 +765,6 @@ export function updateGroupTextQuality(
       }
     } catch {}
   });
-  // Apply same dynamic resolution to faceted section labels, if present
-  if (
-    gv._facetLayer &&
-    gv._facetLayer.children &&
-    gv._facetLayer.children.length
-  ) {
-    gv._facetLayer.children.forEach((c: any) => {
-      if (!c || typeof c !== "object") return;
-      // Treat any PIXI.Text-like child
-      if (c.resolution !== undefined) {
-        c.resolution = target;
-        c.dirty = true;
-        c.updateText && c.updateText();
-      } else if (c.texture?.baseTexture?.setResolution)
-        c.texture.baseTexture.setResolution(target);
-      try {
-        const bt: any = c.texture?.baseTexture;
-        if (bt?.style) {
-          bt.style.mipmap = "on";
-          bt.style.scaleMode = "linear";
-          if (bt.style.anisotropicLevel !== undefined)
-            bt.style.anisotropicLevel = 4;
-        }
-      } catch {}
-    });
-  }
   // After rebake widths may shift; re-truncate label if necessary.
   truncateLabelIfNeeded(gv);
 }

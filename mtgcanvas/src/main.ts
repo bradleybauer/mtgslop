@@ -43,8 +43,6 @@ import {
   ensureGroupEncapsulates,
   ensureMembersZOrder,
   placeCardInGroup,
-  layoutFaceted,
-  type FacetKind,
 } from "./scene/groupNode";
 import { SpatialIndex } from "./scene/SpatialIndex";
 import { MarqueeSystem } from "./interaction/marquee";
@@ -527,22 +525,6 @@ const splashEl = document.getElementById("splash");
         updateGroupZoomPresentation(gv, world.scale.x, sprites);
         // Redraw with current theme-derived palette
         drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-        // If faceted labels exist, update their fill to match theme header text color
-        try {
-          if ((gv as any)._facetLayer && (gv as any)._facetLayer.children) {
-            const layer: any = (gv as any)._facetLayer;
-            for (const c of layer.children) {
-              if (c && (c as any).style) {
-                // Reuse current label color from one of the header texts after drawGroup
-                (c as any).style.fill =
-                  (gv.label as any).style?.fill ??
-                  (gv as any).HEADER_TEXT_COLOR;
-                (c as any).dirty = true;
-                (c as any).updateText && (c as any).updateText();
-              }
-            }
-          }
-        } catch {}
       });
     } catch {}
   });
@@ -996,55 +978,6 @@ const splashEl = document.getElementById("splash");
     tryInitialFit();
   }
 
-  // Groups container + visuals (declared earlier)
-  function relayoutGroup(gv: GroupVisual) {
-    if ((gv as any).layoutMode === "faceted" && (gv as any).facet) {
-      layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, (s) =>
-        spatial.update({
-          id: s.__id,
-          minX: s.x,
-          minY: s.y,
-          maxX: s.x + CARD_W_GLOBAL,
-          maxY: s.y + CARD_H_GLOBAL,
-        }),
-      );
-    } else {
-      layoutGroup(gv, sprites, (s) =>
-        spatial.update({
-          id: s.__id,
-          minX: s.x,
-          minY: s.y,
-          maxX: s.x + CARD_W_GLOBAL,
-          maxY: s.y + CARD_H_GLOBAL,
-        }),
-      );
-    }
-    // After layout, clamp group origin so the frame stays in bounds, and clamp member cards
-    const pos = clampGroupXY(gv, gv.gfx.x, gv.gfx.y);
-    if (pos.x !== gv.gfx.x || pos.y !== gv.gfx.y) {
-      const dx = pos.x - gv.gfx.x;
-      const dy = pos.y - gv.gfx.y;
-      gv.gfx.x = pos.x;
-      gv.gfx.y = pos.y;
-      // Shift members by same delta
-      gv.order.forEach((cid) => {
-        const sp = sprites.find((s) => s.__id === cid);
-        if (!sp) return;
-        sp.x = snap(sp.x + dx);
-        sp.y = snap(sp.y + dy);
-        spatial.update({
-          id: sp.__id,
-          minX: sp.x,
-          minY: sp.y,
-          maxX: sp.x + CARD_W_GLOBAL,
-          maxY: sp.y + CARD_H_GLOBAL,
-        });
-      });
-    }
-    updateGroupMetrics(gv, sprites);
-    drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-  }
-
   // Batched finalize for many dropped cards: detect target groups once, batch membership updates,
   // and relayout affected groups a single time to avoid O(n^2) redraw/metrics churn.
   function handleDroppedSprites(moved: CardSprite[]) {
@@ -1253,8 +1186,7 @@ const splashEl = document.getElementById("splash");
           name: gv.name,
           collapsed: gv.collapsed,
           // color retired; theme-driven only
-          layoutMode: (gv as any).layoutMode || "grid",
-          facet: (gv as any).facet || null,
+          // Faceted sections removed; no layout mode persistence
           membersById: gv.order.slice(),
           membersByIndex: gv.order
             .map((cid) => sprites.findIndex((s) => s.__id === cid))
@@ -1280,8 +1212,7 @@ const splashEl = document.getElementById("splash");
       if (gr.name) gv.name = gr.name;
       /* collapse retired: always load expanded */ gv.collapsed = false;
       // color retired; theme-driven only
-      if (gr.layoutMode) (gv as any).layoutMode = gr.layoutMode;
-      if (gr.facet) (gv as any).facet = gr.facet;
+      // Faceted sections removed; ignore persisted layout/facet
       if (typeof gr.z === "number") {
         try {
           gv.gfx.zIndex = gr.z;
@@ -1332,20 +1263,8 @@ const splashEl = document.getElementById("splash");
         if (sp) (sp as any).__baseZ = sp.zIndex || (sp as any).__baseZ || 0;
       });
       ensureGroupEncapsulates(gv, sprites);
-      if ((gv as any).layoutMode === "faceted" && (gv as any).facet) {
-        layoutFaceted(gv, sprites, (gv as any).facet as FacetKind, (s) =>
-          spatial.update({
-            id: s.__id,
-            minX: s.x,
-            minY: s.y,
-            maxX: s.x + CARD_W_GLOBAL,
-            maxY: s.y + CARD_H_GLOBAL,
-          }),
-        );
-      } else {
-        updateGroupMetrics(gv, sprites);
-        drawGroup(gv, false);
-      }
+      updateGroupMetrics(gv, sprites);
+      drawGroup(gv, false);
     });
     // Ensure new group creations won't collide with restored ids (memory only)
     try {
@@ -2714,45 +2633,7 @@ const splashEl = document.getElementById("splash");
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
       scheduleGroupSave();
     });
-    // Layout submenu
-    const layoutHeader = document.createElement("div");
-    layoutHeader.textContent = "Layout";
-    layoutHeader.style.cssText =
-      "padding:6px 6px 2px;opacity:.7;font-weight:600;";
-    el.appendChild(layoutHeader);
-    function setFacet(kind: FacetKind | null) {
-      if (kind) {
-        (gv as any).layoutMode = "faceted";
-        (gv as any).facet = kind;
-      } else {
-        (gv as any).layoutMode = "grid";
-        (gv as any).facet = undefined;
-      }
-      relayoutGroup(gv);
-      scheduleGroupSave();
-    }
-    addItem("Grid (default)", () => setFacet(null));
-    const gridBy = document.createElement("div");
-    gridBy.style.cssText =
-      "display:flex;gap:6px;padding:2px 6px 6px;flex-wrap:wrap;";
-    function facetBtn(label: string, kind: FacetKind) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = label;
-      b.className = "ui-btn";
-      b.style.fontSize = "13px";
-      b.style.padding = "4px 8px";
-      b.onclick = () => {
-        setFacet(kind);
-        hideGroupMenu();
-      };
-      return b;
-    }
-    gridBy.appendChild(facetBtn("Grid by: Color", "color"));
-    gridBy.appendChild(facetBtn("Type", "type"));
-    gridBy.appendChild(facetBtn("Set", "set"));
-    gridBy.appendChild(facetBtn("Mana Value", "mv"));
-    el.appendChild(gridBy);
+    // Layout submenu removed (group sections/faceted layout no longer supported)
     addItem("Rename", () => startGroupRename(gv));
     // Recolor removed; theme-driven
     addItem("Delete", () => {
@@ -5805,9 +5686,7 @@ const splashEl = document.getElementById("splash");
                 z: gv.gfx.zIndex || 0,
                 name: gv.name,
                 collapsed: gv.collapsed,
-                // color retired; theme-driven only
-                layoutMode: (gv as any).layoutMode || "grid",
-                facet: (gv as any).facet || null,
+                // color and faceted layout retired; theme-driven only
                 membersById: gv.order.slice(),
                 membersByIndex: gv.order
                   .map((cid) => sprites.findIndex((s) => s.__id === cid))
