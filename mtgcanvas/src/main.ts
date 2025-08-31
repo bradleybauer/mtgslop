@@ -541,19 +541,7 @@ const splashEl = document.getElementById("splash");
       world,
       app.stage,
       // onDrop: finalize membership & persist
-      (moved) =>
-        moved.forEach((ms) => {
-          spatial.update({
-            id: ms.__id,
-            minX: ms.x,
-            minY: ms.y,
-            maxX: ms.x + CARD_W_GLOBAL,
-            maxY: ms.y + CARD_H_GLOBAL,
-          });
-          assignCardToGroupByPosition(ms);
-          queuePosition(ms);
-          scheduleLocalSave();
-        }),
+      (moved) => handleDroppedSprites(moved),
       () => panning,
       (global, additive) => marquee.start(global, additive),
       // onDragMove: only update spatial (no membership changes yet)
@@ -626,19 +614,7 @@ const splashEl = document.getElementById("splash");
           world,
           app.stage,
           // onDrop
-          (moved) =>
-            moved.forEach((ms) => {
-              spatial.update({
-                id: ms.__id,
-                minX: ms.x,
-                minY: ms.y,
-                maxX: ms.x + CARD_W_GLOBAL,
-                maxY: ms.y + CARD_H_GLOBAL,
-              });
-              assignCardToGroupByPosition(ms);
-              queuePosition(ms);
-              scheduleLocalSave();
-            }),
+          (moved) => handleDroppedSprites(moved),
           () => panning,
           (global, additive) => marquee.start(global, additive),
           // onDragMove
@@ -1008,6 +984,158 @@ const splashEl = document.getElementById("splash");
     }
     updateGroupMetrics(gv, sprites);
     drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+  }
+
+  // Batched finalize for many dropped cards: detect target groups once, batch membership updates,
+  // and relayout affected groups a single time to avoid O(n^2) redraw/metrics churn.
+  function handleDroppedSprites(moved: CardSprite[]) {
+    if (!moved || !moved.length) return;
+    // 1) Update spatial bounds for all moved sprites
+    for (const ms of moved) {
+      spatial.update({
+        id: ms.__id,
+        minX: ms.x,
+        minY: ms.y,
+        maxX: ms.x + CARD_W_GLOBAL,
+        maxY: ms.y + CARD_H_GLOBAL,
+      });
+    }
+    // Helper: find group under sprite center
+    const hitGroup = (s: CardSprite): GroupVisual | null => {
+      const cx = s.x + CARD_W_GLOBAL / 2;
+      const cy = s.y + CARD_H_GLOBAL / 2;
+      for (const gv of groups.values()) {
+        if (
+          cx >= gv.gfx.x &&
+          cx <= gv.gfx.x + gv.w &&
+          cy >= gv.gfx.y &&
+          cy <= gv.gfx.y + gv.h
+        )
+          return gv;
+      }
+      return null;
+    };
+    // 2) Partition by target group and track old groups for removals
+    const toAdd = new Map<number, CardSprite[]>();
+    const toRemove = new Map<number, CardSprite[]>();
+    const noGroup: CardSprite[] = [];
+    for (const s of moved) {
+      const target = hitGroup(s);
+      const oldId = (s as any).__groupId as number | undefined;
+      if (target) {
+        if (!oldId || oldId !== target.id) {
+          if (oldId && groups.has(oldId)) {
+            const arr = toRemove.get(oldId) || [];
+            arr.push(s);
+            toRemove.set(oldId, arr);
+          }
+          const arr = toAdd.get(target.id) || [];
+          arr.push(s);
+          toAdd.set(target.id, arr);
+        } // else: stayed within same group; no membership change
+      } else {
+        if (oldId && groups.has(oldId)) {
+          const arr = toRemove.get(oldId) || [];
+          arr.push(s);
+          toRemove.set(oldId, arr);
+          noGroup.push(s);
+        } else {
+          // Remained ungrouped: still queue position for persistence below
+        }
+      }
+    }
+    // 3) Apply removals from old groups
+    const membershipUpdates: { id: number; group_id: number | null }[] = [];
+    toRemove.forEach((spritesToRemove, gid) => {
+      const gv = groups.get(gid);
+      if (!gv) return;
+      for (const s of spritesToRemove) {
+        removeCardFromGroup(gv, s.__id);
+        (s as any).__groupId = undefined;
+      }
+      updateGroupMetrics(gv, sprites);
+      drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+    });
+    // 4) Apply additions to target groups
+    toAdd.forEach((spritesToAdd, gid) => {
+      const gv = groups.get(gid);
+      if (!gv) return;
+      // Append in current order; preserve existing ordering
+      for (const s of spritesToAdd) {
+        addCardToGroupOrdered(gv, s.__id, gv.order.length);
+        (s as any).__groupId = gv.id;
+        membershipUpdates.push({ id: s.__id, group_id: gv.id });
+      }
+      // Strategy: if many being added, do a single grid layout; else, place near drop point
+      const MANY_THRESHOLD = 8;
+      if (spritesToAdd.length >= MANY_THRESHOLD) {
+        layoutGroup(gv, sprites, (sp) =>
+          spatial.update({
+            id: sp.__id,
+            minX: sp.x,
+            minY: sp.y,
+            maxX: sp.x + CARD_W_GLOBAL,
+            maxY: sp.y + CARD_H_GLOBAL,
+          }),
+        );
+      } else {
+        // Light path: place each near its current position without full relayout
+        for (const s of spritesToAdd) {
+          placeCardInGroup(
+            gv,
+            s,
+            sprites,
+            (sp) =>
+              spatial.update({
+                id: sp.__id,
+                minX: sp.x,
+                minY: sp.y,
+                maxX: sp.x + CARD_W_GLOBAL,
+                maxY: sp.y + CARD_H_GLOBAL,
+              }),
+            s.x,
+            s.y,
+          );
+        }
+      }
+      // Overlay: if zoom overlay active, hide new members immediately
+      if ((gv._lastZoomPhase || 0) > 0.05) {
+        const now = performance.now();
+        for (const s of spritesToAdd) {
+          (s as any).__groupOverlayActive = true;
+          (s as any).eventMode = "none" as any;
+          s.cursor = "default";
+          s.alpha = 0;
+          s.visible = false;
+          s.renderable = false;
+          (s as any).__hiddenAt = now;
+        }
+      }
+      ensureMembersZOrder(gv, sprites);
+      updateGroupMetrics(gv, sprites);
+      drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+    });
+    // 5) Persist membership changes in one batch
+    if (membershipUpdates.length) {
+      try {
+        InstancesRepo.updateMany(membershipUpdates as any);
+      } catch {}
+    }
+    // 6) Finalize sprite appearances for cards that became ungrouped
+    for (const s of noGroup) {
+      (s as any).__groupOverlayActive = false;
+      (s as any).eventMode = "static";
+      s.cursor = "pointer";
+      s.alpha = 1;
+      s.visible = true;
+      s.renderable = true;
+      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
+      membershipUpdates.push({ id: s.__id, group_id: null });
+    }
+    // 7) Queue all positions and schedule single save
+    for (const ms of moved) queuePosition(ms);
+    scheduleLocalSave();
+    if (toAdd.size || toRemove.size) scheduleGroupSave();
   }
   // Unified group deletion: reset member cards and remove the group
   function deleteGroupById(id: number) {
@@ -2949,109 +3077,6 @@ const splashEl = document.getElementById("splash");
     sprites.forEach((s) => updateCardSpriteAppearance(s, ids.includes(s.__id)));
     updateGroupInfoPanel();
   });
-
-  function assignCardToGroupByPosition(s: CardSprite) {
-    const cx = s.x + 50;
-    const cy = s.y + 70; // card center
-    let target: GroupVisual | null = null;
-    for (const gv of groups.values()) {
-      if (
-        cx >= gv.gfx.x &&
-        cx <= gv.gfx.x + gv.w &&
-        cy >= gv.gfx.y &&
-        cy <= gv.gfx.y + gv.h
-      ) {
-        target = gv;
-        break;
-      }
-    }
-    if (target) {
-      // If moving between groups remove from old
-      let layoutOld: GroupVisual | undefined;
-      if (s.__groupId && s.__groupId !== target.id) {
-        const old = groups.get(s.__groupId);
-        if (old) {
-          removeCardFromGroup(old, s.__id);
-          layoutOld = old;
-        }
-      }
-      if (!s.__groupId || s.__groupId !== target.id) {
-        // Keep simple order: append at end; place near current drag position
-        addCardToGroupOrdered(target, s.__id, target.order.length);
-        s.__groupId = target.id;
-        // Persist membership change
-        try {
-          InstancesRepo.updateMany([{ id: s.__id, group_id: target.id }]);
-        } catch {}
-        scheduleGroupSave();
-        // Place at first available spot inside group (no forced resize; logic will respect global toggle)
-        placeCardInGroup(
-          target,
-          s,
-          sprites,
-          (sc) =>
-            spatial.update({
-              id: sc.__id,
-              minX: sc.x,
-              minY: sc.y,
-              maxX: sc.x + CARD_W_GLOBAL,
-              maxY: sc.y + CARD_H_GLOBAL,
-            }),
-          s.x,
-          s.y,
-        );
-        // If the group's zoom overlay is active, the new member must be hidden/disabled immediately.
-        if ((target._lastZoomPhase || 0) > 0.05) {
-          const now = performance.now();
-          (s as any).__groupOverlayActive = true;
-          (s as any).eventMode = "none" as any;
-          s.cursor = "default";
-          s.alpha = 0;
-          s.visible = false;
-          s.renderable = false;
-          (s as any).__hiddenAt = now;
-        }
-      } else {
-        // Already a member: keep freeform position
-      }
-      updateGroupMetrics(target, sprites);
-      if (layoutOld) {
-        updateGroupMetrics(layoutOld, sprites);
-        drawGroup(layoutOld, SelectionStore.state.groupIds.has(layoutOld.id));
-      }
-      drawGroup(target, SelectionStore.state.groupIds.has(target.id));
-      // Ensure z-order contract: member cards above their group
-      ensureMembersZOrder(target, sprites);
-    } else if (s.__groupId) {
-      const old = groups.get(s.__groupId);
-      if (old) {
-        removeCardFromGroup(old, s.__id);
-      }
-      // Clear membership
-      s.__groupId = undefined as any;
-      // Ensure the sprite is visible and interactive again in case the group zoom overlay had hidden it
-      (s as any).__groupOverlayActive = false;
-      (s as any).eventMode = "static";
-      s.cursor = "pointer";
-      s.alpha = 1;
-      s.visible = true;
-      s.renderable = true;
-      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
-      // Ungrouped card: reset z to a sane base if it was elevated by prior grouping
-      if (!(s as any).__baseZ || (s.zIndex || 0) < (s as any).__baseZ) {
-        (s as any).__baseZ = s.zIndex || ((window as any).__mtgNextZ?.() ?? 1);
-      }
-      if (old) {
-        updateGroupMetrics(old, sprites);
-        drawGroup(old, SelectionStore.state.groupIds.has(old.id));
-        scheduleGroupSave();
-      }
-      // Persist removal
-      try {
-        InstancesRepo.updateMany([{ id: s.__id, group_id: null }]);
-      } catch {}
-    }
-  }
 
   // Unified marquee + drag/resize state handlers
   const marquee = new MarqueeSystem(
