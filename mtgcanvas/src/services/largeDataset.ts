@@ -1,6 +1,6 @@
 // Large dataset loader for performance testing without touching persistence DB.
 // Attempts to fetch a card universe JSON (prefers legal.json then all.json) placed in public root (vite public/),
-// parent dir, or notes/ directory. Falls back to Tauri command. Spawns synthetic card instances using provided
+// parent dir, or notes/ directory. Spawns synthetic card instances using provided
 // factory callback.
 
 interface SpawnOptions {
@@ -141,30 +141,6 @@ export async function fetchCardUniverse(): Promise<any[]> {
     } catch (err) {
       console.warn("[largeDataset] error fetching candidate", url, err);
     }
-  }
-  // Tauri invoke
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tauri = (window as any).__TAURI__;
-    if (tauri && tauri.invoke) {
-      const txt = await tauri.invoke("load_universe");
-      if (txt && typeof txt === "string") {
-        const arr = parseUniverseText(txt);
-        if (arr.length) {
-          console.log(
-            "[largeDataset] loaded universe via invoke count=",
-            arr.length,
-          );
-          return arr;
-        } else
-          console.warn(
-            "[largeDataset] invoke returned text but parsed 0 cards, preview=",
-            (txt as string).slice(0, 80),
-          );
-      }
-    }
-  } catch (e) {
-    console.warn("[largeDataset] Tauri invoke load_universe failed", e);
   }
   console.warn(
     `[largeDataset] Unable to load ${DATASET_PREFERRED} or ${DATASET_FALLBACK} (place one in mtgcanvas/public/ or notes/)`,

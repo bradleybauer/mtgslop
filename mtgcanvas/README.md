@@ -1,8 +1,8 @@
 # MTG Canvas
 
-Local desktop app to organize Magic: The Gathering cards on an infinite zoomable canvas.
+Web app to organize Magic: The Gathering cards on an infinite zoomable canvas.
 
-Stack: Tauri (Rust shell) + TypeScript + Vite + PixiJS.
+Stack: TypeScript + Vite + PixiJS.
 
 ## MVP Features
 - Import Scryfall `legal.json` (preferred smaller subset) or `all.json` into SQLite.
@@ -16,7 +16,7 @@ Stack: Tauri (Rust shell) + TypeScript + Vite + PixiJS.
 ## Development
 (Scaffold scripts will be added once dependencies installed.)
 
-## Directory Structure (planned)
+## Directory Structure (current)
 ```
 mtgcanvas/
   src/
@@ -35,18 +35,13 @@ mtgcanvas/
       selectionStore.ts
     images/
       imageCache.ts
-  src-tauri/
-    src/
-      main.rs        # Tauri entry, commands (fetch image path, etc.)
-      commands.rs
-    Cargo.toml
   package.json
   vite.config.ts
   tsconfig.json
 ```
 
 ## Next Steps
-1. Install dependencies & scaffold Tauri + Vite.
+1. Install dependencies (npm ci) and run the dev server (npm run dev).
 2. Place `legal.json` (or `all.json`) in `mtgcanvas/public/` or `notes/` directory. The app prefers `legal.json` if both exist.
 3. Drag, pan, zoom, and persist positions in LocalStorage; imported cards are stored in IndexedDB.
 
