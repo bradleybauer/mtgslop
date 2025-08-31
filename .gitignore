@@ -94,3 +94,5 @@ pnpm-debug.log*
 *.tgz
 *.7z
 
+
+.github
