@@ -110,41 +110,35 @@ function snap(v: number) {
 
 const app = new PIXI.Application();
 // Disable grammar/spellcheck in all text entry surfaces
-try {
-  disableSpellAndGrammarGlobally({ includeContentEditable: true });
-} catch {}
+disableSpellAndGrammarGlobally({ includeContentEditable: true });
 // Normalize UI scale early (Windows high-DPI heuristic + persisted value)
-try {
-  applyUiScaleFromStorageOrAuto();
-} catch {}
+applyUiScaleFromStorageOrAuto();
 // Expose quick UI-scale helpers for manual tweaking
-try {
-  (window as any).mtgUiScale = {
-    get: () => getUiScale(),
-    set: (v: number) => setUiScale(v),
-    inc: (d = 0.05) => setUiScale(getUiScale() + d),
-    dec: (d = 0.05) => setUiScale(getUiScale() - d),
-    reset: () => setUiScale(1),
-  };
-  // Keyboard: Alt+= increase, Alt+- decrease, Alt+0 reset
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      if (!e.altKey) return;
-      if (e.key === "+" || e.key === "=") {
-        setUiScale(getUiScale() + 0.05);
-        e.preventDefault();
-      } else if (e.key === "-" || e.key === "_") {
-        setUiScale(getUiScale() - 0.05);
-        e.preventDefault();
-      } else if (e.key === "0") {
-        setUiScale(1);
-        e.preventDefault();
-      }
-    },
-    { capture: true },
-  );
-} catch {}
+(window as any).mtgUiScale = {
+  get: () => getUiScale(),
+  set: (v: number) => setUiScale(v),
+  inc: (d = 0.05) => setUiScale(getUiScale() + d),
+  dec: (d = 0.05) => setUiScale(getUiScale() - d),
+  reset: () => setUiScale(1),
+};
+// Keyboard: Alt+= increase, Alt+- decrease, Alt+0 reset
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!e.altKey) return;
+    if (e.key === "+" || e.key === "=") {
+      setUiScale(getUiScale() + 0.05);
+      e.preventDefault();
+    } else if (e.key === "-" || e.key === "_") {
+      setUiScale(getUiScale() - 0.05);
+      e.preventDefault();
+    } else if (e.key === "0") {
+      setUiScale(1);
+      e.preventDefault();
+    }
+  },
+  { capture: true },
+);
 // Splash management: keep canvas hidden until persisted layout + groups are restored
 const splashEl = document.getElementById("splash");
 (async () => {
@@ -156,61 +150,43 @@ const splashEl = document.getElementById("splash");
     // Prefer WebGL over WebGPU on Linux for stability; can be toggled later if needed
     preference: "webgl" as any,
   });
-  // Favor rounding to device pixels for crisper sampling at stable zoom
-  try {
-    (app.renderer as any).roundPixels = true;
-  } catch {}
   // React to DPR changes (monitor swaps, OS scale changes, browser zoom) and re-init resolution
-  try {
-    const onDprChange = () => {
-      const eff = getEffectiveDpr();
-      if ((app.renderer as any).resolution !== eff) {
-        (app.renderer as any).resolution = eff;
-        // Trigger a resize to apply new backbuffer size
-        try {
-          app.resize();
-        } catch {}
-      }
-      // Recompute UI scale automatically only if not in manual mode
-      try {
-        if (!isUiScaleManual()) applyUiScaleFromStorageOrAuto();
-      } catch {}
-    };
-    const unwatch = watchDpr(onDprChange);
-    // Also expose for manual debug
-    (window as any).__unwatchDpr = unwatch;
-  } catch {}
-  // Auto-detect a conservative GPU texture budget for this device (user override via localStorage: gpuBudgetMB)
-  try {
-    autoConfigureTextureBudget(app.renderer);
-  } catch {}
-  function parseCssHexColor(v: string): number | null {
-    try {
-      const s = (v || "").trim();
-      if (!s) return null;
-      if (s.startsWith("#")) {
-        let hex = s.slice(1);
-        if (hex.length === 3)
-          hex = hex
-            .split("")
-            .map((c) => c + c)
-            .join("");
-        if (hex.length >= 6) hex = hex.slice(0, 6);
-        const n = parseInt(hex, 16);
-        return Number.isFinite(n) ? n : null;
-      }
-      return null;
-    } catch {
-      return null;
+  const onDprChange = () => {
+    const eff = getEffectiveDpr();
+    if ((app.renderer as any).resolution !== eff) {
+      (app.renderer as any).resolution = eff;
+      // Trigger a resize to apply new backbuffer size
+      app.resize();
     }
+    // Recompute UI scale automatically only if not in manual mode
+    if (!isUiScaleManual()) applyUiScaleFromStorageOrAuto();
+  };
+  const unwatch = watchDpr(onDprChange);
+  // Also expose for manual debug
+  (window as any).__unwatchDpr = unwatch;
+  // Auto-detect a conservative GPU texture budget for this device (user override via localStorage: gpuBudgetMB)
+  autoConfigureTextureBudget(app.renderer);
+  function parseCssHexColor(v: string): number | null {
+    const s = (v || "").trim();
+    if (!s) return null;
+    if (s.startsWith("#")) {
+      let hex = s.slice(1);
+      if (hex.length === 3)
+        hex = hex
+          .split("")
+          .map((c) => c + c)
+          .join("");
+      if (hex.length >= 6) hex = hex.slice(0, 6);
+      const n = parseInt(hex, 16);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
   }
   function applyCanvasBg() {
-    try {
-      const css = getComputedStyle(document.documentElement);
-      const bg = css.getPropertyValue("--canvas-bg").trim();
-      const hex = parseCssHexColor(bg);
-      if (hex != null) app.renderer.background.color = hex as any;
-    } catch {}
+    const css = getComputedStyle(document.documentElement);
+    const bg = css.getPropertyValue("--canvas-bg").trim();
+    const hex = parseCssHexColor(bg);
+    if (hex != null) app.renderer.background.color = hex as any;
   }
   registerThemeListener(() => applyCanvasBg());
   // Will run once theme styles ensured below; calling here just in case dark default already present.
@@ -219,53 +195,41 @@ const splashEl = document.getElementById("splash");
   app.canvas.style.visibility = "hidden";
   document.body.appendChild(app.canvas);
   // Guard against accidental CSS scaling of the WebGL canvas (which would blur)
-  try {
-    app.canvas.style.imageRendering = "auto"; // let WebGL handle filtering
-    app.canvas.style.transform = ""; // ensure we don't have CSS transforms
-  } catch {}
+  app.canvas.style.imageRendering = "auto"; // let WebGL handle filtering
+  app.canvas.style.transform = ""; // ensure we don't have CSS transforms
   // WebGL context loss handling: pause ticker and surface a message; try to recover on restore
-  try {
-    const canvas: any = app.renderer?.canvas || app.canvas;
-    let ctxLostBanner: HTMLDivElement | null = null;
-    function showCtxLostBanner(msg: string) {
-      if (!ctxLostBanner) {
-        ctxLostBanner = document.createElement("div");
-        ctxLostBanner.style.cssText =
-          "position:fixed;left:50%;top:calc(16px * var(--ui-scale));transform:translateX(-50%);z-index:10050;padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));border-radius:calc(8px * var(--ui-scale));background:var(--panel-bg);color:var(--panel-fg);border:1px solid var(--panel-border);font:calc(14px * var(--ui-scale))/1.4 var(--panel-font);";
-        document.body.appendChild(ctxLostBanner);
-      }
-      ctxLostBanner.textContent = msg;
-      ctxLostBanner.style.display = "block";
+  const canvas: any = app.renderer?.canvas || app.canvas;
+  let ctxLostBanner: HTMLDivElement | null = null;
+  function showCtxLostBanner(msg: string) {
+    if (!ctxLostBanner) {
+      ctxLostBanner = document.createElement("div");
+      ctxLostBanner.style.cssText =
+        "position:fixed;left:50%;top:calc(16px * var(--ui-scale));transform:translateX(-50%);z-index:10050;padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));border-radius:calc(8px * var(--ui-scale));background:var(--panel-bg);color:var(--panel-fg);border:1px solid var(--panel-border);font:calc(14px * var(--ui-scale))/1.4 var(--panel-font);";
+      document.body.appendChild(ctxLostBanner);
     }
-    function hideCtxLostBanner() {
-      if (ctxLostBanner) ctxLostBanner.style.display = "none";
-    }
-    canvas.addEventListener(
-      "webglcontextlost",
-      (ev: any) => {
-        try {
-          ev.preventDefault();
-        } catch {}
-        try {
-          app.ticker.stop();
-        } catch {}
-        showCtxLostBanner("Graphics context lost. Attempting to recover…");
-      },
-      false,
-    );
-    canvas.addEventListener(
-      "webglcontextrestored",
-      () => {
-        try {
-          hideCtxLostBanner();
-        } catch {}
-        try {
-          app.ticker.start();
-        } catch {}
-      },
-      false,
-    );
-  } catch {}
+    ctxLostBanner.textContent = msg;
+    ctxLostBanner.style.display = "block";
+  }
+  function hideCtxLostBanner() {
+    if (ctxLostBanner) ctxLostBanner.style.display = "none";
+  }
+  canvas.addEventListener(
+    "webglcontextlost",
+    (ev: any) => {
+      ev.preventDefault();
+      app.ticker.stop();
+      showCtxLostBanner("Graphics context lost. Attempting to recover…");
+    },
+    false,
+  );
+  canvas.addEventListener(
+    "webglcontextrestored",
+    () => {
+      hideCtxLostBanner();
+      app.ticker.start();
+    },
+    false,
+  );
 
   const world = new PIXI.Container();
   app.stage.addChild(world);
@@ -286,24 +250,22 @@ const splashEl = document.getElementById("splash");
     w: number;
     h: number;
   }) {
-    try {
-      if (!boundsMarker) {
-        boundsMarker = new PIXI.Graphics();
-        boundsMarker.eventMode = "none";
-        // Place behind cards/groups; world sorting is enabled later
-        (boundsMarker as any).zIndex = -1000000;
-        world.addChild(boundsMarker);
-      }
-      boundsMarker.clear();
-      // Wireframe only: outline the bounds rectangle without fill; color depends on theme
-      // Draw stroke entirely outside the true bounds so the inner edge equals the bounded area
-      boundsMarker.rect(b.x, b.y, b.w, b.h).stroke({
-        color: boundsStrokeColor() as any,
-        width: 120,
-        alignment: 0, // 0 = outside, 0.5 = centered (default), 1 = inside
-      });
-      lastBounds = { ...b };
-    } catch {}
+    if (!boundsMarker) {
+      boundsMarker = new PIXI.Graphics();
+      boundsMarker.eventMode = "none";
+      // Place behind cards/groups; world sorting is enabled later
+      (boundsMarker as any).zIndex = -1000000;
+      world.addChild(boundsMarker);
+    }
+    boundsMarker.clear();
+    // Wireframe only: outline the bounds rectangle without fill; color depends on theme
+    // Draw stroke entirely outside the true bounds so the inner edge equals the bounded area
+    boundsMarker.rect(b.x, b.y, b.w, b.h).stroke({
+      color: boundsStrokeColor() as any,
+      width: 120,
+      alignment: 0, // 0 = outside, 0.5 = centered (default), 1 = inside
+    });
+    lastBounds = { ...b };
   }
 
   // Top-of-canvas title banner (fixed, above world)
@@ -339,30 +301,26 @@ const splashEl = document.getElementById("splash");
   banner.addChild(titleText);
 
   function drawBannerBg() {
-    try {
-      const padX = 18;
-      const padY = 12;
-      const radius = 12;
-      const w = Math.ceil(titleText.width) + padX * 2;
-      const h = Math.ceil(titleText.height) + padY * 2;
-      bannerBg.clear();
-      bannerBg
-        .roundRect(0, 0, w, h, radius)
-        .fill({ color: Colors.panelBgAlt() as any, alpha: 0.92 })
-        .stroke({ color: Colors.panelBorder() as any, width: 1.5 });
-      // Title position
-      titleText.x = padX;
-      titleText.y = padY;
-    } catch {}
+    const padX = 18;
+    const padY = 12;
+    const radius = 12;
+    const w = Math.ceil(titleText.width) + padX * 2;
+    const h = Math.ceil(titleText.height) + padY * 2;
+    bannerBg.clear();
+    bannerBg
+      .roundRect(0, 0, w, h, radius)
+      .fill({ color: Colors.panelBgAlt() as any, alpha: 0.92 })
+      .stroke({ color: Colors.panelBorder() as any, width: 1.5 });
+    // Title position
+    titleText.x = padX;
+    titleText.y = padY;
   }
 
   // Theme reactivity
   registerThemeListener(() => {
-    try {
-      (titleText.style as any).fill = Colors.bannerText() as any;
-      (titleText.style as any).dropShadowColor = Colors.bannerShadow() as any;
-      drawBannerBg();
-    } catch {}
+    (titleText.style as any).fill = Colors.bannerText() as any;
+    (titleText.style as any).dropShadowColor = Colors.bannerShadow() as any;
+    drawBannerBg();
   });
 
   function layoutBanner() {
@@ -457,9 +415,7 @@ const splashEl = document.getElementById("splash");
   // Re-theme overlay when theme changes
   registerThemeListener(() => {
     if (!ctrlsOverlay) return;
-    try {
-      ctrlsOverlay.destroy({ children: true });
-    } catch {}
+    ctrlsOverlay.destroy({ children: true });
     ctrlsOverlay = createCtrlsOverlay();
     app.stage.addChild(ctrlsOverlay);
     layoutCtrlsOverlay();
@@ -472,52 +428,42 @@ const splashEl = document.getElementById("splash");
     ctrlsOverlay.y = Math.max(8, cy);
   }
   function showCtrlsOverlayIfNeeded() {
-    try {
-      if (ctrlsOverlay) return;
-      ctrlsOverlay = createCtrlsOverlay();
-      app.stage.addChild(ctrlsOverlay);
-      layoutCtrlsOverlay();
-    } catch {}
+    if (ctrlsOverlay) return;
+    ctrlsOverlay = createCtrlsOverlay();
+    app.stage.addChild(ctrlsOverlay);
+    layoutCtrlsOverlay();
   }
   function hideCtrlsOverlay() {
     if (!ctrlsOverlay) return;
-    try {
-      ctrlsOverlay.destroy({ children: true });
-    } catch {}
+    ctrlsOverlay.destroy({ children: true });
     ctrlsOverlay = null;
   }
   function updateEmptyStateOverlay() {
     // Note: relies on groups being initialized before this is called
-    try {
-      // Show overlay iff there are no cards on the canvas
-      const isEmpty = sprites.length === 0;
-      if (isEmpty) showCtrlsOverlayIfNeeded();
-      else hideCtrlsOverlay();
-    } catch {}
+    // Show overlay iff there are no cards on the canvas
+    const isEmpty = sprites.length === 0;
+    if (isEmpty) showCtrlsOverlayIfNeeded();
+    else hideCtrlsOverlay();
   }
   window.addEventListener("resize", layoutCtrlsOverlay);
 
   // Camera abstraction
   const camera = new Camera({ world });
   // Limit panning/zooming to a very large but finite canvas area
-  try {
-    const ha: any = app.stage.hitArea as any;
-    if (ha && typeof ha.x === "number")
-      camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
-    if (ha && typeof ha.x === "number")
-      ensureBoundsMarker({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
-  } catch {}
+  const ha: any = app.stage.hitArea as any;
+  if (ha && typeof ha.x === "number")
+    camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
+  if (ha && typeof ha.x === "number")
+    ensureBoundsMarker({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
   // Redraw bounds marker on theme changes with a theme-aware color
   registerThemeListener(() => {
     if (lastBounds) ensureBoundsMarker(lastBounds);
   });
   // Keep camera min zoom accommodating full bounds on viewport resize
   window.addEventListener("resize", () => {
-    try {
-      const ha: any = app.stage.hitArea as any;
-      if (ha && typeof ha.x === "number")
-        camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
-    } catch {}
+    const ha: any = app.stage.hitArea as any;
+    if (ha && typeof ha.x === "number")
+      camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
   });
   const spatial = new SpatialIndex();
   // Global z-order helper: monotonic counter shared across modules via window
@@ -533,18 +479,14 @@ const splashEl = document.getElementById("splash");
   function currentMaxContentZ(): number {
     const TOP_RESERVED = 1000000;
     let maxZ = 0;
-    try {
-      sprites.forEach((s) => {
-        const z = s.zIndex || 0;
-        if (z < TOP_RESERVED && z > maxZ) maxZ = z;
-      });
-    } catch {}
-    try {
-      groups.forEach((gv) => {
-        const z = gv.gfx?.zIndex || 0;
-        if (z < TOP_RESERVED && z > maxZ) maxZ = z;
-      });
-    } catch {}
+    sprites.forEach((s) => {
+      const z = s.zIndex || 0;
+      if (z < TOP_RESERVED && z > maxZ) maxZ = z;
+    });
+    groups.forEach((gv) => {
+      const z = gv.gfx?.zIndex || 0;
+      if (z < TOP_RESERVED && z > maxZ) maxZ = z;
+    });
     return maxZ;
   }
   // Expose for card layer to use when computing bring-to-front
@@ -555,18 +497,14 @@ const splashEl = document.getElementById("splash");
   // Compute the minimum zIndex among regular world content (cards and groups).
   function currentMinContentZ(): number {
     let minZ = Number.POSITIVE_INFINITY;
-    try {
-      sprites.forEach((s) => {
-        const z = s.zIndex || 0;
-        if (z < minZ) minZ = z;
-      });
-    } catch {}
-    try {
-      groups.forEach((gv) => {
-        const z = gv.gfx?.zIndex || 0;
-        if (z < minZ) minZ = z;
-      });
-    } catch {}
+    sprites.forEach((s) => {
+      const z = s.zIndex || 0;
+      if (z < minZ) minZ = z;
+    });
+    groups.forEach((gv) => {
+      const z = gv.gfx?.zIndex || 0;
+      if (z < minZ) minZ = z;
+    });
     return minZ === Number.POSITIVE_INFINITY ? 0 : minZ;
   }
 
@@ -658,14 +596,12 @@ const splashEl = document.getElementById("splash");
   // Transient z-order rules during drag: use very high z values below HUD/banner
   // Live-refresh groups on theme changes (colors, text fills, overlay presentation)
   registerThemeListener(() => {
-    try {
-      groups.forEach((gv) => {
-        // Ensure overlay/header visibility & overlay text color/position reflect new theme
-        updateGroupZoomPresentation(gv, world.scale.x, sprites);
-        // Redraw with current theme-derived palette
-        drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-      });
-    } catch {}
+    groups.forEach((gv) => {
+      // Ensure overlay/header visibility & overlay text color/position reflect new theme
+      updateGroupZoomPresentation(gv, world.scale.x, sprites);
+      // Redraw with current theme-derived palette
+      drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+    });
   });
   // Build placement context for planner module (captures live references)
   function buildPlacementContext(): PlacementContext {
@@ -737,9 +673,7 @@ const splashEl = document.getElementById("splash");
         }),
     );
     // Ensure context menu listener
-    try {
-      (ensureCardContextListeners as any)();
-    } catch {}
+    (ensureCardContextListeners as any)();
     // Adding a sprite may end the empty state (safe before groups exist)
     updateEmptyStateOverlay();
     return s;
@@ -779,13 +713,11 @@ const splashEl = document.getElementById("splash");
         });
         if (inst.group_id) (s as any).__groupId = inst.group_id;
         // Attach scryfall id if provided or derivable from card
-        try {
-          const sid =
-            (inst && (inst as any).scryfall_id) ||
-            (inst.card &&
-              ((inst.card as any).id || (inst.card as any)?.data?.id));
-          if (sid) (s as any).__scryfallId = String(sid);
-        } catch {}
+        const sid =
+          (inst && (inst as any).scryfall_id) ||
+          (inst.card &&
+            ((inst.card as any).id || (inst.card as any)?.data?.id));
+        if (sid) (s as any).__scryfallId = String(sid);
         (s as any).__cardSprite = true;
         world.addChild(s);
         sprites.push(s);
@@ -830,25 +762,17 @@ const splashEl = document.getElementById("splash");
     } finally {
       SUPPRESS_SAVES = prevSuppress;
       updateEmptyStateOverlay();
-      try {
-        // Ensure right-click context menu listeners are wired for new cards
-        (ensureCardContextListeners as any)();
-      } catch {}
+      // Ensure right-click context menu listeners are wired for new cards
+      (ensureCardContextListeners as any)();
     }
-    try {
-      __tm.end({ count: created.length });
-    } catch {}
+    __tm.end({ count: created.length });
     return created;
   }
   // Startup instrumentation: begin capturing phase timings early
   let __startupTimer: ReturnType<typeof createPhaseTimer> | null = null;
-  try {
-    __startupTimer = createPhaseTimer("startup");
-  } catch {}
+  __startupTimer = createPhaseTimer("startup");
   const loaded = loadAll();
-  try {
-    __startupTimer && __startupTimer.mark("loadAll");
-  } catch {}
+  __startupTimer && __startupTimer.mark("loadAll");
   const LS_KEY = "mtgcanvas_positions_v1";
   const LS_GROUPS_KEY = "mtgcanvas_groups_v1";
   // Suppress any local save side effects (used when clearing data to avoid races that re-save)
@@ -856,104 +780,92 @@ const splashEl = document.getElementById("splash");
   let memoryGroupsData: any = null;
   let groupsRestored = false;
   {
-    try {
-      const raw = localStorage.getItem(LS_GROUPS_KEY);
-      if (raw) memoryGroupsData = JSON.parse(raw);
-    } catch {}
+    const raw = localStorage.getItem(LS_GROUPS_KEY);
+    if (raw) memoryGroupsData = JSON.parse(raw);
   }
-  try {
-    __startupTimer && __startupTimer.mark("read-groups-LS");
-  } catch {}
+  __startupTimer && __startupTimer.mark("read-groups-LS");
   // (index-based pre-parse removed; id-based restore applies in applyStoredPositionsMemory)
   function applyStoredPositionsMemory() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const obj = JSON.parse(raw);
-      if (!obj) return;
-      // Primary: id-based
-      if (Array.isArray(obj.instances)) {
-        const map = new Map<
-          number,
-          {
-            x: number;
-            y: number;
-            group_id?: number | null;
-            scryfall_id?: string | null;
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (!obj) return;
+    // Primary: id-based
+    if (Array.isArray(obj.instances)) {
+      const map = new Map<
+        number,
+        {
+          x: number;
+          y: number;
+          group_id?: number | null;
+          scryfall_id?: string | null;
+        }
+      >();
+      obj.instances.forEach((r: any) => {
+        if (typeof r.id === "number")
+          map.set(r.id, {
+            x: r.x,
+            y: r.y,
+            group_id: r.group_id ?? null,
+            scryfall_id: r.scryfall_id ?? null,
+          });
+      });
+      let matched = 0;
+      sprites.forEach((s) => {
+        const p = map.get(s.__id);
+        if (p) {
+          // Clamp restored positions to bounds
+          const b = getCanvasBounds();
+          s.x = Math.min(b.x + b.w - CARD_W_GLOBAL, Math.max(b.x, p.x));
+          s.y = Math.min(b.y + b.h - CARD_H_GLOBAL, Math.max(b.y, p.y));
+          // Restore z if available on p (populated by LS)
+          const anyP: any = p as any;
+          if (typeof anyP.z === "number") {
+            s.zIndex = anyP.z;
+            (s as any).__baseZ = anyP.z;
           }
-        >();
-        obj.instances.forEach((r: any) => {
-          if (typeof r.id === "number")
-            map.set(r.id, {
-              x: r.x,
-              y: r.y,
-              group_id: r.group_id ?? null,
-              scryfall_id: r.scryfall_id ?? null,
-            });
-        });
-        let matched = 0;
-        sprites.forEach((s) => {
-          const p = map.get(s.__id);
-          if (p) {
-            // Clamp restored positions to bounds
+          if (p.group_id != null) (s as any).__groupId = p.group_id;
+          if (p.scryfall_id) (s as any).__scryfallId = p.scryfall_id;
+          matched++;
+        }
+      });
+      // Index-based if few matched (ids changed)
+      if (matched < sprites.length * 0.5 && Array.isArray(obj.byIndex)) {
+        obj.byIndex.forEach((p: any, idx: number) => {
+          const s = sprites[idx];
+          if (s && p && typeof p.x === "number" && typeof p.y === "number") {
             const b = getCanvasBounds();
             s.x = Math.min(b.x + b.w - CARD_W_GLOBAL, Math.max(b.x, p.x));
             s.y = Math.min(b.y + b.h - CARD_H_GLOBAL, Math.max(b.y, p.y));
-            // Restore z if available on p (populated by LS)
-            const anyP: any = p as any;
-            if (typeof anyP.z === "number") {
-              s.zIndex = anyP.z;
-              (s as any).__baseZ = anyP.z;
-            }
-            if (p.group_id != null) (s as any).__groupId = p.group_id;
-            if (p.scryfall_id) (s as any).__scryfallId = p.scryfall_id;
-            matched++;
           }
         });
-        // Index-based if few matched (ids changed)
-        if (matched < sprites.length * 0.5 && Array.isArray(obj.byIndex)) {
-          obj.byIndex.forEach((p: any, idx: number) => {
-            const s = sprites[idx];
-            if (s && p && typeof p.x === "number" && typeof p.y === "number") {
-              const b = getCanvasBounds();
-              s.x = Math.min(b.x + b.w - CARD_W_GLOBAL, Math.max(b.x, p.x));
-              s.y = Math.min(b.y + b.h - CARD_H_GLOBAL, Math.max(b.y, p.y));
-            }
-          });
-        }
-        // Refresh spatial index bounds after applying new positions
-        sprites.forEach((s) =>
-          spatial.update({
-            id: s.__id,
-            minX: s.x,
-            minY: s.y,
-            maxX: s.x + CARD_W_GLOBAL,
-            maxY: s.y + CARD_H_GLOBAL,
-          }),
-        );
       }
-    } catch {}
+      // Refresh spatial index bounds after applying new positions
+      sprites.forEach((s) =>
+        spatial.update({
+          id: s.__id,
+          minX: s.x,
+          minY: s.y,
+          maxX: s.x + CARD_W_GLOBAL,
+          maxY: s.y + CARD_H_GLOBAL,
+        }),
+      );
+    }
   }
   // Rehydrate previously imported Scryfall cards (raw JSON) and attach sprites
   async function rehydrateImportedCards() {
     const __rehImpTimer = createPhaseTimer("startup:rehydrateImported(inner)");
     // IndexedDB-backed store only
     let cards: any[] = [];
-    try {
-      cards = await getAllImportedCards();
-    } catch {}
-    try {
-      __rehImpTimer.mark("load-idb");
-    } catch {}
+    cards = await getAllImportedCards();
+    __rehImpTimer.mark("load-idb");
     if (!cards.length) return;
     // Try to restore stable instance ids and group memberships from saved positions
     let saved: any = null;
-    try {
-      const raw =
-        localStorage.getItem(LS_KEY) ||
-        localStorage.getItem("mtgcanvas_positions_v1");
-      if (raw) saved = JSON.parse(raw);
-    } catch {}
+    const raw =
+      localStorage.getItem(LS_KEY) ||
+      localStorage.getItem("mtgcanvas_positions_v1");
+    if (raw) saved = JSON.parse(raw);
     const savedByScry: Map<
       string,
       {
@@ -981,9 +893,7 @@ const splashEl = document.getElementById("splash");
       // Ensure deterministic usage order
       savedByScry.forEach((list) => list.sort((a, b) => a.id - b.id));
     }
-    try {
-      __rehImpTimer.mark("parse-positions");
-    } catch {}
+    __rehImpTimer.mark("parse-positions");
     // Track max id to avoid collisions
     let maxId = 0;
     savedByScry.forEach((list) =>
@@ -992,10 +902,8 @@ const splashEl = document.getElementById("splash");
       }),
     );
     if (maxId > 0) {
-      try {
-        (InstancesRepo as any).ensureNextId &&
-          (InstancesRepo as any).ensureNextId(maxId + 1);
-      } catch {}
+      (InstancesRepo as any).ensureNextId &&
+        (InstancesRepo as any).ensureNextId(maxId + 1);
     }
     // Create sprites strictly based on saved positions per Scryfall id (bulk)
     let __madeSaved = 0;
@@ -1059,47 +967,37 @@ const splashEl = document.getElementById("splash");
         __madeSaved += made.length;
       }
     }
-    try {
-      __rehImpTimer.mark(`createSprites(saved)=${__madeSaved}`);
-    } catch {}
-    try {
-      __rehImpTimer.end();
-    } catch {}
+    __rehImpTimer.mark(`createSprites(saved)=${__madeSaved}`);
+    __rehImpTimer.end();
   }
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw) {
-      const obj = JSON.parse(raw);
-      if (obj && Array.isArray(obj.instances)) {
-        obj.instances.forEach((r: any) => {
-          const inst = loaded.instances.find((i) => i.id === r.id);
-          if (inst) {
-            inst.x = r.x;
-            inst.y = r.y;
-            // Also restore z-order if present
-            if (typeof r.z === "number") (inst as any).z = r.z;
-            (inst as any).group_id = r.group_id ?? inst.group_id ?? null;
-          }
-        });
-      }
+  const raw = localStorage.getItem(LS_KEY);
+  if (raw) {
+    const obj = JSON.parse(raw);
+    if (obj && Array.isArray(obj.instances)) {
+      obj.instances.forEach((r: any) => {
+        const inst = loaded.instances.find((i) => i.id === r.id);
+        if (inst) {
+          inst.x = r.x;
+          inst.y = r.y;
+          // Also restore z-order if present
+          if (typeof r.z === "number") (inst as any).z = r.z;
+          (inst as any).group_id = r.group_id ?? inst.group_id ?? null;
+        }
+      });
     }
-  } catch {}
+  }
   let startupComplete = false;
   function finishStartup() {
     if (startupComplete) return;
     startupComplete = true;
     // Show canvas, remove splash
     app.canvas.style.visibility = "visible";
-    try {
-      splashEl?.parentElement?.removeChild(splashEl);
-    } catch {}
+    splashEl?.parentElement?.removeChild(splashEl);
     // End startup timer on first completion
-    try {
-      if (__startupTimer) {
-        __startupTimer.end({ sprites: sprites.length, groups: groups.size });
-        __startupTimer = null;
-      }
-    } catch {}
+    if (__startupTimer) {
+      __startupTimer.end({ sprites: sprites.length, groups: groups.size });
+      __startupTimer = null;
+    }
   }
 
   // Smart initial camera framing: fit view to all content once after load
@@ -1127,18 +1025,16 @@ const splashEl = document.getElementById("splash");
       if (y2 > maxY) maxY = y2;
     }
     // Include group frames if any exist
-    try {
-      groups?.forEach((gv: any) => {
-        const x1 = gv.gfx?.x ?? gv.x ?? 0;
-        const y1 = gv.gfx?.y ?? gv.y ?? 0;
-        const x2 = x1 + (gv.w ?? 0);
-        const y2 = y1 + (gv.h ?? 0);
-        if (x1 < minX) minX = x1;
-        if (y1 < minY) minY = y1;
-        if (x2 > maxX) maxX = x2;
-        if (y2 > maxY) maxY = y2;
-      });
-    } catch {}
+    groups?.forEach((gv: any) => {
+      const x1 = gv.gfx?.x ?? gv.x ?? 0;
+      const y1 = gv.gfx?.y ?? gv.y ?? 0;
+      const x2 = x1 + (gv.w ?? 0);
+      const y2 = y1 + (gv.h ?? 0);
+      if (x1 < minX) minX = x1;
+      if (y1 < minY) minY = y1;
+      if (x2 > maxX) maxX = x2;
+      if (y2 > maxY) maxY = y2;
+    });
     if (
       !Number.isFinite(minX) ||
       !Number.isFinite(minY) ||
@@ -1352,9 +1248,7 @@ const splashEl = document.getElementById("splash");
     });
     // 5) Persist membership changes in one batch
     if (membershipUpdates.length) {
-      try {
-        InstancesRepo.updateMany(membershipUpdates as any);
-      } catch {}
+      InstancesRepo.updateMany(membershipUpdates as any);
     }
     // 6) Finalize sprite appearances for cards that became ungrouped
     for (const s of noGroup) {
@@ -1396,12 +1290,8 @@ const splashEl = document.getElementById("splash");
       }
       updates.push({ id: cid, group_id: null });
     });
-    try {
-      if (updates.length) InstancesRepo.updateMany(updates as any);
-    } catch {}
-    try {
-      gv.gfx.destroy();
-    } catch {}
+    if (updates.length) InstancesRepo.updateMany(updates as any);
+    gv.gfx.destroy();
     groups.delete(id);
     updateEmptyStateOverlay();
   }
@@ -1440,21 +1330,19 @@ const splashEl = document.getElementById("splash");
       // Fallback: if quota or serialization fails, persist a minimal frames-only snapshot
       // that still includes group names so renames survive quick reloads. Membership is
       // restored from positions (instances) anyway.
-      try {
-        const framesOnly = {
-          groups: [...groups.values()].map((gv) => ({
-            id: gv.id,
-            x: gv.gfx.x,
-            y: gv.gfx.y,
-            w: gv.w,
-            h: gv.h,
-            z: gv.gfx.zIndex || 0,
-            name: gv.name,
-            collapsed: gv.collapsed,
-          })),
-        };
-        localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
-      } catch {}
+      const framesOnly = {
+        groups: [...groups.values()].map((gv) => ({
+          id: gv.id,
+          x: gv.gfx.x,
+          y: gv.gfx.y,
+          w: gv.w,
+          h: gv.h,
+          z: gv.gfx.zIndex || 0,
+          name: gv.name,
+          collapsed: gv.collapsed,
+        })),
+      };
+      localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
     }
   }
   // (Older restoreMemoryGroups variant removed to avoid duplication; see final definition below.)
@@ -1480,9 +1368,7 @@ const splashEl = document.getElementById("splash");
         const gv = createGroupVisual(gid, x, y, w, h);
         if (typeof gr.name === "string" && gr.name) gv.name = gr.name;
         if (typeof gr.z === "number") {
-          try {
-            gv.gfx.zIndex = gr.z;
-          } catch {}
+          gv.gfx.zIndex = gr.z;
         }
         // Collapse feature retired: ignore persisted collapsed flag
         gv.collapsed = false;
@@ -1564,24 +1450,18 @@ const splashEl = document.getElementById("splash");
       });
       updateGroupMetrics(gv, sprites);
       drawGroup(gv, false);
-      try {
-        persistGroupTransform(gv.id, {
-          x: gv.gfx.x,
-          y: gv.gfx.y,
-          w: gv.w,
-          h: gv.h,
-        });
-      } catch {}
+      persistGroupTransform(gv.id, {
+        x: gv.gfx.x,
+        y: gv.gfx.y,
+        w: gv.w,
+        h: gv.h,
+      });
     });
     // Ensure new group creations won't collide with restored ids (memory only)
-    try {
-      const maxId = Math.max(...[...groups.keys(), 0]);
-      (GroupsRepo as any).ensureNextId &&
-        (GroupsRepo as any).ensureNextId(maxId + 1);
-    } catch {}
-    try {
-      timer.end({ groups: groups.size });
-    } catch {}
+    const maxId = Math.max(...[...groups.keys(), 0]);
+    (GroupsRepo as any).ensureNextId &&
+      (GroupsRepo as any).ensureNextId(maxId + 1);
+    timer.end({ groups: groups.size });
     scheduleGroupSave();
     updateEmptyStateOverlay();
   }
@@ -1591,17 +1471,15 @@ const splashEl = document.getElementById("splash");
     // Overlay name/z metadata from LS (if present) to ensure renames persist even when
     // transforms come from the in-memory repo path.
     let meta: Map<number, { name?: string; z?: number }> | null = null;
-    try {
-      if (memoryGroupsData && Array.isArray(memoryGroupsData.groups)) {
-        meta = new Map<number, { name?: string; z?: number }>();
-        for (const gr of memoryGroupsData.groups) {
-          meta.set(gr.id, {
-            name: gr.name,
-            z: typeof gr.z === "number" ? gr.z : undefined,
-          });
-        }
+    if (memoryGroupsData && Array.isArray(memoryGroupsData.groups)) {
+      meta = new Map<number, { name?: string; z?: number }>();
+      for (const gr of memoryGroupsData.groups) {
+        meta.set(gr.id, {
+          name: gr.name,
+          z: typeof gr.z === "number" ? gr.z : undefined,
+        });
       }
-    } catch {}
+    }
     (loaded as any).groups.forEach((gr: any) => {
       const t = gr.transform;
       if (!t) return;
@@ -1617,9 +1495,7 @@ const splashEl = document.getElementById("splash");
         const m = meta.get(gr.id)!;
         if (m.name) gv.name = m.name;
         if (typeof m.z === "number") {
-          try {
-            gv.gfx.zIndex = m.z;
-          } catch {}
+          gv.gfx.zIndex = m.z;
         }
       }
       // Collapse feature retired: ignore persisted collapsed flag so zoom overlay can function
@@ -1645,15 +1521,11 @@ const splashEl = document.getElementById("splash");
       updateGroupMetrics(gv, sprites);
       drawGroup(gv, false);
     });
-    try {
-      tHydrate.end({ groups: groups.size });
-    } catch {}
+    tHydrate.end({ groups: groups.size });
     // Ensure new group creations won't collide with restored ids
-    try {
-      const maxId = Math.max(...[...groups.keys(), 0]);
-      (GroupsRepo as any).ensureNextId &&
-        (GroupsRepo as any).ensureNextId(maxId + 1);
-    } catch {}
+    const maxId = Math.max(...[...groups.keys(), 0]);
+    (GroupsRepo as any).ensureNextId &&
+      (GroupsRepo as any).ensureNextId(maxId + 1);
     finishStartup();
     tryInitialFit();
     updateEmptyStateOverlay();
@@ -1731,9 +1603,7 @@ const splashEl = document.getElementById("splash");
           drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
           persistGroupRename(gv.id, val);
           // Flush names immediately so a quick reload preserves rename
-          try {
-            persistLocalGroups();
-          } catch {}
+          persistLocalGroups();
           scheduleGroupSave();
         }
       }
@@ -1902,9 +1772,7 @@ const splashEl = document.getElementById("splash");
         drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
         persistGroupRename(gv.id, v);
         // Flush names immediately so a quick reload preserves rename
-        try {
-          persistLocalGroups();
-        } catch {}
+        persistLocalGroups();
         scheduleGroupSave();
         updateGroupInfoPanel();
       }
@@ -1928,9 +1796,7 @@ const splashEl = document.getElementById("splash");
     }
     panel.style.display = "flex";
     // Ensure mutual exclusivity with card panel
-    try {
-      hideCardInfoPanel();
-    } catch {}
+    hideCardInfoPanel();
     if (groupInfoNameInput) groupInfoNameInput.value = gv.name;
     // Update metrics grid
     const metrics = panel.querySelector(
@@ -2003,9 +1869,7 @@ const splashEl = document.getElementById("splash");
     const card = sprite.__card;
     showCardInfoPanel();
     // Ensure mutual exclusivity with group panel
-    try {
-      hideGroupInfoPanel();
-    } catch {}
+    hideGroupInfoPanel();
     const panel = ensureCardInfoPanel();
     const empty = panel.querySelector("#cip-empty") as HTMLElement | null;
     const content = panel.querySelector("#cip-content") as HTMLElement | null;
@@ -2115,21 +1979,17 @@ const splashEl = document.getElementById("splash");
           `<div><span style="font-weight:600;">Lang:</span> ${escapeHtml(card.lang)}</div>`,
         );
       // Scryfall link
-      try {
-        const scryUrl =
-          (card as any).scryfall_uri || (card as any).id
-            ? `https://scryfall.com/cards/${encodeURIComponent((card as any).id)}`
-            : null;
-        if (scryUrl)
-          rows.push(
-            `<div><span style="font-weight:600;">Scryfall:</span> <a href="${scryUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--panel-accent);font-weight:600;">Open</a></div>`,
-          );
-      } catch {}
+      const scryUrl =
+        (card as any).scryfall_uri || (card as any).id
+          ? `https://scryfall.com/cards/${encodeURIComponent((card as any).id)}`
+          : null;
+      if (scryUrl)
+        rows.push(
+          `<div><span style="font-weight:600;">Scryfall:</span> <a href="${scryUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--panel-accent);font-weight:600;">Open</a></div>`,
+        );
       metaEl.innerHTML = rows.join("");
-      try {
-        attachManaIconFallbacks(metaEl);
-        attachSetIconFallbacks(metaEl);
-      } catch {}
+      attachManaIconFallbacks(metaEl);
+      attachSetIconFallbacks(metaEl);
     }
     // Defer heavy details (oracle text and/or faces content) to next frame to avoid blocking selection.
     requestAnimationFrame(() => {
@@ -2193,10 +2053,8 @@ const splashEl = document.getElementById("splash");
             24,
           );
       }
-      try {
-        if (oracleElNow) attachManaIconFallbacks(oracleElNow);
-        if (facesElNow) attachManaIconFallbacks(facesElNow);
-      } catch {}
+      if (oracleElNow) attachManaIconFallbacks(oracleElNow);
+      if (facesElNow) attachManaIconFallbacks(facesElNow);
     });
     // Image: removed per user request.
   }
@@ -2224,28 +2082,22 @@ const splashEl = document.getElementById("splash");
   > = Object.create(null);
   const SET_ICON_CACHE_KEY = "mtgcanvas.setIconCache.v1";
   function loadSetIconCacheFromStorage() {
-    try {
-      const raw = localStorage.getItem(SET_ICON_CACHE_KEY);
-      if (!raw) return;
-      const obj = JSON.parse(raw);
-      if (obj && typeof obj === "object") {
-        for (const [k, v] of Object.entries(obj)) {
-          if (typeof k === "string" && typeof v === "string") {
-            __setIconCache[k] = v;
-          }
+    const raw = localStorage.getItem(SET_ICON_CACHE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") {
+      for (const [k, v] of Object.entries(obj)) {
+        if (typeof k === "string" && typeof v === "string") {
+          __setIconCache[k] = v;
         }
       }
-    } catch {}
+    }
   }
   function saveSetIconCacheToStorage() {
-    try {
-      localStorage.setItem(SET_ICON_CACHE_KEY, JSON.stringify(__setIconCache));
-    } catch {}
+    localStorage.setItem(SET_ICON_CACHE_KEY, JSON.stringify(__setIconCache));
   }
   // Load persisted cache on startup
-  try {
-    loadSetIconCacheFromStorage();
-  } catch {}
+  loadSetIconCacheFromStorage();
 
   async function fetchSetIconUri(code: string): Promise<string | null> {
     const k = String(code || "").toLowerCase();
@@ -2254,22 +2106,17 @@ const splashEl = document.getElementById("splash");
     if (Object.prototype.hasOwnProperty.call(__setIconFetches, k))
       return __setIconFetches[k];
     __setIconFetches[k] = (async () => {
-      try {
-        const res = await fetch(
-          `https://api.scryfall.com/sets/${encodeURIComponent(k)}`,
-        );
-        if (!res.ok) return null;
-        const json: any = await res.json();
-        const uri =
-          json && json.icon_svg_uri ? String(json.icon_svg_uri) : null;
-        if (uri) {
-          __setIconCache[k] = uri;
-          saveSetIconCacheToStorage();
-        }
-        return uri;
-      } catch {
-        return null;
+      const res = await fetch(
+        `https://api.scryfall.com/sets/${encodeURIComponent(k)}`,
+      );
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      const uri = json && json.icon_svg_uri ? String(json.icon_svg_uri) : null;
+      if (uri) {
+        __setIconCache[k] = uri;
+        saveSetIconCacheToStorage();
       }
+      return uri;
     })();
     return __setIconFetches[k];
   }
@@ -2348,9 +2195,7 @@ const splashEl = document.getElementById("splash");
           __symbologyMap = m;
           __symbologyLoaded = true;
           // Repaint info panels to replace any text placeholders once symbols are known
-          try {
-            updateCardInfoPanel();
-          } catch {}
+          updateCardInfoPanel();
         }
       }
     } catch {
@@ -2417,9 +2262,7 @@ const splashEl = document.getElementById("splash");
   // Render mana cost like "{1}{U}{U}" into inline SVG icons from Scryfall.
   function renderManaCostHTML(cost: string, size: number = 22): string {
     // Begin background load of symbology in case we need exact mappings
-    try {
-      ensureSymbologyLoaded();
-    } catch {}
+    ensureSymbologyLoaded();
     const out: string[] = [];
     const re = /\{([^}]+)\}/g;
     let m: RegExpExecArray | null;
@@ -2435,9 +2278,7 @@ const splashEl = document.getElementById("splash");
   }
   // Render any text with embedded mana symbols like "Tap: {T}: Add {G}{G}" into HTML with icons, preserving newlines as <br>.
   function renderTextWithManaIcons(text: string, size: number = 22): string {
-    try {
-      ensureSymbologyLoaded();
-    } catch {}
+    ensureSymbologyLoaded();
     if (!text) return "";
     const re = /\{([^}]+)\}/g;
     let last = 0;
@@ -2469,9 +2310,7 @@ const splashEl = document.getElementById("splash");
           el.src = alt;
           el.onerror = () => {
             // final: readable text token (no custom icons)
-            try {
-              el.outerHTML = `<span style="display:inline-block;min-width:22px;text-align:center;font-weight:700;">{${code}}</span>`;
-            } catch {}
+            el.outerHTML = `<span style="display:inline-block;min-width:22px;text-align:center;font-weight:700;">{${code}}</span>`;
           };
         }
       };
@@ -2508,12 +2347,8 @@ const splashEl = document.getElementById("splash");
     __panelUpdateScheduled = true;
     requestAnimationFrame(() => {
       __panelUpdateScheduled = false;
-      try {
-        updateGroupInfoPanel();
-      } catch {}
-      try {
-        updateCardInfoPanel();
-      } catch {}
+      updateGroupInfoPanel();
+      updateCardInfoPanel();
     });
   }
   SelectionStore.on(() => {
@@ -2565,9 +2400,7 @@ const splashEl = document.getElementById("splash");
             .join(" ");
           if (kv) parts.push(kv);
         }
-        try {
-          console.log(parts.join(" | "));
-        } catch {}
+        console.log(parts.join(" | "));
       },
     };
   }
@@ -3507,11 +3340,9 @@ const splashEl = document.getElementById("splash");
         const h = b.maxY - b.minY + 40;
         const gx = b.minX - 20;
         const gy = b.minY - 20;
-        try {
-          id = (GroupsRepo as any).create
-            ? (GroupsRepo as any).create(null, null, gx, gy, w, h)
-            : id;
-        } catch {}
+        id = (GroupsRepo as any).create
+          ? (GroupsRepo as any).create(null, null, gx, gy, w, h)
+          : id;
         const gv = createGroupVisual(id, gx, gy, w, h);
         const ids = SelectionStore.getCards();
         const membershipBatch: { id: number; group_id: number }[] = [];
@@ -3537,11 +3368,9 @@ const splashEl = document.getElementById("splash");
         });
         timer.mark("membership");
         if (membershipBatch.length) {
-          try {
-            (InstancesRepo as any).updateManyDebounced
-              ? (InstancesRepo as any).updateManyDebounced(membershipBatch)
-              : InstancesRepo.updateMany(membershipBatch);
-          } catch {}
+          (InstancesRepo as any).updateManyDebounced
+            ? (InstancesRepo as any).updateManyDebounced(membershipBatch)
+            : InstancesRepo.updateMany(membershipBatch);
         }
         timer.mark("persist-members");
         groups.set(id, gv);
@@ -3584,22 +3413,16 @@ const splashEl = document.getElementById("splash");
         drawGroup(gv, true);
         timer.mark("metrics+draw");
         // Persist transform for repo-backed persistence (no-op in memory mode)
-        try {
-          persistGroupTransform(gv.id, {
-            x: gv.gfx.x,
-            y: gv.gfx.y,
-            w: gv.w,
-            h: gv.h,
-          });
-        } catch {}
+        persistGroupTransform(gv.id, {
+          x: gv.gfx.x,
+          y: gv.gfx.y,
+          w: gv.w,
+          h: gv.h,
+        });
         // For very large groups, flush saves immediately to survive quick reloads
         if (ids.length > 5000) {
-          try {
-            persistLocalGroups();
-          } catch {}
-          try {
-            persistLocalPositions();
-          } catch {}
+          persistLocalGroups();
+          persistLocalPositions();
         } else {
           scheduleGroupSave();
         }
@@ -3616,11 +3439,9 @@ const splashEl = document.getElementById("splash");
         const worldCenter = world.toLocal(center);
         const gx = snap(worldCenter.x - 150);
         const gy = snap(worldCenter.y - 150);
-        try {
-          id = (GroupsRepo as any).create
-            ? (GroupsRepo as any).create(null, null, gx, gy, 300, 300)
-            : id;
-        } catch {}
+        id = (GroupsRepo as any).create
+          ? (GroupsRepo as any).create(null, null, gx, gy, 300, 300)
+          : id;
         const gv = createGroupVisual(id, gx, gy, 300, 300);
         groups.set(id, gv);
         world.addChild(gv.gfx);
@@ -3721,30 +3542,26 @@ const splashEl = document.getElementById("splash");
           }
         });
         // Delete from repository so DB/memory won't restore
-        try {
-          if (cardIds.length) InstancesRepo.deleteMany(cardIds);
-        } catch {}
+        if (cardIds.length) InstancesRepo.deleteMany(cardIds);
         if (touchedGroups.size) scheduleGroupSave();
         // If no cards and no groups remain, surface overlay
         updateEmptyStateOverlay();
         // Persist updated positions to reflect removals
-        try {
-          if (!SUPPRESS_SAVES) {
-            const data = {
-              instances: sprites.map((s) => ({
-                id: s.__id,
-                x: s.x,
-                y: s.y,
-                z: s.zIndex || (s as any).__baseZ || 0,
-                group_id: (s as any).__groupId ?? null,
-                scryfall_id:
-                  (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-              })),
-              byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-            };
-            localStorage.setItem(LS_KEY, JSON.stringify(data));
-          }
-        } catch {}
+        if (!SUPPRESS_SAVES) {
+          const data = {
+            instances: sprites.map((s) => ({
+              id: s.__id,
+              x: s.x,
+              y: s.y,
+              z: s.zIndex || (s as any).__baseZ || 0,
+              group_id: (s as any).__groupId ?? null,
+              scryfall_id:
+                (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+            })),
+            byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+          };
+          localStorage.setItem(LS_KEY, JSON.stringify(data));
+        }
       }
       if (groupIds.length) {
         groupIds.forEach((id) => deleteGroupById(id));
@@ -3962,15 +3779,13 @@ const splashEl = document.getElementById("splash");
     "wheel",
     (e) => {
       // Ignore wheel when pointer is over UI panels/inputs so lists can scroll without zooming
-      try {
-        const t = e.target as HTMLElement | null;
-        if (t && t instanceof HTMLElement) {
-          const inUi = t.closest(
-            ".ui-panel, .ui-panel-scroll, .ui-menu, textarea, input, select",
-          );
-          if (inUi) return; // let the UI consume the wheel normally
-        }
-      } catch {}
+      const t = e.target as HTMLElement | null;
+      if (t && t instanceof HTMLElement) {
+        const inUi = t.closest(
+          ".ui-panel, .ui-panel-scroll, .ui-menu, textarea, input, select",
+        );
+        if (inUi) return; // let the UI consume the wheel normally
+      }
       const mousePos = new PIXI.Point(
         app.renderer.events.pointer.global.x,
         app.renderer.events.pointer.global.y,
@@ -4013,9 +3828,7 @@ const splashEl = document.getElementById("splash");
     lastY = e.global.y;
   }
   app.stage.on("pointerdown", (e) => {
-    try {
-      camera.stopMomentum();
-    } catch {}
+    camera.stopMomentum();
     const tgt: any = e.target;
     if (panning && e.button === 0) beginPan(e.global.x, e.global.y);
     if (e.button === 2) {
@@ -4064,19 +3877,15 @@ const splashEl = document.getElementById("splash");
   // ---- Performance overlay ----
   ensureThemeStyles();
   // Optional helpers to switch UI scale between manual/auto at runtime
-  try {
-    (window as any).__uiScale = {
-      manual: () => setUiScaleManual(true),
-      auto: () => {
-        setUiScaleManual(false);
-        applyUiScaleFromStorageOrAuto();
-      },
-    };
-  } catch {}
+  (window as any).__uiScale = {
+    manual: () => setUiScaleManual(true),
+    auto: () => {
+      setUiScaleManual(false);
+      applyUiScaleFromStorageOrAuto();
+    },
+  };
   // Ensure modern day/night toggle (flat pill)
-  try {
-    ensureThemeToggleButton();
-  } catch {}
+  ensureThemeToggleButton();
   // Optional Status / Performance overlay
   const perfEl: HTMLDivElement | null = HIDE_STATUS_PANE
     ? null
@@ -4100,18 +3909,10 @@ const splashEl = document.getElementById("splash");
   // Quick debug toggles surfaced to window
   (window as any).__imgDebug = (on: boolean) => enableImageCacheDebug(!!on);
   (window as any).__dumpHiRes = () => {
-    try {
-      console.log("[HiRes dump]", getHiResQueueDiagnostics());
-    } catch (e) {
-      console.warn("dumpHiRes failed", e);
-    }
+    console.log("[HiRes dump]", getHiResQueueDiagnostics());
   };
   (window as any).__dumpDecodeQ = () => {
-    try {
-      console.log("[DecodeQ dump]", getDecodeQueueStats());
-    } catch (e) {
-      console.warn("dumpDecodeQ failed", e);
-    }
+    console.log("[DecodeQ dump]", getDecodeQueueStats());
   };
   // One-call aggregated snapshot for bug reports
   function buildPerfSnapshot() {
@@ -4173,12 +3974,8 @@ const splashEl = document.getElementById("splash");
   (window as any).__mtgPerfCopy = async () => {
     const snap = buildPerfSnapshot();
     const json = JSON.stringify(snap, null, 2);
-    try {
-      await (navigator as any).clipboard?.writeText?.(json);
-      console.log("[mtgcanvas] Perf snapshot copied to clipboard.");
-    } catch {
-      console.log(json);
-    }
+    await (navigator as any).clipboard?.writeText?.(json);
+    console.log("[mtgcanvas] Perf snapshot copied to clipboard.");
     return snap;
   };
   let frameCount = 0;
@@ -4220,18 +4017,16 @@ const splashEl = document.getElementById("splash");
       localStorage.setItem(LS_KEY, JSON.stringify(data));
     } catch (e) {
       // Fallback: minimize payload to avoid quota errors and ensure at least positions + membership persist
-      try {
-        const minimal = {
-          instances: sprites.map((s) => ({
-            id: s.__id,
-            x: s.x,
-            y: s.y,
-            z: s.zIndex || (s as any).__baseZ || 0,
-            group_id: (s as any).__groupId ?? null,
-          })),
-        };
-        localStorage.setItem(LS_KEY, JSON.stringify(minimal));
-      } catch {}
+      const minimal = {
+        instances: sprites.map((s) => ({
+          id: s.__id,
+          x: s.x,
+          y: s.y,
+          z: s.zIndex || (s as any).__baseZ || 0,
+          group_id: (s as any).__groupId ?? null,
+        })),
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(minimal));
     }
   }
   let lastMemSample = 0;
@@ -4577,19 +4372,15 @@ const splashEl = document.getElementById("splash");
             : items.forEach((it) => spatial.update(it));
       }
       // Persist group dimensions/position changes if any
-      try {
-        persistGroupTransform(gv.id, {
-          x: gv.gfx.x,
-          y: gv.gfx.y,
-          w: gv.w,
-          h: gv.h,
-        });
-      } catch {}
+      persistGroupTransform(gv.id, {
+        x: gv.gfx.x,
+        y: gv.gfx.y,
+        w: gv.w,
+        h: gv.h,
+      });
     });
     // Save (memory mode) after batch operation
-    try {
-      scheduleGroupSave();
-    } catch {}
+    scheduleGroupSave();
   }
   // Auto-group ungrouped cards by property
   type AutoGroupKind = "set" | "color-id" | "type" | "rarity" | "cmc";
@@ -4692,11 +4483,9 @@ const splashEl = document.getElementById("splash");
         const name = labels.get(key) || key;
         // Allocate id (persist-lite) if possible, else derive
         let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
-        try {
-          id = (GroupsRepo as any).create
-            ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
-            : id;
-        } catch {}
+        id = (GroupsRepo as any).create
+          ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
+          : id;
         const gv = createGroupVisual(id, 0, 0, 300, 300);
         gv.name = name;
         groups.set(id, gv);
@@ -4715,9 +4504,7 @@ const splashEl = document.getElementById("splash");
       }
       timer.mark("create+membership");
       if (posUpdates.length) {
-        try {
-          InstancesRepo.updateMany(posUpdates as any);
-        } catch {}
+        InstancesRepo.updateMany(posUpdates as any);
       }
       // Pack each new group (layout within group) with batched spatial updates
       created.forEach((gv) => {
@@ -4750,13 +4537,11 @@ const splashEl = document.getElementById("splash");
     }
     if (created.length) {
       // Immediately compute overlay/text state for new groups at current zoom
-      try {
-        const scale = world.scale.x;
-        created.forEach((gv) => {
-          updateGroupTextQuality(gv, scale);
-          updateGroupZoomPresentation(gv, scale, sprites);
-        });
-      } catch {}
+      const scale = world.scale.x;
+      created.forEach((gv) => {
+        updateGroupTextQuality(gv, scale);
+        updateGroupZoomPresentation(gv, scale, sprites);
+      });
       // After grouping, tidy ungrouped and reposition groups (skip global re-pack to avoid redundant work)
       gridUngroupedCards();
       gridRepositionGroups();
@@ -4775,20 +4560,14 @@ const splashEl = document.getElementById("splash");
       // Center the view on content to reveal the new arrangement
       focusViewOnContent(180);
       // One save after batch
-      try {
-        const assigned = posUpdates.length;
-        if (assigned > 5000) {
-          // Large edit: flush immediately for robustness on quick reload
-          try {
-            persistLocalGroups();
-          } catch {}
-          try {
-            persistLocalPositions();
-          } catch {}
-        } else {
-          scheduleGroupSave();
-        }
-      } catch {}
+      const assigned = posUpdates.length;
+      if (assigned > 5000) {
+        // Large edit: flush immediately for robustness on quick reload
+        persistLocalGroups();
+        persistLocalPositions();
+      } else {
+        scheduleGroupSave();
+      }
       timer.end({ groups: created.length, cards: posUpdates.length });
     }
   }
@@ -4812,44 +4591,34 @@ const splashEl = document.getElementById("splash");
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       if (s.cursor !== "pointer") s.cursor = "pointer";
       // Refresh placeholder appearance & selection outline
-      try {
-        updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
-      } catch {}
+      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
     });
     if (updates.length) {
-      try {
-        InstancesRepo.updateMany(updates);
-      } catch {}
+      InstancesRepo.updateMany(updates);
     }
     // Destroy visuals
     const ids = [...groups.keys()];
     ids.forEach((id) => {
       const gv = groups.get(id);
       if (gv) {
-        try {
-          if (gv._zoomLabel) {
-            gv._zoomLabel.visible = false;
-            gv._zoomLabel.alpha = 0;
-          }
-          if (gv._overlayDrag) {
-            (gv._overlayDrag as any).eventMode = "none";
-            gv._overlayDrag.visible = false;
-          }
-          (gv as any)._lastZoomPhase = 0;
-        } catch {}
+        if (gv._zoomLabel) {
+          gv._zoomLabel.visible = false;
+          gv._zoomLabel.alpha = 0;
+        }
+        if (gv._overlayDrag) {
+          (gv._overlayDrag as any).eventMode = "none";
+          gv._overlayDrag.visible = false;
+        }
+        (gv as any)._lastZoomPhase = 0;
         gv.gfx.destroy();
       }
     });
     if (ids.length) {
-      try {
-        GroupsRepo.deleteMany(ids);
-      } catch {}
+      GroupsRepo.deleteMany(ids);
     }
     groups.clear();
     // Clear persisted group transforms so they don't rehydrate
-    try {
-      localStorage.removeItem(LS_GROUPS_KEY);
-    } catch {}
+    localStorage.removeItem(LS_GROUPS_KEY);
   }
   function resetLayout(alreadyCleared: boolean) {
     // Assign default grid positions based on current sprite order
@@ -4865,9 +4634,7 @@ const splashEl = document.getElementById("splash");
       anyS.__hiddenAt = undefined;
       anyS.__inflightLevel = 0;
       anyS.__pendingLevel = 0;
-      try {
-        updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
-      } catch {}
+      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
     });
     const n = sprites.length || 1;
     // Choose grid shape that maximizes squaredness (same as Auto-Layout)
@@ -4921,9 +4688,7 @@ const splashEl = document.getElementById("splash");
       batch.push({ id: s.__id, x, y });
     });
     if (batch.length) {
-      try {
-        InstancesRepo.updatePositions(batch);
-      } catch {}
+      InstancesRepo.updatePositions(batch);
     }
     if (!SUPPRESS_SAVES) {
       try {
@@ -5452,26 +5217,22 @@ const splashEl = document.getElementById("splash");
         ? (spatial as any).bulkUpdate(spatialItems)
         : spatialItems.forEach((it) => spatial.update(it));
     if (batch.length) {
-      try {
-        InstancesRepo.updatePositions(batch);
-      } catch {}
+      InstancesRepo.updatePositions(batch);
     }
     if (!SUPPRESS_SAVES) {
-      try {
-        const data = {
-          instances: sprites.map((s) => ({
-            id: s.__id,
-            x: s.x,
-            y: s.y,
-            z: s.zIndex || (s as any).__baseZ || 0,
-            group_id: (s as any).__groupId ?? null,
-            scryfall_id:
-              (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-          })),
-          byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-        };
-        localStorage.setItem(LS_KEY, JSON.stringify(data));
-      } catch {}
+      const data = {
+        instances: sprites.map((s) => ({
+          id: s.__id,
+          x: s.x,
+          y: s.y,
+          z: s.zIndex || (s as any).__baseZ || 0,
+          group_id: (s as any).__groupId ?? null,
+          scryfall_id:
+            (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+        })),
+        byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
     }
   }
   ensureDebugPanel();
@@ -5629,11 +5390,9 @@ const splashEl = document.getElementById("splash");
     const scale = world.scale.x;
     // Detect if any group overlay is active; if so, clamp throughput and avoid upgrades for cards hidden by overlay
     let anyOverlay = false;
-    try {
-      groups.forEach((gv) => {
-        if ((gv._lastZoomPhase || 0) > 0.5) anyOverlay = true;
-      });
-    } catch {}
+    groups.forEach((gv) => {
+      if ((gv._lastZoomPhase || 0) > 0.5) anyOverlay = true;
+    });
     const visibles = sprites.filter(
       (s) => s.visible && s.__imgLoaded && !(s as any).__groupOverlayActive,
     );
@@ -5682,20 +5441,16 @@ const splashEl = document.getElementById("splash");
       i++
     ) {
       updateCardTextureForScale(scored[i].s, scale);
-      try {
-        const d: any = ((window as any).__frameDiag ||= {});
-        d.upg = (d.upg || 0) + 1;
-      } catch {}
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.upg = (d.upg || 0) + 1;
       processed++;
     }
     // Second pass: round-robin remainder to keep breadth
     for (let i = 0; i < visibles.length && processed < perFrame; i++) {
       hiResCursor = (hiResCursor + 1) % visibles.length;
       updateCardTextureForScale(visibles[hiResCursor], scale);
-      try {
-        const d: any = ((window as any).__frameDiag ||= {});
-        d.upg = (d.upg || 0) + 1;
-      } catch {}
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.upg = (d.upg || 0) + 1;
       processed++;
     }
   }
@@ -5764,49 +5519,29 @@ const splashEl = document.getElementById("splash");
   async function clearAllData(): Promise<void> {
     // Clear persisted artifacts
     SUPPRESS_SAVES = true;
-    try {
-      if (lsTimer) {
-        clearTimeout(lsTimer);
-        lsTimer = null;
-      }
-    } catch {}
-    try {
-      if (lsGroupsTimer) {
-        clearTimeout(lsGroupsTimer);
-        lsGroupsTimer = null;
-      }
-    } catch {}
-    try {
-      await clearImageCache();
-    } catch {}
-    try {
-      await clearImportedCards();
-    } catch {}
-    try {
-      localStorage.removeItem(LS_KEY);
-    } catch {}
-    try {
-      localStorage.removeItem(LS_GROUPS_KEY);
-    } catch {}
-    try {
-      (window as any).indexedDB?.deleteDatabase?.("mtgCanvas");
-    } catch {}
-    try {
-      (window as any).indexedDB?.deleteDatabase?.("mtgImageCache");
-    } catch {}
-    try {
-      const instIds = (InstancesRepo.list() || [])
-        .map((r: any) => r.id)
-        .filter((n: any) => typeof n === "number");
-      if (instIds.length) InstancesRepo.deleteMany(instIds);
-      const grpIds = (GroupsRepo.list() || [])
-        .map((g: any) => g.id)
-        .filter((n: any) => typeof n === "number");
-      if (grpIds.length) GroupsRepo.deleteMany(grpIds);
-    } catch {}
-    try {
-      sessionStorage.setItem("mtgcanvas_start_empty_once", "1");
-    } catch {}
+    if (lsTimer) {
+      clearTimeout(lsTimer);
+      lsTimer = null;
+    }
+    if (lsGroupsTimer) {
+      clearTimeout(lsGroupsTimer);
+      lsGroupsTimer = null;
+    }
+    await clearImageCache();
+    await clearImportedCards();
+    localStorage.removeItem(LS_KEY);
+    localStorage.removeItem(LS_GROUPS_KEY);
+    (window as any).indexedDB?.deleteDatabase?.("mtgCanvas");
+    (window as any).indexedDB?.deleteDatabase?.("mtgImageCache");
+    const instIds = (InstancesRepo.list() || [])
+      .map((r: any) => r.id)
+      .filter((n: any) => typeof n === "number");
+    if (instIds.length) InstancesRepo.deleteMany(instIds);
+    const grpIds = (GroupsRepo.list() || [])
+      .map((g: any) => g.id)
+      .filter((n: any) => typeof n === "number");
+    if (grpIds.length) GroupsRepo.deleteMany(grpIds);
+    sessionStorage.setItem("mtgcanvas_start_empty_once", "1");
   }
 
   // Import/Export decklists (basic)
@@ -6022,9 +5757,7 @@ const splashEl = document.getElementById("splash");
           ids.push(sp.__id);
           imported++;
         }
-        try {
-          if (ids.length) (createGroupWithCardIds as any)(ids, g.name);
-        } catch {}
+        if (ids.length) (createGroupWithCardIds as any)(ids, g.name);
       }
       // Place ungrouped cards using the shared import planner (flow-around when applicable)
       if (ungroupedCards.length && remainingCapacity() > 0) {
@@ -6057,33 +5790,29 @@ const splashEl = document.getElementById("splash");
         });
       }
       // Persist raw imported cards for rehydration
-      try {
-        const allCards: any[] = [
-          ...groupDefs.flatMap((g) => g.cards),
-          ...ungroupedCards,
-        ];
-        if (allCards.length) {
-          await addImportedCards(allCards);
-        }
-      } catch {}
+      const allCards: any[] = [
+        ...groupDefs.flatMap((g) => g.cards),
+        ...ungroupedCards,
+      ];
+      if (allCards.length) {
+        await addImportedCards(allCards);
+      }
       // Persist positions
-      try {
-        if (!SUPPRESS_SAVES) {
-          const data = {
-            instances: sprites.map((s) => ({
-              id: s.__id,
-              x: s.x,
-              y: s.y,
-              z: s.zIndex || (s as any).__baseZ || 0,
-              group_id: (s as any).__groupId ?? null,
-              scryfall_id:
-                (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-            })),
-            byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-          };
-          localStorage.setItem(LS_KEY, JSON.stringify(data));
-        }
-      } catch {}
+      if (!SUPPRESS_SAVES) {
+        const data = {
+          instances: sprites.map((s) => ({
+            id: s.__id,
+            x: s.x,
+            y: s.y,
+            z: s.zIndex || (s as any).__baseZ || 0,
+            group_id: (s as any).__groupId ?? null,
+            scryfall_id:
+              (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+          })),
+          byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+        };
+        localStorage.setItem(LS_KEY, JSON.stringify(data));
+      }
       return { imported, unknown, limited } as any;
     },
     importByNames: async (items, opt) => {
@@ -6181,25 +5910,21 @@ const splashEl = document.getElementById("splash");
       const bulkSprites = createSpritesBulk(bulkItems);
       created.push(...bulkSprites);
       // Persist raw imported cards so they rehydrate on reload
-      try {
-        if (persistedCards.length) await addImportedCards(persistedCards);
-      } catch {}
-      try {
-        if (!SUPPRESS_SAVES) {
-          const data = {
-            instances: sprites.map((s) => ({
-              id: s.__id,
-              x: s.x,
-              y: s.y,
-              group_id: (s as any).__groupId ?? null,
-              scryfall_id:
-                (s as any).__scryfallId || ((s as any).__card?.id ?? null),
-            })),
-            byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-          };
-          localStorage.setItem(LS_KEY, JSON.stringify(data));
-        }
-      } catch {}
+      if (persistedCards.length) await addImportedCards(persistedCards);
+      if (!SUPPRESS_SAVES) {
+        const data = {
+          instances: sprites.map((s) => ({
+            id: s.__id,
+            x: s.x,
+            y: s.y,
+            group_id: (s as any).__groupId ?? null,
+            scryfall_id:
+              (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+          })),
+          byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+        };
+        localStorage.setItem(LS_KEY, JSON.stringify(data));
+      }
       // Fit to planned block for predictable framing
       if (created.length) {
         camera.fitBounds(blk, { w: window.innerWidth, h: window.innerHeight });
@@ -6289,19 +6014,15 @@ const splashEl = document.getElementById("splash");
         const bulkSprites = createSpritesBulk(bulkItems);
         created.push(...bulkSprites);
         // Persist raw imported cards so they rehydrate on reload
-        try {
-          await addImportedCards(results);
-        } catch {}
+        await addImportedCards(results);
         // Persist positions
-        try {
-          if (!SUPPRESS_SAVES) {
-            const data = {
-              instances: sprites.map((s) => ({ id: s.__id, x: s.x, y: s.y })),
-              byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
-            };
-            localStorage.setItem(LS_KEY, JSON.stringify(data));
-          }
-        } catch {}
+        if (!SUPPRESS_SAVES) {
+          const data = {
+            instances: sprites.map((s) => ({ id: s.__id, x: s.x, y: s.y })),
+            byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+          };
+          localStorage.setItem(LS_KEY, JSON.stringify(data));
+        }
         // Fit to planned block
         if (created.length) {
           camera.fitBounds(planned.block, {
@@ -6348,9 +6069,7 @@ const splashEl = document.getElementById("splash");
       e.stopPropagation();
       pinned = !pinned;
       if (pinned) {
-        try {
-          (importExportUI as any).show();
-        } catch {}
+        (importExportUI as any).show();
       } else {
         scheduleHide();
       }
@@ -6364,9 +6083,7 @@ const splashEl = document.getElementById("splash");
       if (hideTimer) clearTimeout(hideTimer);
       hideTimer = setTimeout(() => {
         if (!hover && !pinned) {
-          try {
-            (importExportUI as any).hide();
-          } catch {}
+          (importExportUI as any).hide();
         }
       }, 250);
 
@@ -6395,9 +6112,7 @@ const splashEl = document.getElementById("splash");
       wiredPanel = true;
       panel.addEventListener("mouseenter", () => {
         hover = true;
-        try {
-          (importExportUI as any).show();
-        } catch {}
+        (importExportUI as any).show();
       });
       panel.addEventListener("mouseleave", () => {
         hover = false;
@@ -6407,14 +6122,10 @@ const splashEl = document.getElementById("splash");
     fab.addEventListener("mouseenter", () => {
       hover = true;
       // Notify others to close
-      try {
-        window.dispatchEvent(
-          new CustomEvent("mtg:fabs:open", { detail: { id: "import" } }),
-        );
-      } catch {}
-      try {
-        (importExportUI as any).show();
-      } catch {}
+      window.dispatchEvent(
+        new CustomEvent("mtg:fabs:open", { detail: { id: "import" } }),
+      );
+      (importExportUI as any).show();
       // Ensure we wire hover handlers to the panel once it's in the DOM
       setTimeout(wirePanelHover, 0);
     });
@@ -6425,21 +6136,17 @@ const splashEl = document.getElementById("splash");
 
     // Close the Import/Export panel when clicking anywhere outside the panel or its FAB
     const outsideClose = (ev: Event) => {
-      try {
-        const panelEl = document.getElementById(
-          "import-export-panel",
-        ) as HTMLDivElement | null;
-        if (!panelEl) return; // not created yet
-        if (panelEl.style.display === "none") return; // already hidden
-        const t = ev.target as Node | null;
-        if ((t && panelEl.contains(t)) || (t && fab.contains(t))) return; // click inside; ignore
-        // Otherwise hide and clear sticky states
-        hover = false;
-        pinned = false;
-        try {
-          (importExportUI as any).hide();
-        } catch {}
-      } catch {}
+      const panelEl = document.getElementById(
+        "import-export-panel",
+      ) as HTMLDivElement | null;
+      if (!panelEl) return; // not created yet
+      if (panelEl.style.display === "none") return; // already hidden
+      const t = ev.target as Node | null;
+      if ((t && panelEl.contains(t)) || (t && fab.contains(t))) return; // click inside; ignore
+      // Otherwise hide and clear sticky states
+      hover = false;
+      pinned = false;
+      (importExportUI as any).hide();
     };
     // Use capture so we get the event before Pixi canvas, etc.
     window.addEventListener("pointerdown", outsideClose, { capture: true });
@@ -6450,9 +6157,7 @@ const splashEl = document.getElementById("splash");
         if (!ev || ev.detail?.id === "import") return;
         pinned = false;
         hover = false;
-        try {
-          (importExportUI as any).hide();
-        } catch {}
+        (importExportUI as any).hide();
       },
       { capture: true },
     );
@@ -6475,9 +6180,7 @@ const splashEl = document.getElementById("splash");
           return;
         }
         e.preventDefault();
-        try {
-          (importExportUI as any).show();
-        } catch {}
+        (importExportUI as any).show();
       }
     },
     { capture: true },
@@ -6488,11 +6191,9 @@ const splashEl = document.getElementById("splash");
     createGroupForSprites: (ids: number[], name: string) => {
       const timer = createPhaseTimer("create-from-search");
       let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
-      try {
-        id = (GroupsRepo as any).create
-          ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
-          : id;
-      } catch {}
+      id = (GroupsRepo as any).create
+        ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
+        : id;
       const gv = createGroupVisual(id, 0, 0, 300, 300);
       gv.name = name;
       groups.set(id, gv);
@@ -6518,11 +6219,9 @@ const splashEl = document.getElementById("splash");
         (s as any).__groupId = gv.id;
       });
       timer.mark("membership");
-      try {
-        InstancesRepo.updateMany(
-          ids.map((cid) => ({ id: cid, group_id: gv.id })),
-        );
-      } catch {}
+      InstancesRepo.updateMany(
+        ids.map((cid) => ({ id: cid, group_id: gv.id })),
+      );
       timer.mark("persist-members");
       // Auto-pack to minimize height (balanced grid close to square)
       // Batch spatial updates for all moved cards
@@ -6562,14 +6261,12 @@ const splashEl = document.getElementById("splash");
       // Fit new group into view
       const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
       camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
-      try {
-        persistGroupTransform(gv.id, {
-          x: gv.gfx.x,
-          y: gv.gfx.y,
-          w: gv.w,
-          h: gv.h,
-        });
-      } catch {}
+      persistGroupTransform(gv.id, {
+        x: gv.gfx.x,
+        y: gv.gfx.y,
+        w: gv.w,
+        h: gv.h,
+      });
       timer.end({ cards: ids.length });
     },
     focusSprite: (id: number) => {
@@ -6593,11 +6290,9 @@ const splashEl = document.getElementById("splash");
     const timer = createPhaseTimer("create-from-ids");
     if (!ids.length) return;
     let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
-    try {
-      id = (GroupsRepo as any).create
-        ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
-        : id;
-    } catch {}
+    id = (GroupsRepo as any).create
+      ? (GroupsRepo as any).create(name, null, 0, 0, 300, 300)
+      : id;
     const gv = createGroupVisual(id, 0, 0, 300, 300);
     gv.name = name;
     groups.set(id, gv);
@@ -6623,11 +6318,7 @@ const splashEl = document.getElementById("splash");
       (s as any).__groupId = gv.id;
     });
     timer.mark("membership");
-    try {
-      InstancesRepo.updateMany(
-        ids.map((cid) => ({ id: cid, group_id: gv.id })),
-      );
-    } catch {}
+    InstancesRepo.updateMany(ids.map((cid) => ({ id: cid, group_id: gv.id })));
     timer.mark("persist-members");
     // Smart non-overlapping placement near current view
     placeGroupSmart(gv, { anchor: "centroid" });
@@ -6667,14 +6358,12 @@ const splashEl = document.getElementById("splash");
       const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
       camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
     }
-    try {
-      persistGroupTransform(gv.id, {
-        x: gv.gfx.x,
-        y: gv.gfx.y,
-        w: gv.w,
-        h: gv.h,
-      });
-    } catch {}
+    persistGroupTransform(gv.id, {
+      x: gv.gfx.x,
+      y: gv.gfx.y,
+      w: gv.w,
+      h: gv.h,
+    });
     timer.end({ cards: ids.length });
   }
 
@@ -6765,25 +6454,23 @@ const splashEl = document.getElementById("splash");
     const net = getImageCacheStats?.();
     const netBusy = !!net && net.activeFetches > 24 && net.queuedFetches > 0;
     let upgradesPending = false;
-    try {
-      const dpr = globalThis.devicePixelRatio || 1;
-      const scaleNow = world.scale.x;
-      const pxH = 140 * scaleNow * dpr;
-      const desired = pxH > 140 ? 2 : pxH > 90 ? 1 : 0;
-      if (desired > 0) {
-        // Limit scan to a small window around cursor for perf
-        for (let i = 0; i < Math.min(len, 256); i++) {
-          const s = sprites[(imgCursor + i) % len];
-          if (!s || !s.visible || !s.__imgLoaded) continue;
-          if ((s as any).__groupOverlayActive) continue;
-          const q = s.__qualityLevel ?? 0;
-          if (q < desired) {
-            upgradesPending = true;
-            break;
-          }
+    const dpr = globalThis.devicePixelRatio || 1;
+    const scaleNow = world.scale.x;
+    const pxH = 140 * scaleNow * dpr;
+    const desired = pxH > 140 ? 2 : pxH > 90 ? 1 : 0;
+    if (desired > 0) {
+      // Limit scan to a small window around cursor for perf
+      for (let i = 0; i < Math.min(len, 256); i++) {
+        const s = sprites[(imgCursor + i) % len];
+        if (!s || !s.visible || !s.__imgLoaded) continue;
+        if ((s as any).__groupOverlayActive) continue;
+        const q = s.__qualityLevel ?? 0;
+        if (q < desired) {
+          upgradesPending = true;
+          break;
         }
       }
-    } catch {}
+    }
     while (loaded < LOAD_PER_FRAME && attempts < MAX_ATTEMPTS) {
       imgCursor = (imgCursor + 1) % len;
       attempts++;
@@ -6820,10 +6507,8 @@ const splashEl = document.getElementById("splash");
         ensureCardImage(s);
         // Count near-region loads slightly more aggressively to push them through even if attempts are high
         loaded += inNear ? 1 : 1;
-        try {
-          const d: any = ((window as any).__frameDiag ||= {});
-          d.load = (d.load || 0) + 1;
-        } catch {}
+        const d: any = ((window as any).__frameDiag ||= {});
+        d.load = (d.load || 0) + 1;
       } else {
         // Avoid promotions while camera is moving to reduce churn
         if (
@@ -6835,18 +6520,14 @@ const splashEl = document.getElementById("splash");
           if (farOffCenter && q > 200) continue;
           updateCardTextureForScale(s, scale);
           promoteBudget--;
-          try {
-            const d: any = ((window as any).__frameDiag ||= {});
-            d.upg = (d.upg || 0) + 1;
-          } catch {}
+          const d: any = ((window as any).__frameDiag ||= {});
+          d.upg = (d.upg || 0) + 1;
         }
       }
     }
-    try {
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.loadAttempts = (d.loadAttempts || 0) + attempts;
-      d.loadLoaded = (d.loadLoaded || 0) + loaded;
-    } catch {}
+    const d: any = ((window as any).__frameDiag ||= {});
+    d.loadAttempts = (d.loadAttempts || 0) + attempts;
+    d.loadLoaded = (d.loadLoaded || 0) + loaded;
   }
 
   // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
@@ -6859,37 +6540,33 @@ const splashEl = document.getElementById("splash");
     const fStart = now;
     camera.update(dt);
     // Align world transform to device pixels when camera is not actively moving to reduce subpixel blur
-    try {
-      const moving: boolean = !!(window as any).__camIsMoving;
-      if (!moving) {
-        const dpr = (app.renderer as any).resolution || getEffectiveDpr();
-        if (isFinite(dpr) && dpr > 0) {
-          world.position.x = Math.round(world.position.x * dpr) / dpr;
-          world.position.y = Math.round(world.position.y * dpr) / dpr;
-        }
+    const moving: boolean = !!(window as any).__camIsMoving;
+    if (!moving) {
+      const dpr = (app.renderer as any).resolution || getEffectiveDpr();
+      if (isFinite(dpr) && dpr > 0) {
+        world.position.x = Math.round(world.position.x * dpr) / dpr;
+        world.position.y = Math.round(world.position.y * dpr) / dpr;
       }
-    } catch {}
+    }
     const tAfterCam = performance.now();
     // Track camera movement in world units to detect active panning/zooming and throttle work while moving
-    try {
-      const scaleNow = world.scale.x;
-      const camWX = -world.position.x / scaleNow;
-      const camWY = -world.position.y / scaleNow;
-      const prevWX: number = (window as any).__camWX ?? camWX;
-      const prevWY: number = (window as any).__camWY ?? camWY;
-      const moved = Math.hypot(camWX - prevWX, camWY - prevWY);
-      (window as any).__camWX = camWX;
-      (window as any).__camWY = camWY;
-      if (moved > 2) (window as any).__lastCamMovedAt = now;
-      const lastCamMoved: number = (window as any).__lastCamMovedAt || 0;
-      (window as any).__camIsMoving = now - lastCamMoved < 220;
-    } catch {}
+    const scaleNow = world.scale.x;
+    const camWX = -world.position.x / scaleNow;
+    const camWY = -world.position.y / scaleNow;
+    const prevWX: number = (window as any).__camWX ?? camWX;
+    const prevWY: number = (window as any).__camWY ?? camWY;
+    const moved = Math.hypot(camWX - prevWX, camWY - prevWY);
+    (window as any).__camWX = camWX;
+    (window as any).__camWY = camWY;
+    if (moved > 2) (window as any).__lastCamMovedAt = now;
+    const lastCamMoved: number = (window as any).__lastCamMovedAt || 0;
+    (window as any).__camIsMoving = now - lastCamMoved < 220;
     const tCull0 = performance.now();
     runCulling();
     const tCull1 = performance.now();
     const tLoad0 = tCull1;
     // Publish viewport info for priority decisions elsewhere (world-space bounds and center)
-    try {
+    {
       const scale = world.scale.x;
       const inv = 1 / scale;
       const vw = window.innerWidth;
@@ -6916,20 +6593,16 @@ const splashEl = document.getElementById("splash");
         padNear,
         padFar,
       };
-    } catch {}
+    }
     loadVisibleImages();
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
     upgradeVisibleHiRes();
     const tUpg1 = performance.now();
     // Proactive hi-tier taper: gently downgrade far-away hi-tier to medium
-    try {
-      taperHiResByDistance?.(24);
-    } catch {}
+    taperHiResByDistance?.(24);
     // Proactive medium taper: gently downgrade far-away medium to small
-    try {
-      taperMediumByDistance?.(16);
-    } catch {}
+    taperMediumByDistance?.(16);
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
     (window as any).__fc = fc;
@@ -6942,36 +6615,28 @@ const splashEl = document.getElementById("splash");
     const tId1 = performance.now();
     // Enforce GPU budget by demoting offscreen sprites when over the cap
     const tBudget0 = performance.now();
-    try {
-      enforceGpuBudgetForSprites(sprites);
-    } catch {}
+    enforceGpuBudgetForSprites(sprites);
     // Optional: lightweight debug surface
-    try {
-      (window as any).__renderInfo = {
-        dpr: getEffectiveDpr(),
-        res: (app.renderer as any).resolution,
-        size: {
-          w: (app.renderer as any).width,
-          h: (app.renderer as any).height,
-        },
-      };
-    } catch {}
+    (window as any).__renderInfo = {
+      dpr: getEffectiveDpr(),
+      res: (app.renderer as any).resolution,
+      size: {
+        w: (app.renderer as any).width,
+        h: (app.renderer as any).height,
+      },
+    };
     // If we're near the GPU cliff (>97% of budget), run the coalesced budget pass to carve headroom.
-    try {
-      const ts = getTextureBudgetStats?.();
-      if (ts && ts.budgetMB > 0) {
-        const overHigh = ts.totalTextureMB > ts.budgetMB * 0.97;
-        if (overHigh) enforceTextureBudgetNow();
-        // surface inflight count in per-frame diag as well
-        const d: any = ((window as any).__frameDiag ||= {});
-        d.inflight = getInflightTextureCount();
-      }
-    } catch {}
+    const ts = getTextureBudgetStats?.();
+    if (ts && ts.budgetMB > 0) {
+      const overHigh = ts.totalTextureMB > ts.budgetMB * 0.97;
+      if (overHigh) enforceTextureBudgetNow();
+      // surface inflight count in per-frame diag as well
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.inflight = getInflightTextureCount();
+    }
     const tBudget1 = performance.now();
     // Flush any pending texture destruction safely once per frame.
-    try {
-      flushPendingTextureDestroys();
-    } catch {}
+    flushPendingTextureDestroys();
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
@@ -7002,10 +6667,8 @@ const splashEl = document.getElementById("splash");
         if (inView) groupsUpdated++;
       });
       (window as any).__lastGroupUpdateScale = scale;
-      try {
-        const d: any = ((window as any).__frameDiag ||= {});
-        d.groupsUpdated = (d.groupsUpdated || 0) + groupsUpdated;
-      } catch {}
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.groupsUpdated = (d.groupsUpdated || 0) + groupsUpdated;
     }
     // If scale hasn't changed, still fix up groups that just entered the viewport so their overlay state is correct.
     {
@@ -7034,46 +6697,40 @@ const splashEl = document.getElementById("splash");
         (gv as any).__lastInView = inView;
         groupsChecked2++;
       });
-      try {
-        const d: any = ((window as any).__frameDiag ||= {});
-        d.groupsChecked = (d.groupsChecked || 0) + groupsChecked2;
-      } catch {}
+      const d: any = ((window as any).__frameDiag ||= {});
+      d.groupsChecked = (d.groupsChecked || 0) + groupsChecked2;
     }
     const tGrp1 = performance.now();
     // Aggregate timings and expose optional N-frame profiler buffer
-    try {
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.camMs = (d.camMs || 0) + (tAfterCam - fStart);
-      d.cullMs = (d.cullMs || 0) + (tCull1 - tCull0);
-      d.loadMs = (d.loadMs || 0) + (tLoad1 - tLoad0);
-      d.upgMs = (d.upgMs || 0) + (tUpg1 - tUpg0);
-      d.idMapMs = (d.idMapMs || 0) + (tId1 - tId0);
-      d.budgetMs = (d.budgetMs || 0) + (tBudget1 - tBudget0);
-      d.groupsMs = (d.groupsMs || 0) + (tGrp1 - tGrp0);
-      d.frameMs = dt;
-      const userMs =
-        tAfterCam -
-        fStart +
-        (tCull1 - tCull0) +
-        (tLoad1 - tLoad0) +
-        (tUpg1 - tUpg0) +
-        (tId1 - tId0) +
-        (tBudget1 - tBudget0) +
-        (tGrp1 - tGrp0);
-      d.userMs = userMs;
-      d.otherMs = Math.max(0, dt - userMs);
-      const left = (window as any).__mtgProfileLeft || 0;
-      if (left > 0) {
-        ((window as any).__mtgProfileData ||= []).push({
-          ...(window as any).__frameDiag,
-        });
-        (window as any).__mtgProfileLeft = left - 1;
-        if (left - 1 === 0)
-          (window as any).__mtgPerfLastProfile = (
-            window as any
-          ).__mtgProfileData;
-      }
-    } catch {}
+    const d: any = ((window as any).__frameDiag ||= {});
+    d.camMs = (d.camMs || 0) + (tAfterCam - fStart);
+    d.cullMs = (d.cullMs || 0) + (tCull1 - tCull0);
+    d.loadMs = (d.loadMs || 0) + (tLoad1 - tLoad0);
+    d.upgMs = (d.upgMs || 0) + (tUpg1 - tUpg0);
+    d.idMapMs = (d.idMapMs || 0) + (tId1 - tId0);
+    d.budgetMs = (d.budgetMs || 0) + (tBudget1 - tBudget0);
+    d.groupsMs = (d.groupsMs || 0) + (tGrp1 - tGrp0);
+    d.frameMs = dt;
+    const userMs =
+      tAfterCam -
+      fStart +
+      (tCull1 - tCull0) +
+      (tLoad1 - tLoad0) +
+      (tUpg1 - tUpg0) +
+      (tId1 - tId0) +
+      (tBudget1 - tBudget0) +
+      (tGrp1 - tGrp0);
+    d.userMs = userMs;
+    d.otherMs = Math.max(0, dt - userMs);
+    const left = (window as any).__mtgProfileLeft || 0;
+    if (left > 0) {
+      ((window as any).__mtgProfileData ||= []).push({
+        ...(window as any).__frameDiag,
+      });
+      (window as any).__mtgProfileLeft = left - 1;
+      if (left - 1 === 0)
+        (window as any).__mtgPerfLastProfile = (window as any).__mtgProfileData;
+    }
     updatePerf();
   });
 
@@ -7092,43 +6749,35 @@ const splashEl = document.getElementById("splash");
   };
   // Periodically ensure any new sprites have context listeners
   setInterval(() => {
-    try {
-      ensureCardContextListeners();
-    } catch {}
+    ensureCardContextListeners();
   }, 2000);
   window.addEventListener("beforeunload", () => {
-    try {
-      if (!SUPPRESS_SAVES) persistLocalPositions();
-    } catch {}
-    try {
-      // Flush pending group save using the optimized path (O(N) id map), not per-member findIndex.
-      if (!SUPPRESS_SAVES) {
-        if (lsGroupsTimer) {
-          clearTimeout(lsGroupsTimer);
-          lsGroupsTimer = null;
-        }
-        try {
-          persistLocalGroups();
-        } catch {
-          // Minimal fallback: only persist group frames
-          try {
-            const framesOnly = {
-              groups: [...groups.values()].map((gv) => ({
-                id: gv.id,
-                x: gv.gfx.x,
-                y: gv.gfx.y,
-                w: gv.w,
-                h: gv.h,
-                z: gv.gfx.zIndex || 0,
-                name: gv.name,
-                collapsed: gv.collapsed,
-              })),
-            };
-            localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
-          } catch {}
-        }
+    if (!SUPPRESS_SAVES) persistLocalPositions();
+    // Flush pending group save using the optimized path (O(N) id map), not per-member findIndex.
+    if (!SUPPRESS_SAVES) {
+      if (lsGroupsTimer) {
+        clearTimeout(lsGroupsTimer);
+        lsGroupsTimer = null;
       }
-    } catch {}
+      try {
+        persistLocalGroups();
+      } catch {
+        // Minimal fallback: only persist group frames
+        const framesOnly = {
+          groups: [...groups.values()].map((gv) => ({
+            id: gv.id,
+            x: gv.gfx.x,
+            y: gv.gfx.y,
+            w: gv.w,
+            h: gv.h,
+            z: gv.gfx.zIndex || 0,
+            name: gv.name,
+            collapsed: gv.collapsed,
+          })),
+        };
+        localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
+      }
+    }
   });
 
   // Global Help hotkey removed; keep Ctrl+I import/export intact elsewhere.
