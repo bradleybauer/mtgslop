@@ -1717,21 +1717,94 @@ const splashEl = document.getElementById("splash");
     if (empty) empty.style.display = "none";
     if (content) content.style.display = "flex";
     const nameEl = panel.querySelector("#cip-name") as HTMLElement | null;
-    if (nameEl) nameEl.textContent = card.name || "(Unnamed)";
+    if (nameEl) nameEl.textContent = card.name || "(Unnamed)"; // provisional; overwritten below
     const typeEl = panel.querySelector("#cip-type") as HTMLElement | null;
-    if (typeEl) typeEl.textContent = card.type_line || "";
     const oracleEl = panel.querySelector("#cip-oracle") as HTMLElement | null;
-    if (oracleEl)
-      oracleEl.innerHTML = renderTextWithManaIcons(card.oracle_text || "", 24);
+    const faces: any[] = Array.isArray((card as any).card_faces)
+      ? ((card as any).card_faces as any[])
+      : [];
+    const hasMultiFaces = faces.length >= 2;
+    // If multi-face, hide the top-level name and show per-face names inside each section
+    if (nameEl) nameEl.style.display = hasMultiFaces ? "none" : "block";
+    // Prepare or locate a faces container
+    let facesEl = panel.querySelector("#cip-faces") as HTMLElement | null;
+    if (!facesEl) {
+      facesEl = document.createElement("div");
+      facesEl.id = "cip-faces";
+      facesEl.style.display = "none";
+      facesEl.style.flexDirection = "column";
+      facesEl.style.gap = "12px";
+      const contentWrap = panel.querySelector("#cip-content");
+      if (contentWrap) contentWrap.appendChild(facesEl);
+    }
+    // Toggle single-face vs multi-face sections
+    if (hasMultiFaces) {
+      if (typeEl) typeEl.style.display = "none";
+      if (oracleEl) oracleEl.style.display = "none";
+      if (nameEl) nameEl.style.display = "none";
+      if (facesEl) {
+        facesEl.style.display = "flex";
+        // Render two rows (one per face)
+        facesEl.innerHTML = faces
+          .slice(0, 2)
+          .map((f) => {
+            const fname = escapeHtml(f?.name || "");
+            const ftype = escapeHtml(f?.type_line || "");
+            let stats = "";
+            if (f?.power !== undefined && f?.toughness !== undefined) {
+              stats = ` ${escapeHtml(String(f.power))}/${escapeHtml(String(f.toughness))}`;
+            } else if (f?.loyalty !== undefined) {
+              stats = ` ${escapeHtml(String(f.loyalty))}`;
+            } else if (f?.defense !== undefined) {
+              stats = ` ${escapeHtml(String(f.defense))}`;
+            }
+            const cost = f?.mana_cost
+              ? renderManaCostHTML(f.mana_cost, 26)
+              : "";
+            // Match single-face icon sizing for oracle text (24) and container font-size (20)
+            const oracle = renderTextWithManaIcons(f?.oracle_text || "", 24);
+            return (
+              `<div class="cip-face-row" style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:10px;background:var(--panel-bg-alt);">` +
+              `<div class="cip-face-head" style="display:flex;align-items:center;gap:10px;">` +
+              `<div class="cip-face-name" style="font-weight:600;font-size:26px;">${fname}</div>` +
+              (cost
+                ? `<div class="cip-face-cost" style="display:flex;align-items:center;">${cost}</div>`
+                : "") +
+              `</div>` +
+              `<div class="cip-face-type" style="font-size:20px;opacity:.9;">${ftype}${stats}</div>` +
+              `<div class="cip-face-oracle ui-input" style="white-space:pre-wrap;font-size:20px;line-height:1.75;padding:18px 20px;">${oracle}</div>` +
+              `</div>`
+            );
+          })
+          .join("");
+      }
+    } else {
+      // Single-face: show name and render cost inline next to it for higher density
+      if (nameEl) {
+        nameEl.style.display = "block";
+        const nm = escapeHtml(card.name || "(Unnamed)");
+        const costHtml = card.mana_cost
+          ? `<span class="cip-name-cost" style="margin-left:10px;display:inline-flex;align-items:center;">${renderManaCostHTML(card.mana_cost, 26)}</span>`
+          : "";
+        nameEl.innerHTML = nm + costHtml;
+      }
+      if (facesEl) {
+        facesEl.style.display = "none";
+        facesEl.innerHTML = "";
+      }
+      if (typeEl) typeEl.style.display = "block";
+      if (oracleEl) oracleEl.style.display = "block";
+      if (typeEl) typeEl.textContent = card.type_line || "";
+      if (oracleEl)
+        oracleEl.innerHTML = renderTextWithManaIcons(
+          card.oracle_text || "",
+          24,
+        );
+    }
     const metaEl = panel.querySelector("#cip-meta") as HTMLElement | null;
     if (metaEl) {
       const rows: string[] = [];
-      // Cost with real mana icons
-      if (card.mana_cost) {
-        rows.push(
-          `<div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:600;">Cost:</span> ${renderManaCostHTML(card.mana_cost, 26)}</div>`,
-        );
-      }
+      // Cost now rendered inline with the name for single-face cards; multi-face handled per-face above.
       // Price (USD or USD Foil)
       const price = getCardPriceUSD(card);
       if (price)
@@ -1743,15 +1816,19 @@ const splashEl = document.getElementById("splash");
         rows.push(
           `<div><span style="font-weight:600;">CMC:</span> ${card.cmc}</div>`,
         );
-      // P/T
-      if (card.power !== undefined && card.toughness !== undefined)
+      // P/T shown per-face when multi-faced; keep only for single-face
+      if (
+        !hasMultiFaces &&
+        card.power !== undefined &&
+        card.toughness !== undefined
+      )
         rows.push(
           `<div><span style="font-weight:600;">P/T:</span> ${card.power}/${card.toughness}</div>`,
         );
       // Color identity as icons
       if (Array.isArray(card.color_identity) && card.color_identity.length)
         rows.push(
-          `<div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:600;">Color Identity:</span> ${renderColorIdentityIcons(card.color_identity, 26)}</div>`,
+          `<div style="display:flex;align-items:center;gap:6px;"><span style="font-weight:600;">Color Identity:</span> ${renderColorIdentityIcons(card.color_identity, 26)}</div>`,
         );
       // Rarity
       if (card.rarity)
@@ -1780,6 +1857,8 @@ const splashEl = document.getElementById("splash");
         attachManaIconFallbacks(metaEl);
         const oracle = panel.querySelector("#cip-oracle") as HTMLElement | null;
         if (oracle) attachManaIconFallbacks(oracle);
+        const faces = panel.querySelector("#cip-faces") as HTMLElement | null;
+        if (faces) attachManaIconFallbacks(faces);
       } catch {}
     }
     // Image: use existing sprite texture (copy into a canvas for crispness) if loaded; else trigger ensureCardImage then copy later
@@ -3651,6 +3730,32 @@ const splashEl = document.getElementById("splash");
       // After tidying, center the view on the resulting content for clarity
       focusViewOnContent(180);
     });
+    // Auto-Group tools (hold Shift/Alt to include singletons)
+    addBtn("Auto-Group by Set", (ev) => {
+      autoGroupUngroupedBy("set", {
+        includeSingletons: ev.shiftKey || ev.altKey,
+      });
+    });
+    addBtn("Auto-Group by Color Identity", (ev) => {
+      autoGroupUngroupedBy("color-id", {
+        includeSingletons: ev.shiftKey || ev.altKey,
+      });
+    });
+    addBtn("Auto-Group by Type", (ev) => {
+      autoGroupUngroupedBy("type", {
+        includeSingletons: ev.shiftKey || ev.altKey,
+      });
+    });
+    addBtn("Auto-Group by Rarity", (ev) => {
+      autoGroupUngroupedBy("rarity", {
+        includeSingletons: ev.shiftKey || ev.altKey,
+      });
+    });
+    addBtn("Auto-Group by CMC", (ev) => {
+      autoGroupUngroupedBy("cmc", {
+        includeSingletons: ev.shiftKey || ev.altKey,
+      });
+    });
     addBtn("Reset Layout", () => {
       const ok = window.confirm(
         "Full Reset will clear all groups and auto-layout all card. This cannot be undone. Proceed?",
@@ -3767,6 +3872,109 @@ const splashEl = document.getElementById("splash");
     try {
       scheduleGroupSave();
     } catch {}
+  }
+  // Auto-group ungrouped cards by property
+  type AutoGroupKind = "set" | "color-id" | "type" | "rarity" | "cmc";
+  function primaryType(typeLine: string | undefined): string {
+    if (!typeLine) return "Unknown";
+    const tl = typeLine;
+    const order = [
+      "Creature",
+      "Instant",
+      "Sorcery",
+      "Artifact",
+      "Enchantment",
+      "Planeswalker",
+      "Battle",
+      "Land",
+    ];
+    for (const t of order) if (tl.includes(t)) return t;
+    // Fallback: token before dash or first word
+    const beforeDash = tl.split("—")[0].trim();
+    const first = beforeDash.split(/\s+/)[0] || "Unknown";
+    return first;
+  }
+  function autoGroupUngroupedBy(
+    kind: AutoGroupKind,
+    opts?: { includeSingletons?: boolean },
+  ): void {
+    const includeSingles = !!opts?.includeSingletons;
+    const ungrouped = sprites.filter((s) => !(s as any).__groupId && s.__card);
+    if (!ungrouped.length) return;
+    const buckets = new Map<string, number[]>();
+    const labels = new Map<string, string>();
+    for (const s of ungrouped) {
+      const c: any = (s as any).__card;
+      let key = "";
+      let label = "";
+      switch (kind) {
+        case "set": {
+          const code = (c?.set || "unknown").toString().toLowerCase();
+          key = code;
+          const nm = c?.set_name || code.toUpperCase();
+          label = `Set: ${nm} (${code.toUpperCase()})`;
+          break;
+        }
+        case "color-id": {
+          const arr = Array.isArray(c?.color_identity) ? c.color_identity : [];
+          if (!arr.length) {
+            key = "colorless";
+            label = "Colorless";
+          } else {
+            const sorted = arr.slice().sort().join("");
+            key = sorted;
+            label = `CI: ${sorted.split("").join(" ")}`;
+          }
+          break;
+        }
+        case "type": {
+          const pt = primaryType(c?.type_line);
+          key = pt.toLowerCase();
+          label = `Type: ${pt}`;
+          break;
+        }
+        case "rarity": {
+          const r = (c?.rarity || "unknown").toString();
+          key = r;
+          label = `Rarity: ${r}`;
+          break;
+        }
+        case "cmc": {
+          const cmc = Number.isFinite(c?.cmc) ? Math.floor(c.cmc) : -1;
+          key = String(cmc);
+          label = cmc >= 0 ? `CMC: ${cmc}` : "CMC: Unknown";
+          break;
+        }
+      }
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+        labels.set(key, label);
+      }
+      buckets.get(key)!.push(s.__id);
+    }
+    const entries = [...buckets.entries()];
+    // Sort by size desc then key asc for stable, pleasing creation order
+    entries.sort((a, b) => {
+      if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+    });
+    let created = 0;
+    for (const [key, ids] of entries) {
+      if (!ids || (!includeSingles && ids.length < 2)) continue;
+      const name = labels.get(key) || key;
+      try {
+        (createGroupWithCardIds as any)(ids, name, { silent: true });
+        created++;
+      } catch {}
+    }
+    if (created > 0) {
+      // Arrange the new groups compactly near ungrouped centroid
+      gridRepositionGroups();
+      // Persist after batch
+      try {
+        scheduleGroupSave();
+      } catch {}
+    }
   }
   function clearGroupsOnly() {
     // Remove membership on sprites
@@ -5394,7 +5602,11 @@ const splashEl = document.getElementById("splash");
   });
 
   // --- Utility: create a new group from a list of card names ---
-  function createGroupWithCardIds(ids: number[], name: string) {
+  function createGroupWithCardIds(
+    ids: number[],
+    name: string,
+    options?: { silent?: boolean },
+  ) {
     if (!ids.length) return;
     let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
     try {
@@ -5448,10 +5660,12 @@ const splashEl = document.getElementById("splash");
     });
     updateGroupMetrics(gv, sprites);
     drawGroup(gv, false);
-    // Save and fit
+    // Save and optionally fit
     scheduleGroupSave();
-    const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
-    camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
+    if (!options?.silent) {
+      const b = { x: gv.gfx.x, y: gv.gfx.y, w: gv.w, h: gv.h };
+      camera.fitBounds(b, { w: window.innerWidth, h: window.innerHeight });
+    }
     try {
       persistGroupTransform(gv.id, {
         x: gv.gfx.x,
