@@ -246,11 +246,10 @@ const splashEl = document.getElementById("splash");
   app.stage.addChild(bannerLayer);
   (app.stage as any).sortableChildren = true;
 
-  // Modern pill background + accent underline bar + bold title
+  // Modern pill background + bold title
   const banner = new PIXI.Container();
   bannerLayer.addChild(banner);
   const bannerBg = new PIXI.Graphics();
-  const accentBar = new PIXI.Graphics();
   const titleText = new PIXI.Text({
     text: "MTG Slop",
     style: {
@@ -271,7 +270,6 @@ const splashEl = document.getElementById("splash");
   titleText.alpha = 0.95;
   banner.addChild(bannerBg);
   banner.addChild(titleText);
-  banner.addChild(accentBar);
 
   function drawBannerBg() {
     try {
@@ -279,7 +277,7 @@ const splashEl = document.getElementById("splash");
       const padY = 12;
       const radius = 12;
       const w = Math.ceil(titleText.width) + padX * 2;
-      const h = Math.ceil(titleText.height) + padY * 2 + 6; // extra for accent space
+      const h = Math.ceil(titleText.height) + padY * 2;
       bannerBg.clear();
       bannerBg
         .roundRect(0, 0, w, h, radius)
@@ -288,13 +286,6 @@ const splashEl = document.getElementById("splash");
       // Title position
       titleText.x = padX;
       titleText.y = padY;
-      // Accent bar just under the text baseline
-      const barW = Math.max(48, Math.min(w - padX * 2, titleText.width));
-      const barH = 4;
-      accentBar.clear();
-      accentBar
-        .roundRect(padX, Math.round(padY + titleText.height + 4), barW, barH, 2)
-        .fill({ color: Colors.accent() as any, alpha: 0.95 });
     } catch {}
   }
 
@@ -308,7 +299,6 @@ const splashEl = document.getElementById("splash");
   });
 
   function layoutBanner() {
-    // Anchor to top-left with margin
     const marginX = 16;
     const marginY = 12;
     drawBannerBg();

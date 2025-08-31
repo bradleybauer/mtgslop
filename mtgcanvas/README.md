@@ -4,6 +4,8 @@ MTG Slop is a fast, local-first web app to organize Magic: The Gathering cards o
 
 Tech: TypeScript + Vite + PixiJS. Runs entirely in your browser; no server required.
 
+Send bitcoins :) 3EHV8WxCjEa6tpV6w7kEhn7YXtNLdy3yHn
+
 ## Features
 
 - Infinite canvas with smooth pan, zoom, and inertial camera movement
