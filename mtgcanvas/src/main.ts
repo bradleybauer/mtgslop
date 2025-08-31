@@ -55,7 +55,6 @@ import {
 import { SpatialIndex } from "./scene/SpatialIndex";
 import { MarqueeSystem } from "./interaction/marquee";
 import { initHelp } from "./ui/helpPanel";
-import { installModeToggle } from "./ui/modeToggle";
 import {
   loadAll,
   queuePosition,
@@ -5751,7 +5750,7 @@ const splashEl = document.getElementById("splash");
     }
   });
 
-  installModeToggle();
+  // Mode toggle removed (Tab shortcut was disabled)
 
   // Centralized clear function used by Debug and Import/Export integration
   async function clearAllData(): Promise<void> {
