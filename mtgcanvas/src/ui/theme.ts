@@ -114,17 +114,33 @@ export const ThemePalettes: Record<ThemeId, any> = {
 // UI scaling: allow font and control sizes to adapt across DPI/platforms.
 // Backed by CSS var --ui-scale; persistent via localStorage key "uiScale".
 let uiScale = 1;
+const UI_SCALE_KEY = "uiScale";
+const UI_SCALE_MODE_KEY = "uiScaleManual"; // '1' => manual, otherwise auto
+
 export function setUiScale(scale: number) {
   // clamp sane range
   const s = Math.max(0.7, Math.min(1.3, Number(scale) || 1));
   uiScale = s;
   try {
     document.documentElement.style.setProperty("--ui-scale", String(s));
-    localStorage.setItem("uiScale", String(s));
+    localStorage.setItem(UI_SCALE_KEY, String(s));
   } catch {}
 }
 export function getUiScale(): number {
   return uiScale;
+}
+export function isUiScaleManual(): boolean {
+  try {
+    return localStorage.getItem(UI_SCALE_MODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function setUiScaleManual(manual: boolean) {
+  try {
+    if (manual) localStorage.setItem(UI_SCALE_MODE_KEY, "1");
+    else localStorage.removeItem(UI_SCALE_MODE_KEY);
+  } catch {}
 }
 // Apply persisted or auto-detected UI scale. Keep small bias to shrink on Windows high-DPI.
 export function applyUiScaleFromStorageOrAuto() {
@@ -134,9 +150,15 @@ export function applyUiScaleFromStorageOrAuto() {
   try {
     const ver = localStorage.getItem("uiScale.v");
     if (ver !== "2") needRecalc = true;
-    const stored = localStorage.getItem("uiScale");
+    const stored = localStorage.getItem(UI_SCALE_KEY);
     if (stored) s = Number(stored);
   } catch {}
+  // Respect manual mode: if user explicitly set a value, keep it across DPR changes
+  if (isUiScaleManual()) {
+    if (!(s != null && isFinite(s) && s > 0)) s = 1;
+    setUiScale(s!);
+    return;
+  }
   if (needRecalc || s == null || !isFinite(s) || s <= 0) {
     try {
       const dpr = (window.devicePixelRatio || 1);

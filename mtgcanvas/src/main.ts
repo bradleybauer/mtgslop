@@ -69,6 +69,8 @@ import {
   ensureThemeStyles,
   registerThemeListener,
   applyUiScaleFromStorageOrAuto,
+  isUiScaleManual,
+  setUiScaleManual,
   setUiScale,
   getUiScale,
 } from "./ui/theme";
@@ -165,6 +167,10 @@ const splashEl = document.getElementById("splash");
         // Trigger a resize to apply new backbuffer size
         try { app.resize(); } catch {}
       }
+      // Recompute UI scale automatically only if not in manual mode
+      try {
+        if (!isUiScaleManual()) applyUiScaleFromStorageOrAuto();
+      } catch {}
     };
     const unwatch = watchDpr(onDprChange);
     // Also expose for manual debug
@@ -4051,6 +4057,13 @@ const splashEl = document.getElementById("splash");
 
   // ---- Performance overlay ----
   ensureThemeStyles();
+  // Optional helpers to switch UI scale between manual/auto at runtime
+  try {
+    (window as any).__uiScale = {
+      manual: () => setUiScaleManual(true),
+      auto: () => { setUiScaleManual(false); applyUiScaleFromStorageOrAuto(); },
+    };
+  } catch {}
   // Ensure modern day/night toggle (flat pill)
   try {
     ensureThemeToggleButton();
