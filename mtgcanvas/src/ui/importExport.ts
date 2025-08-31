@@ -260,7 +260,7 @@ export function installImportExport(
         return;
       }
       if (!importArea) return;
-  if (scryInFlight) {
+      if (scryInFlight) {
         // Don't allow text import while Scryfall is running
         if (statusEl)
           statusEl.textContent =

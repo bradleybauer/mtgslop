@@ -3,7 +3,10 @@
 // - Supports user overrides via localStorage
 
 function isWindows(): boolean {
-  const ua = (typeof navigator !== "undefined" && (navigator.userAgent || (navigator as any).platform)) || "";
+  const ua =
+    (typeof navigator !== "undefined" &&
+      (navigator.userAgent || (navigator as any).platform)) ||
+    "";
   return /Windows|Win32|Win64/i.test(ua);
 }
 
@@ -67,13 +70,15 @@ export function watchDpr(onChange: () => void): () => void {
     for (const v of dppxMarks) {
       const mq = matchMedia(`(resolution: ${v}dppx)`);
       const cb = () => onChange();
-      (mq as any).addEventListener?.("change", cb) || (mq as any).addListener?.(cb);
+      (mq as any).addEventListener?.("change", cb) ||
+        (mq as any).addListener?.(cb);
       listeners.push({ mq, cb });
     }
   }
   return () => {
     for (const { mq, cb } of listeners) {
-      (mq as any).removeEventListener?.("change", cb) || (mq as any).removeListener?.(cb);
+      (mq as any).removeEventListener?.("change", cb) ||
+        (mq as any).removeListener?.(cb);
     }
   };
 }

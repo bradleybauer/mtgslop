@@ -8,7 +8,8 @@ export interface GpuInfo {
 }
 
 function getDeviceMemoryGB(): number | undefined {
-  const dm: any = (typeof navigator !== "undefined" && (navigator as any).deviceMemory) as any;
+  const dm: any = (typeof navigator !== "undefined" &&
+    (navigator as any).deviceMemory) as any;
   if (typeof dm === "number" && dm > 0) return dm;
   return undefined;
 }
@@ -73,8 +74,10 @@ export function estimateGpuBudgetMB(info: GpuInfo): number {
 export function autoConfigureTextureBudget(renderer: any) {
   // Respect explicit user override
   const overrideStr =
-    (typeof localStorage !== "undefined" && localStorage.getItem("gpuBudgetMB")) ||
-    (typeof localStorage !== "undefined" && localStorage.getItem("gpuBudgetMBOverride")) ||
+    (typeof localStorage !== "undefined" &&
+      localStorage.getItem("gpuBudgetMB")) ||
+    (typeof localStorage !== "undefined" &&
+      localStorage.getItem("gpuBudgetMBOverride")) ||
     null;
   const ov = overrideStr ? Number(overrideStr) : NaN;
   if (Number.isFinite(ov) && ov > 0) {

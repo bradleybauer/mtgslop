@@ -1675,7 +1675,7 @@ const splashEl = document.getElementById("splash");
     nameInput.style.fontSize = "calc(16px * var(--ui-scale))";
     nameInput.style.padding =
       "calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale))";
-    nameInput.disabled = true;
+    nameInput.disabled = false;
     nameWrap.appendChild(nameInput);
     scroll.appendChild(nameWrap);
 
@@ -1783,12 +1783,16 @@ const splashEl = document.getElementById("splash");
     const gv = currentPanelGroup();
     if (!gv) {
       panel.style.display = "none";
+      if (groupInfoNameInput) groupInfoNameInput.disabled = true;
       return;
     }
     panel.style.display = "flex";
     // Ensure mutual exclusivity with card panel
     hideCardInfoPanel();
-    if (groupInfoNameInput) groupInfoNameInput.value = gv.name;
+    if (groupInfoNameInput) {
+      groupInfoNameInput.disabled = false;
+      groupInfoNameInput.value = gv.name;
+    }
     // Update metrics grid
     const metrics = panel.querySelector(
       "#group-info-metrics",
@@ -3105,7 +3109,6 @@ const splashEl = document.getElementById("splash");
       timer.end({ cards: gv.items.size });
     });
     // Layout submenu removed (group sections/faceted layout no longer supported)
-    addItem("Rename", () => startGroupRename(gv));
     // Recolor removed; theme-driven
     addItem("Delete", () => {
       deleteGroupById(gv.id);

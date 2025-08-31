@@ -32,15 +32,15 @@ export function disableSpellAndGrammarGlobally(options?: {
           !(el as HTMLInputElement).type));
     if (!isTextInput && !isCE) return;
 
-  // Disable spell and grammar check (Chrome/Firefox/Edge honor this on supported elements)
-  (el as any).spellcheck = false;
-  el.setAttribute("spellcheck", "false");
-  // Mobile hints
-  el.setAttribute("autocapitalize", "off");
-  el.setAttribute("autocorrect", "off");
-  // Some grammar extensions honor this opt-out
-  el.setAttribute("data-gramm", "false");
-  el.setAttribute("data-gramm_editor", "false");
+    // Disable spell and grammar check (Chrome/Firefox/Edge honor this on supported elements)
+    (el as any).spellcheck = false;
+    el.setAttribute("spellcheck", "false");
+    // Mobile hints
+    el.setAttribute("autocapitalize", "off");
+    el.setAttribute("autocorrect", "off");
+    // Some grammar extensions honor this opt-out
+    el.setAttribute("data-gramm", "false");
+    el.setAttribute("data-gramm_editor", "false");
   };
 
   const applyAll = (root: ParentNode | Document) => {

@@ -156,7 +156,10 @@ export function applyUiScaleFromStorageOrAuto() {
   }
   if (needRecalc || s == null || !isFinite(s) || s <= 0) {
     const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
-    const ua = (typeof navigator !== "undefined" && (navigator.userAgent || (navigator as any).platform)) || "";
+    const ua =
+      (typeof navigator !== "undefined" &&
+        (navigator.userAgent || (navigator as any).platform)) ||
+      "";
     const isWindows = /Windows|Win64|Win32/i.test(ua);
     const isLinux = /Linux|X11/i.test(ua);
     const isMac = /Macintosh|Mac OS X/i.test(ua);
@@ -182,7 +185,8 @@ export function applyUiScaleFromStorageOrAuto() {
     } else {
       s = 1;
     }
-    if (typeof localStorage !== "undefined") localStorage.setItem("uiScale.v", "2");
+    if (typeof localStorage !== "undefined")
+      localStorage.setItem("uiScale.v", "2");
   }
   setUiScale(s!);
 }
@@ -435,7 +439,7 @@ export function setTheme(t: ThemeId) {
   document.documentElement.setAttribute("data-theme", t);
   localStorage.setItem("appTheme", t);
   listeners.forEach((l) => {
-  l(t);
+    l(t);
   });
 }
 export function toggleTheme() {

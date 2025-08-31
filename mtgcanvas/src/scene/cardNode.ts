@@ -1050,17 +1050,30 @@ export function getInflightTextureCount() {
 
 // Exported: snapshot of texture budget/queue/debug counters for perf reports
 export function getTextureBudgetStats() {
-  const over = Math.max(0, totalTextureBytes - settings.gpuBudgetMB * 1024 * 1024);
-  const avgDecode = __dbg.decode.count ? __dbg.decode.totalMs / __dbg.decode.count : 0;
+  const over = Math.max(
+    0,
+    totalTextureBytes - settings.gpuBudgetMB * 1024 * 1024,
+  );
+  const avgDecode = __dbg.decode.count
+    ? __dbg.decode.totalMs / __dbg.decode.count
+    : 0;
   return {
     totalTextureMB: totalTextureBytes / 1048576,
     budgetMB: settings.gpuBudgetMB,
     overBudgetMB: over / 1048576,
     cacheEntries: textureCache.size,
     inflight: inflightTex.size,
-    decode: { count: __dbg.decode.count, avgMs: avgDecode, maxMs: __dbg.decode.maxMs },
+    decode: {
+      count: __dbg.decode.count,
+      avgMs: avgDecode,
+      maxMs: __dbg.decode.maxMs,
+    },
     qPeak: __dbg.qPeak,
-    evict: { count: __dbg.evict.count, bytesMB: __dbg.evict.bytes / 1048576, lastMs: __dbg.evict.lastMs },
+    evict: {
+      count: __dbg.evict.count,
+      bytesMB: __dbg.evict.bytes / 1048576,
+      lastMs: __dbg.evict.lastMs,
+    },
   };
 }
 
