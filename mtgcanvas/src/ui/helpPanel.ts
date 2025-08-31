@@ -61,8 +61,8 @@ function ensureHelpStyles() {
   if (document.getElementById("help-style")) return;
   const style = document.createElement("style");
   style.id = "help-style";
-  style.textContent = `.help-root{font:16px/1.6 var(--panel-font);padding:4px 0;text-align:left;} .help-root h2{margin:14px 0 6px;color:var(--panel-accent);} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 8px;padding:4px 0;border-bottom:1px solid color-mix(in srgb,var(--panel-fg) 12%, transparent);} .help-root li:last-child{border-bottom:none;} .help-root b{color:var(--panel-fg);font-weight:600;} .help-root span{color:var(--panel-fg-dim);} .help-root section{margin-bottom:10px;} .help-root .tips ul li{border-bottom:none;}
-  .ui-help-centered{position:fixed !important; left:50% !important; top:50% !important; right:auto !important; transform:translate(-50%, -50%); max-width:min(90vw, 720px) !important; width:auto !important; z-index:10000 !important;}`;
+  style.textContent = `.help-root{font:calc(16px * var(--ui-scale))/1.6 var(--panel-font);padding:4px 0;text-align:left;} .help-root h2{margin:14px 0 6px;color:var(--panel-accent);} .help-root section:first-of-type h2{margin-top:0;} .help-root ul{list-style:none;margin:0;padding:0;} .help-root li{margin:0 0 8px;padding:4px 0;border-bottom:1px solid color-mix(in srgb,var(--panel-fg) 12%, transparent);} .help-root li:last-child{border-bottom:none;} .help-root b{color:var(--panel-fg);font-weight:600;} .help-root span{color:var(--panel-fg-dim);} .help-root section{margin-bottom:10px;} .help-root .tips ul li{border-bottom:none;}
+  .ui-help-centered{position:fixed !important; left:50% !important; top:50% !important; right:auto !important; transform:translate(-50%, -50%); max-width:min(90vw, calc(720px * var(--ui-scale))) !important; width:auto !important; z-index:10000 !important;}`;
   document.head.appendChild(style);
 }
 
@@ -76,7 +76,7 @@ export function initHelp(): HelpAPI {
     bar = document.createElement("div");
     bar.id = FAB_BAR_ID;
     bar.style.cssText =
-      "position:fixed;top:16px;right:16px;display:flex;flex-direction:row-reverse;gap:12px;align-items:center;z-index:9999;";
+  "position:fixed;top:calc(16px * var(--ui-scale));right:calc(16px * var(--ui-scale));display:flex;flex-direction:row-reverse;gap:calc(12px * var(--ui-scale));align-items:center;z-index:9999;";
     document.body.appendChild(bar);
     return bar;
   }
@@ -87,10 +87,10 @@ export function initHelp(): HelpAPI {
     helpEl = document.createElement("div");
     helpEl.className = "ui-panel ui-panel-scroll";
     helpEl.style.position = "fixed";
-    helpEl.style.top = "12px";
-    helpEl.style.right = "12px";
-    helpEl.style.width = "560px";
-    helpEl.style.maxHeight = "70vh";
+  helpEl.style.top = "calc(12px * var(--ui-scale))";
+  helpEl.style.right = "calc(12px * var(--ui-scale))";
+  helpEl.style.width = "min(90vw, calc(560px * var(--ui-scale)))";
+  helpEl.style.maxHeight = "70vh";
     helpEl.style.zIndex = "9998";
     helpEl.style.border = "2px solid var(--panel-accent)";
     helpEl.innerHTML = buildHelpHTML();
@@ -134,16 +134,16 @@ export function initHelp(): HelpAPI {
     const fab = document.createElement("div");
     fab.id = "help-fab";
     fab.style.cssText =
-      "position:relative;width:56px;height:56px;border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;font:32px/1 var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:var(--panel-shadow);";
+      "position:relative;width:calc(56px * var(--ui-scale));height:calc(56px * var(--ui-scale));border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;font:calc(32px * var(--ui-scale))/1 var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:var(--panel-shadow);";
     fab.textContent = "?";
     fab.title = "Help";
     const panel = document.createElement("div");
     panel.id = "help-fab-panel";
     panel.className = "ui-panel ui-panel-scroll";
     panel.style.position = "absolute";
-    panel.style.top = "62px";
+    panel.style.top = "calc(62px * var(--ui-scale))";
     panel.style.right = "0";
-    panel.style.width = "560px";
+    panel.style.width = "min(90vw, calc(560px * var(--ui-scale)))";
     panel.style.maxHeight = "70vh";
     panel.style.display = "none";
     panel.innerHTML = buildHelpHTML();

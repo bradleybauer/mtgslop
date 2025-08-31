@@ -125,7 +125,7 @@ export function installImportExport(
   function ensure() {
     if (panel) return panel;
     const el = createPanel({
-      width: "min(1100px, 90vw)",
+      width: "min(90vw, calc(1100px * var(--ui-scale)))",
       maxHeight: "86vh",
       scroll: true,
       pointer: true,
@@ -136,31 +136,31 @@ export function installImportExport(
     el.style.transform = "translateX(-50%)";
     el.style.zIndex = "10030";
     // Use uniform padding around the panel edges
-    el.style.padding = "16px";
+    el.style.padding = "calc(16px * var(--ui-scale))";
     el.innerHTML = `
       
       <div style="display:block;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start;" id="ie-content">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:calc(22px * var(--ui-scale));align-items:start;" id="ie-content">
         <div>
           <h2 style="margin-top:0">Export</h2>
-          <textarea id="ie-export" class="ui-input" style="width:100%;min-height:300px;white-space:pre;resize:none;" readonly placeholder="Exported decklist will appear here"></textarea>
-          <div style="display:flex;align-items:center;justify-content:flex-start;margin-top:10px;gap:12px;">
-            <div style="display:flex;gap:10px;align-items:center;">
+          <textarea id="ie-export" class="ui-input" style="width:100%;min-height:calc(300px * var(--ui-scale));white-space:pre;resize:none;" readonly placeholder="Exported decklist will appear here"></textarea>
+          <div style="display:flex;align-items:center;justify-content:flex-start;margin-top:calc(10px * var(--ui-scale));gap:calc(12px * var(--ui-scale));">
+            <div style="display:flex;gap:calc(10px * var(--ui-scale));align-items:center;">
               <button id="ie-copy" type="button" class="ui-btn">Copy</button>
               <button id="ie-download" type="button" class="ui-btn">Download .txt</button>
             </div>
-            <div style="display:flex;gap:12px;align-items:center;">
-              <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-all" type="radio" name="ie-scope" checked style="margin:0 6px 0 0"/> All</label>
-              <label class="ui-pill" style="display:inline-flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;"><input id="ie-scope-sel" type="radio" name="ie-scope" style="margin:0 6px 0 0"/> Selection</label>
+            <div style="display:flex;gap:calc(12px * var(--ui-scale));align-items:center;">
+              <label class="ui-pill" style="display:inline-flex;gap:calc(8px * var(--ui-scale));align-items:center;padding:calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale));cursor:pointer;"><input id="ie-scope-all" type="radio" name="ie-scope" checked style="margin:0 calc(6px * var(--ui-scale)) 0 0"/> All</label>
+              <label class="ui-pill" style="display:inline-flex;gap:calc(8px * var(--ui-scale));align-items:center;padding:calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale));cursor:pointer;"><input id="ie-scope-sel" type="radio" name="ie-scope" style="margin:0 calc(6px * var(--ui-scale)) 0 0"/> Selection</label>
             </div>
           </div>
         </div>
         <div>
           <h2 style="margin-top:0">Import</h2>
-          <textarea id="ie-import" class="ui-input" style="width:100%;min-height:300px;white-space:pre;resize:none;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
-          <div style="display:flex;gap:10px;margin-top:10px;align-items:center;">
+          <textarea id="ie-import" class="ui-input" style="width:100%;min-height:calc(300px * var(--ui-scale));white-space:pre;resize:none;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
+          <div style="display:flex;gap:calc(10px * var(--ui-scale));margin-top:calc(10px * var(--ui-scale));align-items:center;">
             <button id="ie-import-btn" type="button" class="ui-btn">Import</button>
-            <div id="ie-status" style="opacity:.88;font-size:16px;"></div>
+            <div id="ie-status" style="opacity:.88;font-size:calc(16px * var(--ui-scale));"></div>
           </div>
         </div>
         ${
@@ -168,11 +168,11 @@ export function installImportExport(
             ? `
         <div id="ie-scry-pane" style="grid-column:1 / span 2;">
           <h2>Import from Scryfall search</h2>
-          <div style="display:flex;gap:10px;align-items:center;margin:8px 0 10px;">
-            <input id="ie-scry-query" class="ui-input" style="flex:1;padding:10px 12px;" placeholder="Scryfall query (e.g., o:infect t:creature cmc<=3)"/>
+          <div style="display:flex;gap:calc(10px * var(--ui-scale));align-items:center;margin:calc(8px * var(--ui-scale)) 0 calc(10px * var(--ui-scale));">
+            <input id="ie-scry-query" class="ui-input" style="flex:1;padding:calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale));" placeholder="Scryfall query (e.g., o:infect t:creature cmc<=3)"/>
             <button id="ie-scry-run" class="ui-btn" type="button">Import</button>
           </div>
-          <div id="ie-scry-status" style="opacity:.88;font-size:16px;"></div>
+          <div id="ie-scry-status" style="opacity:.88;font-size:calc(16px * var(--ui-scale));"></div>
         </div>`
             : ""
         }

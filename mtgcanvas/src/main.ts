@@ -68,6 +68,9 @@ import {
   ensureThemeToggleButton,
   ensureThemeStyles,
   registerThemeListener,
+  applyUiScaleFromStorageOrAuto,
+  setUiScale,
+  getUiScale,
 } from "./ui/theme";
 import { Colors } from "./ui/theme";
 import { installSearchPalette } from "./ui/searchPalette";
@@ -106,6 +109,36 @@ const app = new PIXI.Application();
 // Disable grammar/spellcheck in all text entry surfaces
 try {
   disableSpellAndGrammarGlobally({ includeContentEditable: true });
+} catch {}
+// Normalize UI scale early (Windows high-DPI heuristic + persisted value)
+try { applyUiScaleFromStorageOrAuto(); } catch {}
+// Expose quick UI-scale helpers for manual tweaking
+try {
+  (window as any).mtgUiScale = {
+    get: () => getUiScale(),
+    set: (v: number) => setUiScale(v),
+    inc: (d = 0.05) => setUiScale(getUiScale() + d),
+    dec: (d = 0.05) => setUiScale(getUiScale() - d),
+    reset: () => setUiScale(1),
+  };
+  // Keyboard: Alt+= increase, Alt+- decrease, Alt+0 reset
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (!e.altKey) return;
+      if (e.key === "+" || e.key === "=") {
+        setUiScale(getUiScale() + 0.05);
+        e.preventDefault();
+      } else if (e.key === "-" || e.key === "_") {
+        setUiScale(getUiScale() - 0.05);
+        e.preventDefault();
+      } else if (e.key === "0") {
+        setUiScale(1);
+        e.preventDefault();
+      }
+    },
+    { capture: true },
+  );
 } catch {}
 // Splash management: keep canvas hidden until persisted layout + groups are restored
 const splashEl = document.getElementById("splash");
@@ -164,7 +197,7 @@ const splashEl = document.getElementById("splash");
       if (!ctxLostBanner) {
         ctxLostBanner = document.createElement("div");
         ctxLostBanner.style.cssText =
-          "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:10050;padding:10px 14px;border-radius:8px;background:var(--panel-bg);color:var(--panel-fg);border:1px solid var(--panel-border);font:14px/1.4 var(--panel-font);";
+          "position:fixed;left:50%;top:calc(16px * var(--ui-scale));transform:translateX(-50%);z-index:10050;padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));border-radius:calc(8px * var(--ui-scale));background:var(--panel-bg);color:var(--panel-fg);border:1px solid var(--panel-border);font:calc(14px * var(--ui-scale))/1.4 var(--panel-font);";
         document.body.appendChild(ctxLostBanner);
       }
       ctxLostBanner.textContent = msg;
@@ -1691,14 +1724,14 @@ const splashEl = document.getElementById("splash");
     el.id = "group-info-panel";
     // Match card info panel geometry, anchored bottom-right
     el.style.cssText =
-      "position:fixed;right:14px;bottom:14px;width:520px;max-width:55vw;max-height:80vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:18px;";
+      "position:fixed;right:calc(14px * var(--ui-scale));bottom:calc(14px * var(--ui-scale));width:calc(520px * var(--ui-scale));max-width:55vw;max-height:80vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:calc(18px * var(--ui-scale));";
     el.className = "ui-panel";
 
     // Header (mirrors card panel header)
     const header = document.createElement("div");
     header.id = "gip-header";
     header.style.cssText =
-      "padding:10px 14px 6px;font-size:14px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:8px;justify-content:space-between;";
+      "padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale)) calc(6px * var(--ui-scale));font-size:calc(14px * var(--ui-scale));font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:calc(8px * var(--ui-scale));justify-content:space-between;";
     const headerTitle = document.createElement("div");
     headerTitle.textContent = "Group";
     header.appendChild(headerTitle);
@@ -1708,7 +1741,7 @@ const splashEl = document.getElementById("splash");
     clearBtn.title = "Clear selection";
     clearBtn.className = "ui-btn";
     clearBtn.style.cssText =
-      "width:32px;height:32px;padding:0;font-size:18px;line-height:18px;";
+      "width:calc(32px * var(--ui-scale));height:calc(32px * var(--ui-scale));padding:0;font-size:calc(18px * var(--ui-scale));line-height:calc(18px * var(--ui-scale));";
     clearBtn.onclick = () => {
       SelectionStore.clear();
       updateGroupInfoPanel();
@@ -1720,17 +1753,17 @@ const splashEl = document.getElementById("splash");
     const scroll = document.createElement("div");
     scroll.id = "gip-scroll";
     scroll.style.cssText =
-      "overflow:auto;padding:0 14px 18px;display:flex;flex-direction:column;gap:14px;";
+      "overflow:auto;padding:0 calc(14px * var(--ui-scale)) calc(18px * var(--ui-scale));display:flex;flex-direction:column;gap:calc(14px * var(--ui-scale));";
     el.appendChild(scroll);
 
     // Name editor
     const nameWrap = document.createElement("div");
     nameWrap.style.display = "flex";
     nameWrap.style.flexDirection = "column";
-    nameWrap.style.gap = "4px";
+  nameWrap.style.gap = "calc(4px * var(--ui-scale))";
     const nameLabel = document.createElement("label");
     nameLabel.textContent = "Name";
-    nameLabel.style.fontSize = "11px";
+  nameLabel.style.fontSize = "calc(11px * var(--ui-scale))";
     nameLabel.style.opacity = "0.75";
     nameWrap.appendChild(nameLabel);
     const nameInput = document.createElement("input");
@@ -1744,8 +1777,8 @@ const splashEl = document.getElementById("splash");
     nameInput.setAttribute("autocorrect", "off");
     nameInput.setAttribute("data-gramm", "false");
     nameInput.setAttribute("data-gramm_editor", "false");
-    nameInput.style.fontSize = "16px";
-    nameInput.style.padding = "8px 10px";
+  nameInput.style.fontSize = "calc(16px * var(--ui-scale))";
+  nameInput.style.padding = "calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale))";
     nameInput.disabled = true;
     nameWrap.appendChild(nameInput);
     scroll.appendChild(nameWrap);
@@ -1754,20 +1787,20 @@ const splashEl = document.getElementById("splash");
     const metrics = document.createElement("div");
     metrics.id = "group-info-metrics";
     metrics.style.cssText =
-      "display:grid;grid-template-columns:auto 1fr;column-gap:12px;row-gap:4px;font-size:16px;min-width:140px;";
+      "display:grid;grid-template-columns:auto 1fr;column-gap:calc(12px * var(--ui-scale));row-gap:calc(4px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));min-width:calc(140px * var(--ui-scale));";
     scroll.appendChild(metrics);
 
     // Actions
     const actions = document.createElement("div");
     actions.style.cssText =
-      "display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;";
+      "display:flex;flex-wrap:wrap;gap:calc(6px * var(--ui-scale));margin-top:calc(4px * var(--ui-scale));";
     function makeBtn(label: string, handler: () => void) {
       const b = document.createElement("button");
       b.textContent = label;
       b.type = "button";
       b.className = "ui-btn";
-      b.style.fontSize = "15px";
-      b.style.padding = "8px 12px";
+  b.style.fontSize = "calc(15px * var(--ui-scale))";
+  b.style.padding = "calc(8px * var(--ui-scale)) calc(12px * var(--ui-scale))";
       b.onclick = handler;
       return b;
     }
@@ -1895,17 +1928,17 @@ const splashEl = document.getElementById("splash");
     el.id = "card-info-panel";
     // Auto-height panel anchored to bottom-right; capped height; contents scroll if needed
     el.style.cssText =
-      "position:fixed;right:14px;bottom:14px;width:560px;max-width:60vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:16px;";
+      "position:fixed;right:calc(14px * var(--ui-scale));bottom:calc(14px * var(--ui-scale));width:calc(560px * var(--ui-scale));max-width:60vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:calc(16px * var(--ui-scale));";
     el.className = "ui-panel";
     el.innerHTML =
-      '<div id="cip-header" style="padding:12px 18px 8px;font-size:16px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:10px;">Card</div>' +
-      '<div id="cip-scroll" style="overflow:auto;padding:0 18px 22px;display:flex;flex-direction:column;gap:18px;">' +
-      '<div id="cip-empty" style="opacity:.55;padding:18px 6px;font-size:16px;">No card selected</div>' +
-      '<div id="cip-content" style="display:none;flex-direction:column;gap:32px;">' +
-      '<div id="cip-name" style="font-size:40px;font-weight:600;line-height:1.25;"></div>' +
-      '<div id="cip-meta" style="display:flex;flex-direction:column;gap:12px;font-size:20px;line-height:1.6;opacity:.95;"></div>' +
-      '<div id="cip-type" style="font-size:20px;opacity:.85;"></div>' +
-      '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:20px;line-height:1.75;padding:18px 20px;min-height:220px;"></div>' +
+  '<div id="cip-header" style="padding:calc(12px * var(--ui-scale)) calc(18px * var(--ui-scale)) calc(8px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:calc(10px * var(--ui-scale));">Card</div>' +
+  '<div id="cip-scroll" style="overflow:auto;padding:0 calc(18px * var(--ui-scale)) calc(22px * var(--ui-scale));display:flex;flex-direction:column;gap:calc(18px * var(--ui-scale));">' +
+  '<div id="cip-empty" style="opacity:.55;padding:calc(18px * var(--ui-scale)) calc(6px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));">No card selected</div>' +
+  '<div id="cip-content" style="display:none;flex-direction:column;gap:calc(32px * var(--ui-scale));">' +
+  '<div id="cip-name" style="font-size:calc(34px * var(--ui-scale));font-weight:600;line-height:1.25;"></div>' +
+  '<div id="cip-meta" style="display:flex;flex-direction:column;gap:calc(10px * var(--ui-scale));font-size:calc(18px * var(--ui-scale));line-height:1.6;opacity:.95;"></div>' +
+  '<div id="cip-type" style="font-size:calc(18px * var(--ui-scale));opacity:.85;"></div>' +
+  '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:calc(18px * var(--ui-scale));line-height:1.7;padding:calc(16px * var(--ui-scale)) calc(18px * var(--ui-scale));min-height:calc(200px * var(--ui-scale));"></div>' +
       "</div>" +
       "</div>";
     document.body.appendChild(el);
@@ -1978,7 +2011,7 @@ const splashEl = document.getElementById("splash");
         nameEl.style.display = "block";
         const nm = escapeHtml(card.name || "(Unnamed)");
         const costHtml = card.mana_cost
-          ? `<span class="cip-name-cost" style="margin-left:10px;display:inline-flex;align-items:center;">${renderManaCostHTML(card.mana_cost, 26)}</span>`
+          ? `<span class="cip-name-cost" style="margin-left:calc(10px * var(--ui-scale));display:inline-flex;align-items:center;">${renderManaCostHTML(card.mana_cost, 26)}</span>`
           : "";
         nameEl.innerHTML = nm + costHtml;
       }
@@ -2095,15 +2128,15 @@ const splashEl = document.getElementById("splash");
                 : "";
               const oracle = renderTextWithManaIcons(f?.oracle_text || "", 24);
               return (
-                `<div class="cip-face-row" style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:10px;background:var(--panel-bg-alt);">` +
-                `<div class="cip-face-head" style="display:flex;align-items:center;gap:10px;">` +
-                `<div class="cip-face-name" style="font-weight:600;font-size:26px;">${fname}</div>` +
+                `<div class="cip-face-row" style="display:flex;flex-direction:column;gap:calc(8px * var(--ui-scale));padding:calc(12px * var(--ui-scale)) calc(14px * var(--ui-scale));border-radius:calc(10px * var(--ui-scale));background:var(--panel-bg-alt);">` +
+                `<div class="cip-face-head" style="display:flex;align-items:center;gap:calc(10px * var(--ui-scale));">` +
+                `<div class="cip-face-name" style="font-weight:600;font-size:calc(26px * var(--ui-scale));">${fname}</div>` +
                 (cost
                   ? `<div class="cip-face-cost" style="display:flex;align-items:center;">${cost}</div>`
                   : "") +
                 `</div>` +
-                `<div class="cip-face-type" style="font-size:20px;opacity:.9;">${ftype}${stats}</div>` +
-                `<div class="cip-face-oracle ui-input" style="white-space:pre-wrap;font-size:20px;line-height:1.75;padding:18px 20px;">${oracle}</div>` +
+                `<div class="cip-face-type" style="font-size:calc(20px * var(--ui-scale));opacity:.9;">${ftype}${stats}</div>` +
+                `<div class="cip-face-oracle ui-input" style="white-space:pre-wrap;font-size:calc(20px * var(--ui-scale));line-height:1.75;padding:calc(18px * var(--ui-scale)) calc(20px * var(--ui-scale));">${oracle}</div>` +
                 `</div>`
               );
             })
@@ -2114,7 +2147,7 @@ const splashEl = document.getElementById("splash");
         if (nameElNow) {
           const nm = escapeHtml(card.name || "(Unnamed)");
           const costHtml = card.mana_cost
-            ? `<span class="cip-name-cost" style="margin-left:10px;display:inline-flex;align-items:center;">${renderManaCostHTML(card.mana_cost, 26)}</span>`
+            ? `<span class="cip-name-cost" style="margin-left:calc(10px * var(--ui-scale));display:inline-flex;align-items:center;">${renderManaCostHTML(card.mana_cost, 26)}</span>`
             : "";
           nameElNow.innerHTML = nm + costHtml;
         }

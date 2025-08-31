@@ -40,10 +40,10 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     wrap.id = "search-palette";
     // Widened palette to better fit enlarged font sizes (was min 320 / max 400)
     wrap.style.cssText =
-      "position:fixed;top:14%;left:50%;transform:translateX(-50%);z-index:10050;display:flex;flex-direction:column;gap:14px;min-width:440px;max-width:760px;width:clamp(440px,56vw,760px);";
+  "position:fixed;top:14%;left:50%;transform:translateX(-50%);z-index:10050;display:flex;flex-direction:column;gap:calc(14px * var(--ui-scale));min-width:calc(440px * var(--ui-scale));max-width:calc(760px * var(--ui-scale));width:clamp(calc(440px * var(--ui-scale)),56vw,calc(760px * var(--ui-scale)));";
     wrap.className = "ui-panel";
     wrap.innerHTML =
-      '<div style="font-size:26px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.85;">Search Cards</div>';
+      '<div style="font-size:calc(22px * var(--ui-scale));font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.85;">Search Cards</div>';
     inputEl = document.createElement("input");
     inputEl.type = "text";
     inputEl.placeholder =
@@ -60,14 +60,14 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     // Filter pills
     filtersEl = document.createElement("div");
     filtersEl.style.cssText =
-      "display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;";
+  "display:flex;gap:calc(6px * var(--ui-scale));flex-wrap:wrap;margin-top:calc(2px * var(--ui-scale));";
     function makePill(label: string, mode: FilterMode) {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
       b.className = "ui-pill";
-      b.style.fontSize = "16px";
-      b.style.padding = "8px 14px";
+  b.style.fontSize = "calc(14px * var(--ui-scale))";
+  b.style.padding = "calc(8px * var(--ui-scale)) calc(14px * var(--ui-scale))";
       const update = () => {
         b.style.opacity = filterMode === mode ? "1" : "0.55";
         b.style.outline =
@@ -92,26 +92,26 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     wrap.appendChild(filtersEl);
     infoEl = document.createElement("div");
     infoEl.style.cssText =
-      "font-size:16px;min-height:24px;opacity:0.85;white-space:pre-line;";
+  "font-size:calc(16px * var(--ui-scale));min-height:calc(24px * var(--ui-scale));opacity:0.85;white-space:pre-line;";
     wrap.appendChild(infoEl);
     // Navigation bar (Prev / counter / Next / Group All)
     navEl = document.createElement("div");
     navEl.style.cssText =
-      "display:flex;align-items:center;gap:12px;font-size:16px;";
+  "display:flex;align-items:center;gap:calc(12px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));";
     prevBtn = document.createElement("button");
     prevBtn.type = "button";
     prevBtn.textContent = "◀";
     prevBtn.title = "Previous (Alt+Left)";
     prevBtn.className = "ui-btn";
-    prevBtn.style.fontSize = "18px";
-    prevBtn.style.padding = "6px 12px";
+  prevBtn.style.fontSize = "calc(16px * var(--ui-scale))";
+  prevBtn.style.padding = "calc(6px * var(--ui-scale)) calc(12px * var(--ui-scale))";
     nextBtn = document.createElement("button");
     nextBtn.type = "button";
     nextBtn.textContent = "▶";
     nextBtn.title = "Next (Alt+Right)";
     nextBtn.className = "ui-btn";
-    nextBtn.style.fontSize = "18px";
-    nextBtn.style.padding = "6px 12px";
+  nextBtn.style.fontSize = "calc(16px * var(--ui-scale))";
+  nextBtn.style.padding = "calc(6px * var(--ui-scale)) calc(12px * var(--ui-scale))";
     counterEl = document.createElement("span");
     counterEl.textContent = "0 / 0";
     counterEl.style.opacity = "0.75";
@@ -120,9 +120,9 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     groupBtn.textContent = "Group All";
     groupBtn.title = "Create group from all matches (Enter)";
     groupBtn.className = "ui-btn";
-    groupBtn.style.marginLeft = "auto";
-    groupBtn.style.fontSize = "16px";
-    groupBtn.style.padding = "6px 14px";
+  groupBtn.style.marginLeft = "auto";
+  groupBtn.style.fontSize = "calc(14px * var(--ui-scale))";
+  groupBtn.style.padding = "calc(6px * var(--ui-scale)) calc(14px * var(--ui-scale))";
     function updateNavState() {
       const total = currentMatches.length;
       const show = total > 0;
@@ -164,10 +164,10 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     wrap.appendChild(navEl);
     const hint = document.createElement("div");
     hint.style.cssText =
-      "font-size:16px;opacity:.75;white-space:normal;line-height:1.4;";
+      "font-size:calc(16px * var(--ui-scale));opacity:.75;white-space:normal;line-height:1.4;";
     hint.innerHTML = `
 <details>
-  <summary style="cursor:pointer;font-size:16px">Search syntax cheatsheet</summary>
+  <summary style="cursor:pointer;font-size:calc(16px * var(--ui-scale))">Search syntax cheatsheet</summary>
   <div style="margin-top:6px"></div>
   <div><b>Basics</b></div>
   <ul style="margin:6px 0 8px 18px;">

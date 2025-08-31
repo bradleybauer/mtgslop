@@ -111,6 +111,50 @@ export const ThemePalettes: Record<ThemeId, any> = {
   },
 };
 
+// UI scaling: allow font and control sizes to adapt across DPI/platforms.
+// Backed by CSS var --ui-scale; persistent via localStorage key "uiScale".
+let uiScale = 1;
+export function setUiScale(scale: number) {
+  // clamp sane range
+  const s = Math.max(0.7, Math.min(1.3, Number(scale) || 1));
+  uiScale = s;
+  try {
+    document.documentElement.style.setProperty("--ui-scale", String(s));
+    localStorage.setItem("uiScale", String(s));
+  } catch {}
+}
+export function getUiScale(): number {
+  return uiScale;
+}
+// Apply persisted or auto-detected UI scale. Keep small bias to shrink on Windows high-DPI.
+export function applyUiScaleFromStorageOrAuto() {
+  let s: number | null = null;
+  try {
+    const stored = localStorage.getItem("uiScale");
+    if (stored) s = Number(stored);
+  } catch {}
+  if (s == null || !isFinite(s) || s <= 0) {
+    try {
+      const dpr = (window.devicePixelRatio || 1);
+      const ua = navigator.userAgent || navigator.platform || "";
+      const isWindows = /Windows|Win64|Win32/i.test(ua);
+      const isLinux = /Linux|X11/i.test(ua);
+      const isMac = /Macintosh|Mac OS X/i.test(ua);
+      // Heuristic: on Windows and Linux with desktop scale > 100%, px-based UI feels a bit large.
+      if ((isWindows || isLinux) && dpr >= 1.25) {
+        if (dpr >= 2) s = 0.8;
+        else if (dpr >= 1.5) s = 0.86;
+        else s = 0.9;
+      } else {
+        s = 1;
+      }
+    } catch {
+      s = 1;
+    }
+  }
+  setUiScale(s!);
+}
+
 function hexToNum(hex: string): number {
   const s = (hex || "").replace("#", "").slice(0, 6);
   const n = parseInt(s, 16);
@@ -223,7 +267,7 @@ export function ensureThemeStyles() {
   const l = ThemePalettes.light;
   const y = ThemePalettes.blackYellow;
   style.textContent = `
-  :root { --panel-font:'Inter',system-ui,monospace; }
+  :root { --panel-font:'Inter',system-ui,monospace; --ui-scale: ${uiScale}; }
   /* DARK THEME */
   :root, .theme-dark {
     --canvas-bg:${d.canvasBg};
@@ -294,39 +338,39 @@ export function ensureThemeStyles() {
   --set-icon-filter: invert(1) sepia(0.2) saturate(1.2) brightness(1.15);
   }
   /* Panels */
-  .ui-panel { background:var(--panel-bg-alt); backdrop-filter:blur(6px) saturate(1.2); -webkit-backdrop-filter:blur(6px) saturate(1.2); color:var(--panel-fg); border:1px solid var(--panel-border); border-radius:var(--panel-radius); font:18px/1.7 var(--panel-font); box-shadow:var(--panel-shadow); padding:22px 24px; }
-  .ui-panel h1,.ui-panel h2,.ui-panel h3{ font-weight:600; letter-spacing:.6px; text-transform:uppercase; font-size:17px; color:var(--panel-accent); margin:14px 0 10px; }
+  .ui-panel { background:var(--panel-bg-alt); backdrop-filter:blur(6px) saturate(1.2); -webkit-backdrop-filter:blur(6px) saturate(1.2); color:var(--panel-fg); border:1px solid var(--panel-border); border-radius:var(--panel-radius); box-shadow:var(--panel-shadow); font-family:var(--panel-font); font-size:calc(15px * var(--ui-scale)); line-height:1.7; padding:calc(20px * var(--ui-scale)) calc(22px * var(--ui-scale)); }
+  .ui-panel h1,.ui-panel h2,.ui-panel h3{ font-weight:600; letter-spacing:.6px; text-transform:uppercase; font-size:calc(14px * var(--ui-scale)); color:var(--panel-accent); margin:calc(12px * var(--ui-scale)) 0 calc(8px * var(--ui-scale)); }
   .ui-panel small{ opacity:.75; }
   .ui-panel-scroll{ overflow:auto; scrollbar-width:thin; }
-  .ui-panel-scroll::-webkit-scrollbar{ width:10px; }
+  .ui-panel-scroll::-webkit-scrollbar{ width:calc(10px * var(--ui-scale)); }
   .ui-panel-scroll::-webkit-scrollbar-track{ background:var(--panel-bg); }
-  .ui-panel-scroll::-webkit-scrollbar-thumb{ background:${d.scrollbarThumb}; border-radius:4px; }
+  .ui-panel-scroll::-webkit-scrollbar-thumb{ background:${d.scrollbarThumb}; border-radius:calc(4px * var(--ui-scale)); }
   /* Badges */
-  .ui-badge{ display:inline-block; padding:4px 10px; border-radius:8px; font-size:13px; line-height:1.3; background:${d.badgeBg}; color:${d.badgeFg}; margin:0 6px 6px 0; }
+  .ui-badge{ display:inline-block; padding:calc(4px * var(--ui-scale)) calc(10px * var(--ui-scale)); border-radius:calc(8px * var(--ui-scale)); font-size:calc(12px * var(--ui-scale)); line-height:1.3; background:${d.badgeBg}; color:${d.badgeFg}; margin:0 calc(6px * var(--ui-scale)) calc(6px * var(--ui-scale)) 0; }
   .theme-light .ui-badge{ background:${l.badgeBg}; color:${l.badgeFg}; }
   .theme-blackYellow .ui-badge{ background:${y.badgeBg}; color:${y.badgeFg}; }
   /* Inputs */
-  .ui-input{ background:var(--input-bg); border:1px solid var(--input-border); border-radius:10px; padding:12px 14px; font:18px var(--panel-font); color:var(--input-fg); outline:none; box-sizing:border-box; }
-  .ui-input-lg{ font-size:32px; padding:16px 18px; }
+  .ui-input{ background:var(--input-bg); border:1px solid var(--input-border); border-radius:calc(10px * var(--ui-scale)); padding:calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale)); font-family:var(--panel-font); font-size:calc(16px * var(--ui-scale)); color:var(--input-fg); outline:none; box-sizing:border-box; }
+  .ui-input-lg{ font-size:calc(28px * var(--ui-scale)); padding:calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale)); }
   .ui-input:focus{ box-shadow:0 0 0 2px color-mix(in srgb, var(--panel-accent) 35%, transparent); }
   /* Buttons */
-  .ui-btn, .ui-pill{ background:var(--btn-bg); border:1px solid var(--btn-border); color:var(--btn-fg); font:16px var(--panel-font); border-radius:10px; padding:10px 14px; cursor:pointer; user-select:none; transition:background .15s, color .15s, border-color .15s; }
+  .ui-btn, .ui-pill{ background:var(--btn-bg); border:1px solid var(--btn-border); color:var(--btn-fg); font-family:var(--panel-font); font-size:calc(14px * var(--ui-scale)); border-radius:calc(10px * var(--ui-scale)); padding:calc(9px * var(--ui-scale)) calc(12px * var(--ui-scale)); cursor:pointer; user-select:none; transition:background .15s, color .15s, border-color .15s; }
   .ui-btn:hover{ background:var(--btn-bg-hover); }
   .ui-btn.danger{ background:var(--danger-bg); border-color:var(--danger-border); }
-  .ui-pill{ background:var(--pill-bg); border-color:var(--pill-border); color:var(--pill-fg); font-size:16px; border-radius:22px; padding:10px 16px; }
+  .ui-pill{ background:var(--pill-bg); border-color:var(--pill-border); color:var(--pill-fg); font-size:calc(14px * var(--ui-scale)); border-radius:calc(22px * var(--ui-scale)); padding:calc(9px * var(--ui-scale)) calc(14px * var(--ui-scale)); }
   .ui-pill[data-active='true']{ outline:1px solid var(--pill-active-outline); }
   /* Ensure native radios inside pills use theme colors (avoid default blue) */
-  .ui-pill input[type='radio']{ accent-color: var(--pill-active-outline); margin-right:6px; }
+  .ui-pill input[type='radio']{ accent-color: var(--pill-active-outline); margin-right:calc(6px * var(--ui-scale)); }
   .ui-pill input[type='radio']:focus-visible{ outline:2px solid var(--pill-active-outline); outline-offset:2px; }
   /* Menu */
-  .ui-menu{ background:var(--panel-bg-alt); border:1px solid var(--panel-border); border-radius:10px; font:16px/1.55 var(--panel-font); color:var(--panel-fg); box-shadow:0 6px 20px -6px rgba(0,0,0,0.4); padding:10px 10px 8px; }
-  .ui-menu .divider{ height:1px; background:var(--menu-divider-bg); margin:6px 4px; }
-  .ui-menu-item{ padding:10px 14px; cursor:pointer; border-radius:8px; }
+  .ui-menu{ background:var(--panel-bg-alt); border:1px solid var(--panel-border); border-radius:calc(10px * var(--ui-scale)); font-family:var(--panel-font); font-size:calc(14px * var(--ui-scale)); line-height:1.55; color:var(--panel-fg); box-shadow:0 6px 20px -6px rgba(0,0,0,0.4); padding:calc(9px * var(--ui-scale)) calc(9px * var(--ui-scale)) calc(7px * var(--ui-scale)); }
+  .ui-menu .divider{ height:1px; background:var(--menu-divider-bg); margin:calc(6px * var(--ui-scale)) calc(4px * var(--ui-scale)); }
+  .ui-menu-item{ padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale)); cursor:pointer; border-radius:calc(8px * var(--ui-scale)); }
   .ui-menu-item:hover{ background:var(--menu-hover-bg); }
   .ui-menu-item.disabled{ opacity:.5; cursor:default; }
   /* Perf overlay monospace */
-  .perf-grid{ font:15px/1.5 monospace; white-space:pre; }
-  .theme-toggle-btn{ position:fixed; bottom:14px; left:14px; width:54px; height:54px; border-radius:50%; background:var(--fab-bg); color:var(--fab-fg); border:1px solid var(--fab-border); font:26px/54px var(--panel-font); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:var(--panel-shadow); transition:filter .2s, box-shadow .2s, background .2s; }
+  .perf-grid{ font-family:monospace; font-size:calc(15px * var(--ui-scale)); line-height:1.5; white-space:pre; }
+  .theme-toggle-btn{ position:fixed; bottom:calc(14px * var(--ui-scale)); left:calc(14px * var(--ui-scale)); width:calc(54px * var(--ui-scale)); height:calc(54px * var(--ui-scale)); border-radius:50%; background:var(--fab-bg); color:var(--fab-fg); border:1px solid var(--fab-border); font-family:var(--panel-font); font-size:calc(26px * var(--ui-scale)); line-height:calc(54px * var(--ui-scale)); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:var(--panel-shadow); transition:filter .2s, box-shadow .2s, background .2s; }
   .theme-toggle-btn:hover{ filter:brightness(1.06); box-shadow:${l.fabHoverShadow}; }
   body{ background:var(--canvas-bg); color:var(--panel-fg); }
   /* Card Info Panel set icon */
@@ -382,7 +426,7 @@ export function ensureThemeToggleButton() {
     bar = document.createElement("div");
     bar.id = "top-fab-bar";
     bar.style.cssText =
-      "position:fixed;top:16px;right:16px;display:flex;flex-direction:row-reverse;gap:12px;align-items:center;z-index:9999;";
+      "position:fixed;top:calc(16px * var(--ui-scale));right:calc(16px * var(--ui-scale));display:flex;flex-direction:row-reverse;gap:calc(12px * var(--ui-scale));align-items:center;z-index:9999;";
     document.body.appendChild(bar);
   }
   const fab = document.createElement("div");
@@ -392,7 +436,7 @@ export function ensureThemeToggleButton() {
   fab.setAttribute("aria-label", "Toggle theme");
   // Style as a circular button that sits inside the top FAB bar
   fab.style.cssText =
-    "position:relative;width:56px;height:56px;border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;box-shadow:var(--panel-shadow);transition:filter .2s, box-shadow .2s, background .2s;";
+    "position:relative;width:calc(56px * var(--ui-scale));height:calc(56px * var(--ui-scale));border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;box-shadow:var(--panel-shadow);transition:filter .2s, box-shadow .2s, background .2s;";
   // Make this the leftmost FAB within row-reverse layout by giving it highest order
   (fab.style as any).order = "999";
   fab.onmouseenter = () => (fab.style.filter = "brightness(1.06)");
