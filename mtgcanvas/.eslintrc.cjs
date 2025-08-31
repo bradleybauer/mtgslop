@@ -18,7 +18,6 @@ module.exports = {
   ],
   ignorePatterns: [
     "dist/",
-    "src-tauri/target/",
     "node_modules/",
   ],
   rules: {
