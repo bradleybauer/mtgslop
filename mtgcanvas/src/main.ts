@@ -5422,6 +5422,27 @@ const splashEl = document.getElementById("splash");
       hover = false;
       scheduleHide();
     });
+
+    // Close the Import/Export panel when clicking anywhere outside the panel or its FAB
+    const outsideClose = (ev: Event) => {
+      try {
+        const panelEl = document.getElementById(
+          "import-export-panel",
+        ) as HTMLDivElement | null;
+        if (!panelEl) return; // not created yet
+        if (panelEl.style.display === "none") return; // already hidden
+        const t = ev.target as Node | null;
+        if ((t && panelEl.contains(t)) || (t && fab.contains(t))) return; // click inside; ignore
+        // Otherwise hide and clear sticky states
+        hover = false;
+        pinned = false;
+        try {
+          (importExportUI as any).hide();
+        } catch {}
+      } catch {}
+    };
+    // Use capture so we get the event before Pixi canvas, etc.
+    window.addEventListener("pointerdown", outsideClose, { capture: true });
     // Close when another FAB opens
     window.addEventListener(
       "mtg:fabs:open",

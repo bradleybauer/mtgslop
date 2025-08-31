@@ -315,6 +315,9 @@ export function ensureThemeStyles() {
   .ui-btn.danger{ background:var(--danger-bg); border-color:var(--danger-border); }
   .ui-pill{ background:var(--pill-bg); border-color:var(--pill-border); color:var(--pill-fg); font-size:16px; border-radius:22px; padding:10px 16px; }
   .ui-pill[data-active='true']{ outline:1px solid var(--pill-active-outline); }
+  /* Ensure native radios inside pills use theme colors (avoid default blue) */
+  .ui-pill input[type='radio']{ accent-color: var(--pill-active-outline); margin-right:6px; }
+  .ui-pill input[type='radio']:focus-visible{ outline:2px solid var(--pill-active-outline); outline-offset:2px; }
   /* Menu */
   .ui-menu{ background:var(--panel-bg-alt); border:1px solid var(--panel-border); border-radius:10px; font:16px/1.55 var(--panel-font); color:var(--panel-fg); box-shadow:0 6px 20px -6px rgba(0,0,0,0.4); padding:10px 10px 8px; }
   .ui-menu .divider{ height:1px; background:var(--menu-divider-bg); margin:6px 4px; }
