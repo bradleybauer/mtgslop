@@ -1316,62 +1316,98 @@ const splashEl = document.getElementById("splash");
   function restoreMemoryGroups() {
     if (groupsRestored) return;
     groupsRestored = true;
-  // Always rebuild groups from sprite.group_id, applying optional name/z from LS groups
-  const timer = createPhaseTimer("startup:restoreMemoryGroups");
-  const meta = new Map<number, { name?: string; z?: number }>();
-    try {
-      if (memoryGroupsData && Array.isArray(memoryGroupsData.groups)) {
-        for (const gr of memoryGroupsData.groups) {
-          meta.set(gr.id, { name: gr.name, z: typeof gr.z === "number" ? gr.z : undefined });
+    const timer = createPhaseTimer("startup:restoreMemoryGroups");
+    const idMap: Map<number, CardSprite> =
+      ((window as any).__mtgIdToSprite as Map<number, CardSprite>) ||
+      new Map(sprites.map((s) => [s.__id, s] as const));
+    const lsGroups =
+      memoryGroupsData && Array.isArray(memoryGroupsData.groups)
+        ? (memoryGroupsData.groups as any[])
+        : null;
+    if (lsGroups && lsGroups.length) {
+      // Fast path: rebuild groups from saved frames and membersById
+      for (const gr of lsGroups) {
+        const gid = gr.id;
+        const x = Math.round(gr.x ?? 0);
+        const y = Math.round(gr.y ?? 0);
+        const w = Math.max(120, Math.round(gr.w ?? 300));
+        const h = Math.max(120, Math.round(gr.h ?? 300));
+        const gv = createGroupVisual(gid, x, y, w, h);
+        if (typeof gr.name === "string" && gr.name) gv.name = gr.name;
+        if (typeof gr.z === "number") {
+          try {
+            gv.gfx.zIndex = gr.z;
+          } catch {}
+        }
+        // Collapse feature retired: ignore persisted collapsed flag
+        gv.collapsed = false;
+        groups.set(gid, gv);
+        world.addChild(gv.gfx);
+        attachResizeHandle(gv);
+        attachGroupInteractions(gv);
+        const memberIds: number[] = Array.isArray(gr.membersById)
+          ? (gr.membersById as number[])
+          : [];
+        if (memberIds.length) {
+          for (const cid of memberIds) {
+            const sp = idMap.get(cid);
+            if (!sp) continue;
+            (sp as any).__groupId = gid;
+            addCardToGroupOrdered(gv, cid, gv.order.length);
+          }
+        } else {
+          // Fallback: derive from sprite flags if no saved ordering
+          sprites
+            .filter((s) => (s as any).__groupId === gid)
+            .sort((a, b) => a.y - b.y || a.x - b.x)
+            .forEach((s) => addCardToGroupOrdered(gv, s.__id, gv.order.length));
         }
       }
-    } catch {}
-    const byGid = new Map<number, CardSprite[]>();
-    sprites.forEach((s) => {
-      const gid = (s as any).__groupId;
-      if (gid && typeof gid === "number") {
-        const arr = byGid.get(gid) || [];
-        arr.push(s);
-        byGid.set(gid, arr);
-      }
-    });
-  byGid.forEach((members, gid) => {
-      let minX = Number.POSITIVE_INFINITY,
-        minY = Number.POSITIVE_INFINITY,
-        maxX = Number.NEGATIVE_INFINITY,
-        maxY = Number.NEGATIVE_INFINITY;
-      members.forEach((s) => {
-        const x1 = s.x,
-          y1 = s.y,
-          x2 = s.x + CARD_W_GLOBAL,
-          y2 = s.y + CARD_H_GLOBAL;
-        if (x1 < minX) minX = x1;
-        if (y1 < minY) minY = y1;
-        if (x2 > maxX) maxX = x2;
-        if (y2 > maxY) maxY = y2;
+    } else {
+      // Legacy fallback: compute frames from member positions grouped by sprite.__groupId
+      const byGid = new Map<number, CardSprite[]>();
+      sprites.forEach((s) => {
+        const gid = (s as any).__groupId;
+        if (gid && typeof gid === "number") {
+          const arr = byGid.get(gid) || [];
+          arr.push(s);
+          byGid.set(gid, arr);
+        }
       });
-      if (!Number.isFinite(minX)) return;
-      const pad = 20;
-      const w = Math.max(120, Math.round(maxX - minX + pad * 2));
-      const h = Math.max(120, Math.round(maxY - minY + pad * 2));
-      const x = Math.round(minX - pad);
-      const y = Math.round(minY - pad);
-      const gv = createGroupVisual(gid, x, y, w, h);
-      const m = meta.get(gid);
-  if (m?.name) gv.name = m.name;
-      if (typeof m?.z === "number") {
-        try { gv.gfx.zIndex = m.z!; } catch {}
-      }
-      groups.set(gid, gv);
-      world.addChild(gv.gfx);
-      attachResizeHandle(gv);
-      attachGroupInteractions(gv);
-      members
-        .slice()
-        .sort((a, b) => a.y - b.y || a.x - b.x)
-        .forEach((s) => addCardToGroupOrdered(gv, s.__id, gv.order.length));
-    });
-  groups.forEach((gv) => {
+      byGid.forEach((members, gid) => {
+        let minX = Number.POSITIVE_INFINITY,
+          minY = Number.POSITIVE_INFINITY,
+          maxX = Number.NEGATIVE_INFINITY,
+          maxY = Number.NEGATIVE_INFINITY;
+        members.forEach((s) => {
+          const x1 = s.x,
+            y1 = s.y,
+            x2 = s.x + CARD_W_GLOBAL,
+            y2 = s.y + CARD_H_GLOBAL;
+          if (x1 < minX) minX = x1;
+          if (y1 < minY) minY = y1;
+          if (x2 > maxX) maxX = x2;
+          if (y2 > maxY) maxY = y2;
+        });
+        if (!Number.isFinite(minX)) return;
+        const pad = 20;
+        const w = Math.max(120, Math.round(maxX - minX + pad * 2));
+        const h = Math.max(120, Math.round(maxY - minY + pad * 2));
+        const x = Math.round(minX - pad);
+        const y = Math.round(minY - pad);
+        const gv = createGroupVisual(gid, x, y, w, h);
+        groups.set(gid, gv);
+        world.addChild(gv.gfx);
+        attachResizeHandle(gv);
+        attachGroupInteractions(gv);
+        members
+          .slice()
+          .sort((a, b) => a.y - b.y || a.x - b.x)
+          .forEach((s) => addCardToGroupOrdered(gv, s.__id, gv.order.length));
+      });
+    }
+    // Finalize visuals/metrics and persist transforms
+    groups.forEach((gv) => {
       ensureMembersZOrder(gv, sprites);
       // Normalize baseZ of members to their zIndex after restore so future drags are stable
       const idMap3: Map<number, CardSprite> =
@@ -1390,11 +1426,12 @@ const splashEl = document.getElementById("splash");
     // Ensure new group creations won't collide with restored ids (memory only)
     try {
       const maxId = Math.max(...[...groups.keys(), 0]);
-      (GroupsRepo as any).ensureNextId &&
-        (GroupsRepo as any).ensureNextId(maxId + 1);
+      (GroupsRepo as any).ensureNextId && (GroupsRepo as any).ensureNextId(maxId + 1);
     } catch {}
-  try { timer.end({ groups: groups.size }); } catch {}
-  scheduleGroupSave();
+    try {
+      timer.end({ groups: groups.size });
+    } catch {}
+    scheduleGroupSave();
     updateEmptyStateOverlay();
   }
   // Rehydrate persisted groups
