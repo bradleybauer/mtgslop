@@ -60,7 +60,7 @@ export async function searchScryfall(
     order = "released",
     dir = "desc",
     onProgress,
-  onCards,
+    onCards,
     signal,
     throttleMs = 0,
     cache = "default",
@@ -162,8 +162,8 @@ export async function searchScryfall(
     while (pages.has(nextEmit)) {
       const cards = pages.get(nextEmit)!;
       pages.delete(nextEmit);
-  // Emit this page to the callback before appending to output
-  if (onCards && cards.length) onCards(cards.slice());
+      // Emit this page to the callback before appending to output
+      if (onCards && cards.length) onCards(cards.slice());
       for (const card of cards) {
         out.push(card);
         if (onProgress) onProgress(out.length, total);

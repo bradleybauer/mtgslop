@@ -13,34 +13,35 @@ export function disableSpellAndGrammarGlobally(options?: {
   const selectorParts = [
     'input[type="text"]',
     'input[type="search"]',
-    'input:not([type])',
-    'textarea',
+    "input:not([type])",
+    "textarea",
   ];
-  if (includeCE) selectorParts.push('[contenteditable]', '[contenteditable="true"]');
-  const selector = selectorParts.join(',');
+  if (includeCE)
+    selectorParts.push("[contenteditable]", '[contenteditable="true"]');
+  const selector = selectorParts.join(",");
 
   const apply = (el: Element) => {
     if (!(el instanceof HTMLElement)) return;
     const tag = el.tagName;
     const isCE = includeCE && (el as HTMLElement).isContentEditable;
     const isTextInput =
-      tag === 'TEXTAREA' ||
-      (tag === 'INPUT' &&
-        ((el as HTMLInputElement).type === 'text' ||
-          (el as HTMLInputElement).type === 'search' ||
+      tag === "TEXTAREA" ||
+      (tag === "INPUT" &&
+        ((el as HTMLInputElement).type === "text" ||
+          (el as HTMLInputElement).type === "search" ||
           !(el as HTMLInputElement).type));
     if (!isTextInput && !isCE) return;
 
     try {
       // Disable spell and grammar check (Chrome/Firefox/Edge honor this on supported elements)
       (el as any).spellcheck = false;
-      el.setAttribute('spellcheck', 'false');
+      el.setAttribute("spellcheck", "false");
       // Mobile hints
-      el.setAttribute('autocapitalize', 'off');
-      el.setAttribute('autocorrect', 'off');
+      el.setAttribute("autocapitalize", "off");
+      el.setAttribute("autocorrect", "off");
       // Some grammar extensions honor this opt-out
-      el.setAttribute('data-gramm', 'false');
-      el.setAttribute('data-gramm_editor', 'false');
+      el.setAttribute("data-gramm", "false");
+      el.setAttribute("data-gramm_editor", "false");
     } catch {}
   };
 
@@ -51,13 +52,13 @@ export function disableSpellAndGrammarGlobally(options?: {
   };
 
   // Initial pass
-  if (typeof document !== 'undefined') {
+  if (typeof document !== "undefined") {
     applyAll(document);
     // Observe additions
     try {
       const obs = new MutationObserver((muts) => {
         for (const m of muts) {
-          if (m.type === 'childList') {
+          if (m.type === "childList") {
             m.addedNodes.forEach((n) => {
               if (n.nodeType === 1) {
                 const el = n as Element;
@@ -68,7 +69,7 @@ export function disableSpellAndGrammarGlobally(options?: {
                 } catch {}
               }
             });
-          } else if (m.type === 'attributes' && (m.target as Element)) {
+          } else if (m.type === "attributes" && (m.target as Element)) {
             const t = m.target as Element;
             if (t.matches && t.matches(selector)) apply(t);
           }
@@ -78,7 +79,7 @@ export function disableSpellAndGrammarGlobally(options?: {
         subtree: true,
         childList: true,
         attributes: true,
-        attributeFilter: includeCE ? ['contenteditable'] : undefined,
+        attributeFilter: includeCE ? ["contenteditable"] : undefined,
       });
     } catch {}
   }

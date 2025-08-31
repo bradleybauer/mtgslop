@@ -715,9 +715,7 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
 }
 
 // ---- Fast lookup helpers for large group ops ----
-function getIdMapFast(
-  sprites: CardSprite[],
-): Map<number, CardSprite> {
+function getIdMapFast(sprites: CardSprite[]): Map<number, CardSprite> {
   try {
     const m = (window as any).__mtgIdToSprite as
       | Map<number, CardSprite>
@@ -730,10 +728,7 @@ function getIdMapFast(
   return idx;
 }
 
-function fastLookupSprites(
-  ids: number[],
-  sprites: CardSprite[],
-): CardSprite[] {
+function fastLookupSprites(ids: number[], sprites: CardSprite[]): CardSprite[] {
   const map = getIdMapFast(sprites);
   const out: CardSprite[] = [];
   for (let i = 0; i < ids.length; i++) {

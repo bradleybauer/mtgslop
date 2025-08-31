@@ -38,7 +38,7 @@ export const InstancesRepo = {
       tags: null,
     };
     mem.instances.push(inst);
-  instById.set(inst.id, inst);
+    instById.set(inst.id, inst);
     return inst.id;
   },
   // Memory-only: create an instance with an explicit id (used to restore stable ids). No-op override for DB.
@@ -127,13 +127,15 @@ export const InstancesRepo = {
       buf = [];
       InstancesRepo.updateMany(batch as any);
     }
-    return function queue(batch: {
-      id: number;
-      x?: number;
-      y?: number;
-      z?: number;
-      group_id?: number | null;
-    }[]) {
+    return function queue(
+      batch: {
+        id: number;
+        x?: number;
+        y?: number;
+        z?: number;
+        group_id?: number | null;
+      }[],
+    ) {
       if (batch && batch.length) buf.push(...batch);
       if (timer) return;
       timer = (globalThis as any).requestAnimationFrame

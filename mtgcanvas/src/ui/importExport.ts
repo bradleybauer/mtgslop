@@ -50,7 +50,6 @@ export interface ImportExportAPI {
   hide(): void;
 }
 
-
 export function installImportExport(
   opts: ImportExportOptions,
 ): ImportExportAPI {
@@ -298,11 +297,15 @@ export function installImportExport(
           if (statusEl)
             statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
         } catch (e: any) {
-          if (e && (e.name === "AbortError" || /aborted/i.test(e.message || ""))) {
+          if (
+            e &&
+            (e.name === "AbortError" || /aborted/i.test(e.message || ""))
+          ) {
             if (statusEl) statusEl.textContent = "Canceled.";
           } else {
             if (statusEl)
-              statusEl.textContent = "Import failed: " + (e?.message || String(e));
+              statusEl.textContent =
+                "Import failed: " + (e?.message || String(e));
           }
         } finally {
           textInFlight = false;
@@ -333,11 +336,15 @@ export function installImportExport(
         if (statusEl)
           statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
       } catch (e: any) {
-        if (e && (e.name === "AbortError" || /aborted/i.test(e.message || ""))) {
+        if (
+          e &&
+          (e.name === "AbortError" || /aborted/i.test(e.message || ""))
+        ) {
           if (statusEl) statusEl.textContent = "Canceled.";
         } else {
           if (statusEl)
-            statusEl.textContent = "Import failed: " + (e?.message || String(e));
+            statusEl.textContent =
+              "Import failed: " + (e?.message || String(e));
         }
       } finally {
         textInFlight = false;

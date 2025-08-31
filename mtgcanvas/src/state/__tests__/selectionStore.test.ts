@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { createSelectionStore } from '../selectionStore';
+import { describe, it, expect } from "vitest";
+import { createSelectionStore } from "../selectionStore";
 
-describe('SelectionStore', () => {
-  it('toggles and clears selections', () => {
+describe("SelectionStore", () => {
+  it("toggles and clears selections", () => {
     const s = createSelectionStore();
     s.toggleCard(1);
     s.toggleCard(2);
@@ -13,7 +13,7 @@ describe('SelectionStore', () => {
     expect(s.isEmpty).toBe(true);
   });
 
-  it('selectOnly operations are exclusive', () => {
+  it("selectOnly operations are exclusive", () => {
     const s = createSelectionStore();
     s.toggleCard(1);
     s.toggleGroup(10);

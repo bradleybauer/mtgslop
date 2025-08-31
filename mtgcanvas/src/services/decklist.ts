@@ -69,7 +69,8 @@ export function parseDecklist(text: string): { name: string; count: number }[] {
   }
   // Combine duplicates
   const grouped = new Map<string, number>();
-  for (const it of out) grouped.set(it.name, (grouped.get(it.name) || 0) + it.count);
+  for (const it of out)
+    grouped.set(it.name, (grouped.get(it.name) || 0) + it.count);
   return [...grouped.entries()].map(([name, count]) => ({ name, count }));
 }
 

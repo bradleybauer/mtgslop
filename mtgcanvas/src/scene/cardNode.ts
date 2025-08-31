@@ -217,7 +217,8 @@ function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
   try {
     const view: any = (window as any).__mtgView;
     if (view) {
-      const cx = view.cx, cy = view.cy;
+      const cx = view.cx,
+        cy = view.cy;
       const sx = s.x + 50; // card center x
       const sy = s.y + 70; // card center y
       const dx = sx - cx;
@@ -227,7 +228,8 @@ function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
       const near = (view.padNear ?? 300) * 1.0;
       const far = (view.padFar ?? 1200) * 1.0;
       let w = 0;
-      if (d <= near) w = -45; // very near center: stronger boost to reduce placeholders
+      if (d <= near)
+        w = -45; // very near center: stronger boost to reduce placeholders
       else if (d <= far) {
         const t = (d - near) / Math.max(1, far - near);
         w = -45 + t * 35; // blend up toward ~ -10
@@ -238,10 +240,15 @@ function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
       // If just outside viewport, still slightly prioritize to prewarm edges
       if (!s.visible && view) {
         const pad = view.padNear ?? 300;
-        const x1 = s.x, y1 = s.y, x2 = x1 + 100, y2 = y1 + 140;
+        const x1 = s.x,
+          y1 = s.y,
+          x2 = x1 + 100,
+          y2 = y1 + 140;
         const inNear =
-          x2 >= view.left - pad && x1 <= view.right + pad &&
-          y2 >= view.top - pad && y1 <= view.bottom + pad;
+          x2 >= view.left - pad &&
+          x1 <= view.right + pad &&
+          y2 >= view.top - pad &&
+          y1 <= view.bottom + pad;
         if (inNear) p -= 6;
       }
     }
@@ -629,10 +636,15 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
     // Protect cards near the viewport bounds from demotion so they can enter smoothly
     if (view) {
       const pad = (view.padNear ?? 300) * 1.25; // a bit larger than upgrade near-pad
-      const x1 = s.x, y1 = s.y, x2 = x1 + 100, y2 = y1 + 140;
+      const x1 = s.x,
+        y1 = s.y,
+        x2 = x1 + 100,
+        y2 = y1 + 140;
       const nearViewport =
-        x2 >= view.left - pad && x1 <= view.right + pad &&
-        y2 >= view.top - pad && y1 <= view.bottom + pad;
+        x2 >= view.left - pad &&
+        x1 <= view.right + pad &&
+        y2 >= view.top - pad &&
+        y1 <= view.bottom + pad;
       if (nearViewport) return false;
     }
     return true;
@@ -651,10 +663,14 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
     if (ua !== ub) return ua - ub;
     // Tiebreaker: furthest from center demotes first
     if (view) {
-      const acx = a.x + 50, acy = a.y + 70;
-      const bcx = b.x + 50, bcy = b.y + 70;
-      const ad2 = (acx - view.cx) * (acx - view.cx) + (acy - view.cy) * (acy - view.cy);
-      const bd2 = (bcx - view.cx) * (bcx - view.cx) + (bcy - view.cy) * (bcy - view.cy);
+      const acx = a.x + 50,
+        acy = a.y + 70;
+      const bcx = b.x + 50,
+        bcy = b.y + 70;
+      const ad2 =
+        (acx - view.cx) * (acx - view.cx) + (acy - view.cy) * (acy - view.cy);
+      const bd2 =
+        (bcx - view.cx) * (bcx - view.cx) + (bcy - view.cy) * (bcy - view.cy);
       return bd2 - ad2; // larger distance first
     }
     return 0;
@@ -894,7 +910,8 @@ export function taperMediumByDistance(maxPerFrame = 12) {
   const pool: CardSprite[] = [];
   try {
     // Prefer visible data structures we already maintain
-    if (Array.isArray(hiResQueue) && hiResQueue.length) pool.push(...hiResQueue);
+    if (Array.isArray(hiResQueue) && hiResQueue.length)
+      pool.push(...hiResQueue);
     const idMap: Map<number, CardSprite> | undefined = (window as any)
       .__mtgIdToSprite as Map<number, CardSprite> | undefined;
     if (idMap) {
@@ -1159,8 +1176,8 @@ function isDoubleSided(card: any): boolean {
     card.card_faces.length === 2 &&
     card.card_faces.every((f: any) => f.image_uris)
   ) {
-  // Exclude non-reversible multi-face layouts (including meld components)
-  if (/^(adventure|split|aftermath|flip|prototype|meld)$/.test(layout))
+    // Exclude non-reversible multi-face layouts (including meld components)
+    if (/^(adventure|split|aftermath|flip|prototype|meld)$/.test(layout))
       return false;
     return true;
   }

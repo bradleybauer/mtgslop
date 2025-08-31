@@ -70,7 +70,9 @@ class SelectionStoreImpl implements ISelectionStore {
   }
 }
 
-export function createSelectionStore(initial?: Partial<SelectionState>): ISelectionStore {
+export function createSelectionStore(
+  initial?: Partial<SelectionState>,
+): ISelectionStore {
   const s = new SelectionStoreImpl();
   if (initial) {
     s.state.cardIds = initial.cardIds ?? s.state.cardIds;
