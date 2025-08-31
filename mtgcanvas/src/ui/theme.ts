@@ -128,29 +128,48 @@ export function getUiScale(): number {
 }
 // Apply persisted or auto-detected UI scale. Keep small bias to shrink on Windows high-DPI.
 export function applyUiScaleFromStorageOrAuto() {
+  // Version gate to allow migrating prior heuristic once
   let s: number | null = null;
+  let needRecalc = false;
   try {
+    const ver = localStorage.getItem("uiScale.v");
+    if (ver !== "2") needRecalc = true;
     const stored = localStorage.getItem("uiScale");
     if (stored) s = Number(stored);
   } catch {}
-  if (s == null || !isFinite(s) || s <= 0) {
+  if (needRecalc || s == null || !isFinite(s) || s <= 0) {
     try {
       const dpr = (window.devicePixelRatio || 1);
       const ua = navigator.userAgent || navigator.platform || "";
       const isWindows = /Windows|Win64|Win32/i.test(ua);
       const isLinux = /Linux|X11/i.test(ua);
       const isMac = /Macintosh|Mac OS X/i.test(ua);
-      // Heuristic: on Windows and Linux with desktop scale > 100%, px-based UI feels a bit large.
-      if ((isWindows || isLinux) && dpr >= 1.25) {
-        if (dpr >= 2) s = 0.8;
-        else if (dpr >= 1.5) s = 0.86;
-        else s = 0.9;
+      // Goal: keep CSS UI about the same visual size across platforms.
+      // Windows tends to render CSS px larger at 125–175% scale, so shrink more aggressively.
+      if (isWindows) {
+        if (dpr >= 2.5) s = 0.78;
+        else if (dpr >= 2) s = 0.82;
+        else if (dpr >= 1.75) s = 0.86;
+        else if (dpr >= 1.5) s = 0.9;
+        else if (dpr >= 1.25) s = 0.92;
+        else s = 1;
+      } else if (isLinux) {
+        if (dpr >= 2) s = 0.9;
+        else if (dpr >= 1.5) s = 0.94;
+        else if (dpr >= 1.25) s = 0.96;
+        else s = 1;
+      } else if (isMac) {
+        // macOS HiDPI already feels balanced; only subtle trim for >2x
+        if (dpr >= 3) s = 0.94;
+        else if (dpr >= 2) s = 0.97;
+        else s = 1;
       } else {
         s = 1;
       }
     } catch {
       s = 1;
     }
+    try { localStorage.setItem("uiScale.v", "2"); } catch {}
   }
   setUiScale(s!);
 }
@@ -267,7 +286,7 @@ export function ensureThemeStyles() {
   const l = ThemePalettes.light;
   const y = ThemePalettes.blackYellow;
   style.textContent = `
-  :root { --panel-font:'Inter',system-ui,monospace; --ui-scale: ${uiScale}; }
+  :root { --panel-font:'Inter',system-ui,monospace; --ui-scale: ${uiScale}; --fab-size: calc(56px * var(--ui-scale)); }
   /* DARK THEME */
   :root, .theme-dark {
     --canvas-bg:${d.canvasBg};
@@ -370,7 +389,7 @@ export function ensureThemeStyles() {
   .ui-menu-item.disabled{ opacity:.5; cursor:default; }
   /* Perf overlay monospace */
   .perf-grid{ font-family:monospace; font-size:calc(15px * var(--ui-scale)); line-height:1.5; white-space:pre; }
-  .theme-toggle-btn{ position:fixed; bottom:calc(14px * var(--ui-scale)); left:calc(14px * var(--ui-scale)); width:calc(54px * var(--ui-scale)); height:calc(54px * var(--ui-scale)); border-radius:50%; background:var(--fab-bg); color:var(--fab-fg); border:1px solid var(--fab-border); font-family:var(--panel-font); font-size:calc(26px * var(--ui-scale)); line-height:calc(54px * var(--ui-scale)); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:var(--panel-shadow); transition:filter .2s, box-shadow .2s, background .2s; }
+  .theme-toggle-btn{ position:fixed; bottom:calc(14px * var(--ui-scale)); left:calc(14px * var(--ui-scale)); width:var(--fab-size); height:var(--fab-size); border-radius:50%; background:var(--fab-bg); color:var(--fab-fg); border:1px solid var(--fab-border); font-family:var(--panel-font); font-size:calc(26px * var(--ui-scale)); line-height:var(--fab-size); text-align:center; cursor:pointer; user-select:none; z-index:9999; box-shadow:var(--panel-shadow); transition:filter .2s, box-shadow .2s, background .2s; }
   .theme-toggle-btn:hover{ filter:brightness(1.06); box-shadow:${l.fabHoverShadow}; }
   body{ background:var(--canvas-bg); color:var(--panel-fg); }
   /* Card Info Panel set icon */
@@ -436,7 +455,7 @@ export function ensureThemeToggleButton() {
   fab.setAttribute("aria-label", "Toggle theme");
   // Style as a circular button that sits inside the top FAB bar
   fab.style.cssText =
-    "position:relative;width:calc(56px * var(--ui-scale));height:calc(56px * var(--ui-scale));border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;box-shadow:var(--panel-shadow);transition:filter .2s, box-shadow .2s, background .2s;";
+    "position:relative;width:var(--fab-size);height:var(--fab-size);border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;box-shadow:var(--panel-shadow);transition:filter .2s, box-shadow .2s, background .2s;";
   // Make this the leftmost FAB within row-reverse layout by giving it highest order
   (fab.style as any).order = "999";
   fab.onmouseenter = () => (fab.style.filter = "brightness(1.06)");

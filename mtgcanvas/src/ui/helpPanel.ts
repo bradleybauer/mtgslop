@@ -76,7 +76,7 @@ export function initHelp(): HelpAPI {
     bar = document.createElement("div");
     bar.id = FAB_BAR_ID;
     bar.style.cssText =
-  "position:fixed;top:calc(16px * var(--ui-scale));right:calc(16px * var(--ui-scale));display:flex;flex-direction:row-reverse;gap:calc(12px * var(--ui-scale));align-items:center;z-index:9999;";
+  "position:fixed;top:calc(16px * var(--ui-scale));right:calc(16px * var(--ui-scale));display:flex;flex-direction:row-reverse;gap:calc(10px * var(--ui-scale));align-items:center;z-index:9999;";
     document.body.appendChild(bar);
     return bar;
   }
@@ -134,14 +134,14 @@ export function initHelp(): HelpAPI {
     const fab = document.createElement("div");
     fab.id = "help-fab";
     fab.style.cssText =
-      "position:relative;width:calc(56px * var(--ui-scale));height:calc(56px * var(--ui-scale));border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;font:calc(32px * var(--ui-scale))/1 var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:var(--panel-shadow);";
+      "position:relative;width:var(--fab-size);height:var(--fab-size);border-radius:50%;background:var(--fab-bg);color:var(--fab-fg);border:1px solid var(--fab-border);display:flex;align-items:center;justify-content:center;font:calc(28px * var(--ui-scale))/1 var(--panel-font);text-align:center;cursor:help;user-select:none;box-shadow:var(--panel-shadow);";
     fab.textContent = "?";
     fab.title = "Help";
     const panel = document.createElement("div");
     panel.id = "help-fab-panel";
     panel.className = "ui-panel ui-panel-scroll";
     panel.style.position = "absolute";
-    panel.style.top = "calc(62px * var(--ui-scale))";
+  panel.style.top = "calc(6px + var(--fab-size))";
     panel.style.right = "0";
     panel.style.width = "min(90vw, calc(560px * var(--ui-scale)))";
     panel.style.maxHeight = "70vh";
