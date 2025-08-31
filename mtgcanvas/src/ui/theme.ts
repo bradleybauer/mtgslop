@@ -161,7 +161,7 @@ export function applyUiScaleFromStorageOrAuto() {
   }
   if (needRecalc || s == null || !isFinite(s) || s <= 0) {
     try {
-      const dpr = (window.devicePixelRatio || 1);
+      const dpr = window.devicePixelRatio || 1;
       const ua = navigator.userAgent || navigator.platform || "";
       const isWindows = /Windows|Win64|Win32/i.test(ua);
       const isLinux = /Linux|X11/i.test(ua);
@@ -191,7 +191,9 @@ export function applyUiScaleFromStorageOrAuto() {
     } catch {
       s = 1;
     }
-    try { localStorage.setItem("uiScale.v", "2"); } catch {}
+    try {
+      localStorage.setItem("uiScale.v", "2");
+    } catch {}
   }
   setUiScale(s!);
 }

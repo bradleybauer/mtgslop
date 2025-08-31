@@ -55,6 +55,7 @@ import {
 import { SpatialIndex } from "./scene/SpatialIndex";
 import { MarqueeSystem } from "./interaction/marquee";
 import { initHelp } from "./ui/helpPanel";
+import { installModeToggle } from "./ui/modeToggle";
 import {
   loadAll,
   queuePosition,
@@ -113,7 +114,9 @@ try {
   disableSpellAndGrammarGlobally({ includeContentEditable: true });
 } catch {}
 // Normalize UI scale early (Windows high-DPI heuristic + persisted value)
-try { applyUiScaleFromStorageOrAuto(); } catch {}
+try {
+  applyUiScaleFromStorageOrAuto();
+} catch {}
 // Expose quick UI-scale helpers for manual tweaking
 try {
   (window as any).mtgUiScale = {
@@ -164,7 +167,9 @@ const splashEl = document.getElementById("splash");
       if ((app.renderer as any).resolution !== eff) {
         (app.renderer as any).resolution = eff;
         // Trigger a resize to apply new backbuffer size
-        try { app.resize(); } catch {}
+        try {
+          app.resize();
+        } catch {}
       }
       // Recompute UI scale automatically only if not in manual mode
       try {
@@ -1789,10 +1794,10 @@ const splashEl = document.getElementById("splash");
     const nameWrap = document.createElement("div");
     nameWrap.style.display = "flex";
     nameWrap.style.flexDirection = "column";
-  nameWrap.style.gap = "calc(4px * var(--ui-scale))";
+    nameWrap.style.gap = "calc(4px * var(--ui-scale))";
     const nameLabel = document.createElement("label");
     nameLabel.textContent = "Name";
-  nameLabel.style.fontSize = "calc(11px * var(--ui-scale))";
+    nameLabel.style.fontSize = "calc(11px * var(--ui-scale))";
     nameLabel.style.opacity = "0.75";
     nameWrap.appendChild(nameLabel);
     const nameInput = document.createElement("input");
@@ -1806,8 +1811,9 @@ const splashEl = document.getElementById("splash");
     nameInput.setAttribute("autocorrect", "off");
     nameInput.setAttribute("data-gramm", "false");
     nameInput.setAttribute("data-gramm_editor", "false");
-  nameInput.style.fontSize = "calc(16px * var(--ui-scale))";
-  nameInput.style.padding = "calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale))";
+    nameInput.style.fontSize = "calc(16px * var(--ui-scale))";
+    nameInput.style.padding =
+      "calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale))";
     nameInput.disabled = true;
     nameWrap.appendChild(nameInput);
     scroll.appendChild(nameWrap);
@@ -1828,8 +1834,9 @@ const splashEl = document.getElementById("splash");
       b.textContent = label;
       b.type = "button";
       b.className = "ui-btn";
-  b.style.fontSize = "calc(15px * var(--ui-scale))";
-  b.style.padding = "calc(8px * var(--ui-scale)) calc(12px * var(--ui-scale))";
+      b.style.fontSize = "calc(15px * var(--ui-scale))";
+      b.style.padding =
+        "calc(8px * var(--ui-scale)) calc(12px * var(--ui-scale))";
       b.onclick = handler;
       return b;
     }
@@ -1960,14 +1967,14 @@ const splashEl = document.getElementById("splash");
       "position:fixed;right:calc(14px * var(--ui-scale));bottom:calc(14px * var(--ui-scale));width:calc(560px * var(--ui-scale));max-width:60vw;max-height:70vh;z-index:10015;display:flex;flex-direction:column;pointer-events:auto;font-size:calc(16px * var(--ui-scale));";
     el.className = "ui-panel";
     el.innerHTML =
-  '<div id="cip-header" style="padding:calc(12px * var(--ui-scale)) calc(18px * var(--ui-scale)) calc(8px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:calc(10px * var(--ui-scale));">Card</div>' +
-  '<div id="cip-scroll" style="overflow:auto;padding:0 calc(18px * var(--ui-scale)) calc(22px * var(--ui-scale));display:flex;flex-direction:column;gap:calc(18px * var(--ui-scale));">' +
-  '<div id="cip-empty" style="opacity:.55;padding:calc(18px * var(--ui-scale)) calc(6px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));">No card selected</div>' +
-  '<div id="cip-content" style="display:none;flex-direction:column;gap:calc(32px * var(--ui-scale));">' +
-  '<div id="cip-name" style="font-size:calc(34px * var(--ui-scale));font-weight:600;line-height:1.25;"></div>' +
-  '<div id="cip-meta" style="display:flex;flex-direction:column;gap:calc(10px * var(--ui-scale));font-size:calc(18px * var(--ui-scale));line-height:1.6;opacity:.95;"></div>' +
-  '<div id="cip-type" style="font-size:calc(18px * var(--ui-scale));opacity:.85;"></div>' +
-  '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:calc(18px * var(--ui-scale));line-height:1.7;padding:calc(16px * var(--ui-scale)) calc(18px * var(--ui-scale));min-height:calc(200px * var(--ui-scale));"></div>' +
+      '<div id="cip-header" style="padding:calc(12px * var(--ui-scale)) calc(18px * var(--ui-scale)) calc(8px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--panel-accent);display:flex;align-items:center;gap:calc(10px * var(--ui-scale));">Card</div>' +
+      '<div id="cip-scroll" style="overflow:auto;padding:0 calc(18px * var(--ui-scale)) calc(22px * var(--ui-scale));display:flex;flex-direction:column;gap:calc(18px * var(--ui-scale));">' +
+      '<div id="cip-empty" style="opacity:.55;padding:calc(18px * var(--ui-scale)) calc(6px * var(--ui-scale));font-size:calc(16px * var(--ui-scale));">No card selected</div>' +
+      '<div id="cip-content" style="display:none;flex-direction:column;gap:calc(32px * var(--ui-scale));">' +
+      '<div id="cip-name" style="font-size:calc(34px * var(--ui-scale));font-weight:600;line-height:1.25;"></div>' +
+      '<div id="cip-meta" style="display:flex;flex-direction:column;gap:calc(10px * var(--ui-scale));font-size:calc(18px * var(--ui-scale));line-height:1.6;opacity:.95;"></div>' +
+      '<div id="cip-type" style="font-size:calc(18px * var(--ui-scale));opacity:.85;"></div>' +
+      '<div id="cip-oracle" class="ui-input" style="white-space:pre-wrap;font-size:calc(18px * var(--ui-scale));line-height:1.7;padding:calc(16px * var(--ui-scale)) calc(18px * var(--ui-scale));min-height:calc(200px * var(--ui-scale));"></div>' +
       "</div>" +
       "</div>";
     document.body.appendChild(el);
@@ -4060,7 +4067,10 @@ const splashEl = document.getElementById("splash");
   try {
     (window as any).__uiScale = {
       manual: () => setUiScaleManual(true),
-      auto: () => { setUiScaleManual(false); applyUiScaleFromStorageOrAuto(); },
+      auto: () => {
+        setUiScaleManual(false);
+        applyUiScaleFromStorageOrAuto();
+      },
     };
   } catch {}
   // Ensure modern day/night toggle (flat pill)
@@ -5749,8 +5759,6 @@ const splashEl = document.getElementById("splash");
       });
     }
   });
-
-  // Mode toggle removed (Tab shortcut was disabled)
 
   // Centralized clear function used by Debug and Import/Export integration
   async function clearAllData(): Promise<void> {

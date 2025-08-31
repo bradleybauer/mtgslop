@@ -57,14 +57,18 @@ export function getEffectiveDpr(): number {
 // Observe DPR changes and call onChange() when it changes meaningfully.
 // Returns an unsubscribe function.
 export function watchDpr(onChange: () => void): () => void {
-  const listeners: Array<{ mq: MediaQueryList; cb: (this: MediaQueryList, ev: MediaQueryListEvent) => any }> = [];
+  const listeners: Array<{
+    mq: MediaQueryList;
+    cb: (this: MediaQueryList, ev: MediaQueryListEvent) => any;
+  }> = [];
   const dppxMarks = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 3, 4];
   try {
     for (const v of dppxMarks) {
       const mq = matchMedia(`(resolution: ${v}dppx)`);
       const cb = () => onChange();
       // modern addEventListener
-      (mq as any).addEventListener?.("change", cb) || (mq as any).addListener?.(cb);
+      (mq as any).addEventListener?.("change", cb) ||
+        (mq as any).addListener?.(cb);
       listeners.push({ mq, cb });
     }
   } catch {
@@ -74,7 +78,9 @@ export function watchDpr(onChange: () => void): () => void {
       const cur = getEffectiveDpr();
       if (cur !== last) {
         last = cur;
-        try { onChange(); } catch {}
+        try {
+          onChange();
+        } catch {}
       }
     }, 750);
     return () => clearInterval(id as any);
@@ -82,7 +88,8 @@ export function watchDpr(onChange: () => void): () => void {
   return () => {
     for (const { mq, cb } of listeners) {
       try {
-        (mq as any).removeEventListener?.("change", cb) || (mq as any).removeListener?.(cb);
+        (mq as any).removeEventListener?.("change", cb) ||
+          (mq as any).removeListener?.(cb);
       } catch {}
     }
   };

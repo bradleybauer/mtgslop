@@ -76,7 +76,7 @@ export function initHelp(): HelpAPI {
     bar = document.createElement("div");
     bar.id = FAB_BAR_ID;
     bar.style.cssText =
-  "position:fixed;top:calc(16px * var(--ui-scale));right:calc(16px * var(--ui-scale));display:flex;flex-direction:row-reverse;gap:calc(10px * var(--ui-scale));align-items:center;z-index:9999;";
+      "position:fixed;top:calc(16px * var(--ui-scale));right:calc(16px * var(--ui-scale));display:flex;flex-direction:row-reverse;gap:calc(10px * var(--ui-scale));align-items:center;z-index:9999;";
     document.body.appendChild(bar);
     return bar;
   }
@@ -87,10 +87,10 @@ export function initHelp(): HelpAPI {
     helpEl = document.createElement("div");
     helpEl.className = "ui-panel ui-panel-scroll";
     helpEl.style.position = "fixed";
-  helpEl.style.top = "calc(12px * var(--ui-scale))";
-  helpEl.style.right = "calc(12px * var(--ui-scale))";
-  helpEl.style.width = "min(90vw, calc(560px * var(--ui-scale)))";
-  helpEl.style.maxHeight = "70vh";
+    helpEl.style.top = "calc(12px * var(--ui-scale))";
+    helpEl.style.right = "calc(12px * var(--ui-scale))";
+    helpEl.style.width = "min(90vw, calc(560px * var(--ui-scale)))";
+    helpEl.style.maxHeight = "70vh";
     helpEl.style.zIndex = "9998";
     helpEl.style.border = "2px solid var(--panel-accent)";
     helpEl.innerHTML = buildHelpHTML();
@@ -141,7 +141,7 @@ export function initHelp(): HelpAPI {
     panel.id = "help-fab-panel";
     panel.className = "ui-panel ui-panel-scroll";
     panel.style.position = "absolute";
-  panel.style.top = "calc(6px + var(--fab-size))";
+    panel.style.top = "calc(6px + var(--fab-size))";
     panel.style.right = "0";
     panel.style.width = "min(90vw, calc(560px * var(--ui-scale)))";
     panel.style.maxHeight = "70vh";
