@@ -84,18 +84,21 @@ function rectOverlapsIndex(
 }
 
 class MinHeap<T> {
-  private a: { k: number; v: T }[] = [];
+  // Use a secondary sequence number to ensure deterministic ordering for equal keys
+  private a: { k: number; s: number; v: T }[] = [];
+  private seq = 0;
   constructor(private cap = 4096) {}
   size() {
     return this.a.length;
   }
   push(k: number, v: T) {
     const a = this.a;
-    a.push({ k, v });
+    a.push({ k, s: this.seq++, v });
     let i = a.length - 1;
     while (i > 0) {
       const p = (i - 1) >> 1;
-      if (a[p].k <= k) break;
+      if (a[p].k < a[i].k) break;
+      if (a[p].k === a[i].k && a[p].s <= a[i].s) break;
       const tmp = a[p];
       a[p] = a[i];
       a[i] = tmp;
@@ -115,8 +118,16 @@ class MinHeap<T> {
         const l = i * 2 + 1;
         const r = l + 1;
         let m = i;
-        if (l < a.length && a[l].k < a[m].k) m = l;
-        if (r < a.length && a[r].k < a[m].k) m = r;
+        if (
+          l < a.length &&
+          (a[l].k < a[m].k || (a[l].k === a[m].k && a[l].s < a[m].s))
+        )
+          m = l;
+        if (
+          r < a.length &&
+          (a[r].k < a[m].k || (a[r].k === a[m].k && a[r].s < a[m].s))
+        )
+          m = r;
         if (m === i) break;
         const tmp = a[m];
         a[m] = a[i];
@@ -140,11 +151,11 @@ function bestFirstFreeSpot(
   const b = ctx.getCanvasBounds();
   // Start at desired center clamped and snapped
   const sx0 = Math.min(
-    Math.max(b.x, snap(Math.round(desiredX), ctx.gridSize)),
+    Math.max(b.x, snap(desiredX, ctx.gridSize)),
     b.x + b.w - w,
   );
   const sy0 = Math.min(
-    Math.max(b.y, snap(Math.round(desiredY), ctx.gridSize)),
+    Math.max(b.y, snap(desiredY, ctx.gridSize)),
     b.y + b.h - h,
   );
   const centerX = sx0 + w / 2;
@@ -462,7 +473,8 @@ function planFlowAroundPositions(
       candidates.push({ i, j, d });
     }
   }
-  candidates.sort((a, b2) => a.d - b2.d);
+  // Deterministic tie-breakers: prefer smaller j then smaller i
+  candidates.sort((a, b2) => a.d - b2.d || a.j - b2.j || a.i - b2.i);
   const positions: { x: number; y: number }[] = [];
   let minX = Number.POSITIVE_INFINITY,
     minY = Number.POSITIVE_INFINITY,
@@ -520,7 +532,8 @@ function planFlowAroundPositions(
         extras.push({ i, j, d });
       }
     }
-    extras.sort((a, b3) => a.d - b3.d);
+    // Deterministic tie-breakers: prefer smaller j then smaller i
+    extras.sort((a, b3) => a.d - b3.d || a.j - b3.j || a.i - b3.i);
     for (const e of extras) {
       if (positions.length >= n) break;
       const x = originX + e.i * ctx.spacingX;
@@ -609,4 +622,199 @@ export function planImportPositions(n: number, ctx: PlacementContext) {
   }
   // Always seed flow-around at best-overlap anchor; lexicographic scoring already handled
   return planFlowAroundPositions(n, ctx, { i: bestI, j: bestJ });
+}
+
+// Generic rectangle planner: place arbitrary rectangles near a seed while avoiding existing cards and groups.
+// Returns positions in the same order as input rects.
+export function planRectangles(
+  rects: { w: number; h: number }[],
+  ctx: PlacementContext,
+  opts?: {
+    pad?: number;
+    seed?: { x: number; y: number };
+    labels?: (string | number)[]; // same length as rects; items with same label attract
+    attractStrength?: number; // 0..1, how much to bias toward label centroid
+    preserveOrder?: boolean; // if true, do not reorder rects
+    excludeGroupIds?: number[]; // skip these group ids when seeding obstacles
+    obstacleMode?: "all" | "cardsOnly"; // default 'all'
+    excludeSpriteGroupIds?: number[]; // skip cards whose __groupId is in this list
+    desiredSeeds?: ({ x: number; y: number } | undefined | null)[]; // optional per-rect desired centers
+  },
+) {
+  const pad = opts?.pad ?? PAD;
+  const b = ctx.getCanvasBounds();
+  // Build obstacle index once and insert placed rectangles as we go
+  const tree = new RBush<BushItem>();
+  let id = 1;
+  const exclude = new Set<number>(opts?.excludeGroupIds || []);
+  const includeGroups = (opts?.obstacleMode || "all") === "all";
+  // Existing groups (unless excluded or cardsOnly mode)
+  if (includeGroups)
+    ctx.groups.forEach((eg) => {
+      if (exclude.has(eg.id)) return;
+      tree.insert({
+        id: id++,
+        minX: eg.gfx.x,
+        minY: eg.gfx.y,
+        maxX: eg.gfx.x + eg.w,
+        maxY: eg.gfx.y + eg.h,
+      });
+    });
+  // Existing cards
+  const excludeSpriteGroups = new Set<number>(
+    opts?.excludeSpriteGroupIds || [],
+  );
+  for (const s of ctx.sprites) {
+    const gid = (s as any).__groupId as number | undefined;
+    if (gid != null && excludeSpriteGroups.has(gid)) continue;
+    tree.insert({
+      id: id++,
+      minX: s.x,
+      minY: s.y,
+      maxX: s.x + ctx.cardW,
+      maxY: s.y + ctx.cardH,
+    });
+  }
+  // Seed (desired center)
+  let desiredX = b.x + b.w / 2;
+  let desiredY = b.y + b.h / 2;
+  if (opts?.seed) {
+    desiredX = opts.seed.x;
+    desiredY = opts.seed.y;
+  } else {
+    try {
+      const stage = (ctx.world.parent as any) || null;
+      const screenCenter = {
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      } as any;
+      const local = (ctx.world as any).toLocal
+        ? (ctx.world as any).toLocal(screenCenter, stage)
+        : null;
+      if (local && typeof local.x === "number") {
+        desiredX = local.x;
+        desiredY = local.y;
+      }
+    } catch {}
+  }
+  // Determine placement order
+  const order = opts?.preserveOrder
+    ? rects.map((_, i) => i)
+    : rects
+        .map((r, i) => ({
+          i,
+          a: r.w * r.h,
+          l: opts?.labels ? opts.labels[i] : undefined,
+        }))
+        .sort((x, y) => {
+          if (x.l !== undefined && y.l !== undefined) {
+            if (x.l < y.l) return -1;
+            if (x.l > y.l) return 1;
+          } else if (x.l !== undefined) return -1;
+          else if (y.l !== undefined) return 1;
+          // Prefer larger area first; tie-break by original index for determinism
+          return y.a - x.a || x.i - y.i;
+        })
+        .map((o) => o.i);
+  const out: { x: number; y: number }[] = new Array(rects.length);
+  // Track centroids for labels of already-placed rects
+  const labelAgg = new Map<
+    string | number,
+    { sx: number; sy: number; c: number }
+  >();
+  let minX = Number.POSITIVE_INFINITY,
+    minY = Number.POSITIVE_INFINITY,
+    maxX = Number.NEGATIVE_INFINITY,
+    maxY = Number.NEGATIVE_INFINITY;
+  for (const idx of order) {
+    const r = rects[idx];
+    // Adjust desired by label centroid if available
+    const sd =
+      opts?.desiredSeeds && opts.desiredSeeds[idx]
+        ? (opts.desiredSeeds[idx] as { x: number; y: number })
+        : { x: desiredX, y: desiredY };
+    let dX = sd.x;
+    let dY = sd.y;
+    const label = opts?.labels ? opts.labels[idx] : undefined;
+    const strength = Math.min(1, Math.max(0, opts?.attractStrength ?? 0));
+    if (label !== undefined && strength > 0) {
+      const agg = labelAgg.get(label);
+      if (agg && agg.c > 0) {
+        const cx = agg.sx / agg.c;
+        const cy = agg.sy / agg.c;
+        dX = (1 - strength) * dX + strength * cx;
+        dY = (1 - strength) * dY + strength * cy;
+      }
+    }
+    const spot = bestFirstFreeSpot(
+      ctx,
+      dX - r.w / 2,
+      dY - r.h / 2,
+      r.w,
+      r.h,
+      tree,
+      pad,
+    );
+    // Fallback: coarse grid scan
+    let pos = spot as { x: number; y: number } | null;
+    if (!pos) {
+      const di = Math.max(ctx.gridSize, Math.floor(ctx.spacingX / 2));
+      const dj = Math.max(ctx.gridSize, Math.floor(ctx.spacingY / 2));
+      outer: for (let y = b.y; y <= b.y + b.h - r.h; y += dj) {
+        for (let x = b.x; x <= b.x + b.w - r.w; x += di) {
+          const sx = snap(x, ctx.gridSize);
+          const sy = snap(y, ctx.gridSize);
+          if (!rectOverlapsIndex(tree, sx, sy, r.w, r.h, pad)) {
+            pos = { x: sx, y: sy } as any;
+            break outer;
+          }
+        }
+      }
+    }
+    if (!pos) {
+      // If still not found, place at clamped desired as last resort
+      const cx = Math.min(
+        Math.max(b.x, snap(Math.round(desiredX - r.w / 2), ctx.gridSize)),
+        b.x + b.w - r.w,
+      );
+      const cy = Math.min(
+        Math.max(b.y, snap(Math.round(desiredY - r.h / 2), ctx.gridSize)),
+        b.y + b.h - r.h,
+      );
+      pos = { x: cx, y: cy } as any;
+    }
+    // At this point pos is guaranteed by fallback above
+    const px = (pos as { x: number; y: number }).x;
+    const py = (pos as { x: number; y: number }).y;
+    out[idx] = { x: px, y: py };
+    if (px < minX) minX = px;
+    if (py < minY) minY = py;
+    if (px + r.w > maxX) maxX = px + r.w;
+    if (py + r.h > maxY) maxY = py + r.h;
+    // Insert into obstacle index
+    tree.insert({
+      id: id++,
+      minX: px,
+      minY: py,
+      maxX: px + r.w,
+      maxY: py + r.h,
+    });
+    // Update label centroid with center of placed rect
+    if (label !== undefined) {
+      const cx = px + r.w / 2;
+      const cy = py + r.h / 2;
+      const agg = labelAgg.get(label) || { sx: 0, sy: 0, c: 0 };
+      agg.sx += cx;
+      agg.sy += cy;
+      agg.c += 1;
+      labelAgg.set(label, agg);
+    }
+  }
+  if (!Number.isFinite(minX)) {
+    return { positions: out, block: { x: b.x, y: b.y, w: 0, h: 0 } } as any;
+  }
+  return {
+    positions: out,
+    block: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+  } as any;
 }

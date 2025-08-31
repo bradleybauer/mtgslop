@@ -1,5 +1,9 @@
 import * as PIXI from "pixi.js";
-import { planImportPositions, computeBestGrid } from "./placement";
+import {
+  planImportPositions,
+  computeBestGrid,
+  planRectangles,
+} from "./placement";
 import type { PlacementContext } from "./placement";
 import { SelectionStore } from "./state/selectionStore";
 import { Camera } from "./scene/camera";
@@ -3554,6 +3558,7 @@ const splashEl = document.getElementById("splash");
     addBtn("Auto-Layout", () => {
       gridUngroupedCards();
       gridGroupedCards();
+      gridRepositionGroups();
       // After tidying, center the view on the resulting content for clarity
       focusViewOnContent(180);
     });
@@ -3887,6 +3892,421 @@ const splashEl = document.getElementById("splash");
       });
       batch.push({ id: s.__id, x, y });
     });
+    if (batch.length) {
+      try {
+        InstancesRepo.updatePositions(batch);
+      } catch {}
+    }
+    if (!SUPPRESS_SAVES) {
+      try {
+        const data = {
+          instances: sprites.map((s) => ({
+            id: s.__id,
+            x: s.x,
+            y: s.y,
+            z: s.zIndex || (s as any).__baseZ || 0,
+            group_id: (s as any).__groupId ?? null,
+            scryfall_id:
+              (s as any).__scryfallId || ((s as any).__card?.id ?? null),
+          })),
+          byIndex: sprites.map((s) => ({ x: s.x, y: s.y })),
+        };
+        localStorage.setItem(LS_KEY, JSON.stringify(data));
+      } catch {}
+    }
+  }
+  function gridRepositionGroups() {
+    const list = Array.from(groups.values());
+    // Tighter visual order: largest groups first, then by name, then by id for stability
+    list.sort((a, b) => {
+      const as = a.order.length;
+      const bs = b.order.length;
+      if (bs !== as) return bs - as; // larger first
+      const an = (a.name || "").toLowerCase();
+      const bn = (b.name || "").toLowerCase();
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+      return a.id - b.id;
+    });
+    if (!list.length) return;
+    // Seed strictly from stable content: center of ungrouped cards if any, else canvas center.
+    let gx: number, gy: number;
+    let ux = 0,
+      uy = 0,
+      uc = 0;
+    for (const s of sprites) {
+      if ((s as any).__groupId) continue; // only ungrouped
+      ux += s.x + CARD_W_GLOBAL / 2;
+      uy += s.y + CARD_H_GLOBAL / 2;
+      uc++;
+    }
+    if (uc > 0) {
+      gx = ux / uc;
+      gy = uy / uc;
+    } else {
+      const b = getCanvasBounds();
+      gx = b.x + b.w / 2;
+      gy = b.y + b.h / 2;
+    }
+    const rects = list.map((gv) => ({ w: gv.w, h: gv.h }));
+    const ctx: PlacementContext = {
+      sprites,
+      groups,
+      world,
+      getCanvasBounds,
+      gridSize: GRID_SIZE,
+      cardW: CARD_W_GLOBAL,
+      cardH: CARD_H_GLOBAL,
+      gapX: GAP_X_GLOBAL,
+      gapY: GAP_Y_GLOBAL,
+      spacingX: CARD_W_GLOBAL + GAP_X_GLOBAL,
+      spacingY: CARD_H_GLOBAL + GAP_Y_GLOBAL,
+    };
+    // Make groups mutually attractive by giving them the same label
+    const labels = list.map(() => "group");
+    // Build an organized grid next to the ungrouped cluster with strict alignment.
+    const sepX = Math.max(GAP_X_GLOBAL * 6, 24);
+    const sepY = Math.max(GAP_Y_GLOBAL * 6, 24);
+    function computeMetrics(cols: number) {
+      const rows = Math.max(1, Math.ceil(list.length / Math.max(1, cols)));
+      const maxW = new Array<number>(cols).fill(0);
+      const maxH = new Array<number>(rows).fill(0);
+      for (let i = 0; i < list.length; i++) {
+        const c = i % cols;
+        const r = Math.floor(i / cols);
+        if (list[i].w > maxW[c]) maxW[c] = list[i].w;
+        if (list[i].h > maxH[r]) maxH[r] = list[i].h;
+      }
+      const prefixX = new Array<number>(cols).fill(0);
+      for (let c = 1; c < cols; c++)
+        prefixX[c] = prefixX[c - 1] + maxW[c - 1] + sepX;
+      const prefixY = new Array<number>(rows).fill(0);
+      for (let r = 1; r < rows; r++)
+        prefixY[r] = prefixY[r - 1] + maxH[r - 1] + sepY;
+      const gridW =
+        maxW.reduce((a, v) => a + v, 0) + sepX * Math.max(0, cols - 1);
+      const gridH =
+        maxH.reduce((a, v) => a + v, 0) + sepY * Math.max(0, rows - 1);
+      return { cols, rows, maxW, maxH, prefixX, prefixY, gridW, gridH };
+    }
+    // Compute ungrouped bounds if available
+    let haveUngroupedBounds = false;
+    let uminX = Number.POSITIVE_INFINITY,
+      uminY = Number.POSITIVE_INFINITY,
+      umaxX = Number.NEGATIVE_INFINITY,
+      umaxY = Number.NEGATIVE_INFINITY;
+    if (uc > 0) {
+      for (const s of sprites) {
+        if ((s as any).__groupId) continue;
+        const x1 = s.x,
+          y1 = s.y,
+          x2 = s.x + CARD_W_GLOBAL,
+          y2 = s.y + CARD_H_GLOBAL;
+        if (x1 < uminX) uminX = x1;
+        if (y1 < uminY) uminY = y1;
+        if (x2 > umaxX) umaxX = x2;
+        if (y2 > umaxY) umaxY = y2;
+      }
+      haveUngroupedBounds = Number.isFinite(uminX);
+    }
+    const bnds = getCanvasBounds();
+    const margin = Math.max(24, Math.max(GAP_X_GLOBAL, GAP_Y_GLOBAL) * 6);
+    // Candidate choices: side + columns. Evaluate to align grid dimension with ungrouped.
+    type Cand = {
+      name: "right" | "below" | "left" | "above";
+      cols: number;
+      tlx: number;
+      tly: number;
+      gridW: number;
+      gridH: number;
+      score: number;
+      metric: ReturnType<typeof computeMetrics>;
+    };
+    const cands: Cand[] = [];
+    function clampTL(x: number, y: number, gw: number, gh: number) {
+      const tlx = Math.min(Math.max(bnds.x, snap(x)), bnds.x + bnds.w - gw);
+      const tly = Math.min(Math.max(bnds.y, snap(y)), bnds.y + bnds.h - gh);
+      return { tlx, tly };
+    }
+    function addCand(name: Cand["name"], baseX: number, baseY: number) {
+      const MAX_COLS = Math.min(24, Math.max(1, list.length));
+      for (let cTry = 1; cTry <= MAX_COLS; cTry++) {
+        const met = computeMetrics(cTry);
+        // Side-specific anchor proposal before clamp
+        let x = baseX,
+          y = baseY;
+        if (name === "left") x = baseX - met.gridW; // baseX represents ungrouped minX - margin
+        if (name === "above") y = baseY - met.gridH; // baseY represents ungrouped minY - margin
+        const { tlx, tly } = clampTL(x, y, met.gridW, met.gridH);
+        // Reject if overlapping ungrouped bounds (with margin)
+        if (haveUngroupedBounds) {
+          const gx1 = tlx,
+            gy1 = tly,
+            gx2 = tlx + met.gridW,
+            gy2 = tly + met.gridH;
+          const ux1 = uminX - margin,
+            uy1 = uminY - margin,
+            ux2 = umaxX + margin,
+            uy2 = umaxY + margin;
+          const overlaps = !(
+            gx2 <= ux1 ||
+            gx1 >= ux2 ||
+            gy2 <= uy1 ||
+            gy1 >= uy2
+          );
+          if (overlaps) continue;
+        }
+        // Score by minimizing union area of ungrouped + grid, with slight compactness and distance penalties
+        const gx1 = tlx,
+          gy1 = tly,
+          gx2 = tlx + met.gridW,
+          gy2 = tly + met.gridH;
+        const ux1 = uminX,
+          uy1 = uminY,
+          ux2 = umaxX,
+          uy2 = umaxY;
+        const minX = Math.min(ux1, gx1);
+        const minY = Math.min(uy1, gy1);
+        const maxX = Math.max(ux2, gx2);
+        const maxY = Math.max(uy2, gy2);
+        const unionW = Math.max(1, maxX - minX);
+        const unionH = Math.max(1, maxY - minY);
+        const area = unionW * unionH;
+        const compactness = unionW / unionH + unionH / unionW; // >= 2, closer to 2 is squarer
+        const cx = tlx + met.gridW / 2;
+        const cy = tly + met.gridH / 2;
+        const dx = cx - gx;
+        const dy = cy - gy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const score = area + compactness * 1000 + dist * 10;
+        cands.push({
+          name,
+          cols: cTry,
+          tlx,
+          tly,
+          gridW: met.gridW,
+          gridH: met.gridH,
+          score,
+          metric: met,
+        });
+      }
+    }
+    if (haveUngroupedBounds) {
+      addCand("right", umaxX + margin, uminY);
+      addCand("below", uminX, umaxY + margin);
+      addCand("left", uminX - margin, uminY);
+      addCand("above", uminX, uminY - margin);
+    }
+    // Choose the best side/cols combo; fallback to seed-centered square-ish if none
+    let metric = computeMetrics(Math.max(1, Math.ceil(Math.sqrt(list.length))));
+    let originTLX = snap(gx - metric.gridW / 2);
+    let originTLY = snap(gy - metric.gridH / 2);
+    if (cands.length) {
+      const pref = { right: 0, below: 1, left: 2, above: 3 } as any;
+      cands.sort(
+        (a, b) =>
+          a.score - b.score || pref[a.name] - pref[b.name] || a.cols - b.cols,
+      );
+      const best = cands[0];
+      metric = best.metric;
+      originTLX = best.tlx;
+      originTLY = best.tly;
+    }
+    // Preferred: shelf packer minimizing union area of (ungrouped + groups). Fallback to metric grid.
+    function packShelves(
+      sizes: { w: number; h: number }[],
+      binW: number,
+      sepX: number,
+      sepY: number,
+    ) {
+      const pos: { x: number; y: number }[] = new Array(sizes.length);
+      let x = 0,
+        y = 0,
+        rowH = 0,
+        maxWUsed = 0;
+      let countInRow = 0;
+      for (let i = 0; i < sizes.length; i++) {
+        const r = sizes[i];
+        const need = (countInRow > 0 ? sepX : 0) + r.w;
+        if (countInRow > 0 && x + need > binW) {
+          // new row
+          y += rowH + sepY;
+          x = 0;
+          rowH = 0;
+          countInRow = 0;
+        }
+        if (countInRow > 0) x += sepX;
+        pos[i] = { x, y };
+        x += r.w;
+        if (x > maxWUsed) maxWUsed = x;
+        if (r.h > rowH) rowH = r.h;
+        countInRow++;
+      }
+      const usedH = y + rowH;
+      return { positions: pos, usedW: maxWUsed, usedH };
+    }
+    let desiredSeeds: { x: number; y: number }[];
+    if (haveUngroupedBounds) {
+      type Best = {
+        side: "right" | "below" | "left" | "above";
+        tlx: number;
+        tly: number;
+        usedW: number;
+        usedH: number;
+        positions: { x: number; y: number }[];
+        score: number;
+      };
+      let best: Best | null = null;
+      const totalArea = list.reduce((a, g) => a + g.w * g.h, 0);
+      const base = Math.sqrt(Math.max(1, totalArea));
+      const scales = [0.6, 0.75, 0.9, 1.0, 1.15, 1.3, 1.5];
+      const minWNeeded = Math.max(...list.map((g) => g.w));
+      const sides: (
+        | ["right", number, number]
+        | ["below", number, number]
+        | ["left", number, number]
+        | ["above", number, number]
+      )[] = [
+        ["right", umaxX + margin, uminY],
+        ["below", uminX, umaxY + margin],
+        ["left", uminX - margin, uminY],
+        ["above", uminX, uminY - margin],
+      ];
+      for (const [side, baseX, baseY] of sides) {
+        for (const s of scales) {
+          let targetW = Math.max(minWNeeded, Math.round(base * s));
+          // Available width by side
+          let availW = bnds.w;
+          if (side === "right") availW = bnds.x + bnds.w - baseX;
+          else if (side === "left") availW = baseX - bnds.x;
+          else availW = bnds.w; // below/above can use full width; clamp later
+          targetW = Math.max(minWNeeded, Math.min(targetW, availW));
+          if (targetW < minWNeeded) continue;
+          const packed = packShelves(
+            list.map((g) => ({ w: g.w, h: g.h })),
+            targetW,
+            sepX,
+            sepY,
+          );
+          // Proposed top-left before clamp by side
+          let px = baseX,
+            py = baseY;
+          if (side === "left") px = baseX - packed.usedW;
+          if (side === "above") py = baseY - packed.usedH;
+          const { tlx, tly } = clampTL(px, py, packed.usedW, packed.usedH);
+          // Reject overlap with ungrouped (tight) to keep separation
+          const gx1 = tlx,
+            gy1 = tly,
+            gx2 = tlx + packed.usedW,
+            gy2 = tly + packed.usedH;
+          const ux1 = uminX,
+            uy1 = uminY,
+            ux2 = umaxX,
+            uy2 = umaxY;
+          const overlaps = !(
+            gx2 <= ux1 ||
+            gx1 >= ux2 ||
+            gy2 <= uy1 ||
+            gy1 >= uy2
+          );
+          if (overlaps) continue;
+          // Score by union area + compactness + small distance to seed
+          const minX = Math.min(ux1, gx1);
+          const minY = Math.min(uy1, gy1);
+          const maxX = Math.max(ux2, gx2);
+          const maxY = Math.max(uy2, gy2);
+          const unionW = Math.max(1, maxX - minX);
+          const unionH = Math.max(1, maxY - minY);
+          const area = unionW * unionH;
+          const compactness = unionW / unionH + unionH / unionW;
+          const cx = tlx + packed.usedW / 2;
+          const cy = tly + packed.usedH / 2;
+          const dx = cx - gx;
+          const dy = cy - gy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const score = area + compactness * 1000 + dist * 10;
+          if (!best || score < best.score) {
+            best = {
+              side,
+              tlx,
+              tly,
+              usedW: packed.usedW,
+              usedH: packed.usedH,
+              positions: packed.positions,
+              score,
+            };
+          }
+        }
+      }
+      if (best) {
+        const originTLX2 = best.tlx;
+        const originTLY2 = best.tly;
+        desiredSeeds = list.map((g, i) => {
+          const p = best!.positions[i];
+          return {
+            x: originTLX2 + p.x + g.w / 2,
+            y: originTLY2 + p.y + g.h / 2,
+          };
+        });
+      } else {
+        // fallback to metric grid
+        desiredSeeds = list.map((g, i) => {
+          const c = i % metric.cols;
+          const r = Math.floor(i / metric.cols);
+          const tlx = originTLX + metric.prefixX[c];
+          const tly = originTLY + metric.prefixY[r];
+          return { x: tlx + g.w / 2, y: tly + g.h / 2 };
+        });
+      }
+    } else {
+      // No ungrouped bounds; center grid by metric
+      desiredSeeds = list.map((g, i) => {
+        const c = i % metric.cols;
+        const r = Math.floor(i / metric.cols);
+        const tlx = originTLX + metric.prefixX[c];
+        const tly = originTLY + metric.prefixY[r];
+        return { x: tlx + g.w / 2, y: tly + g.h / 2 };
+      });
+    }
+    const { positions } = planRectangles(rects, ctx, {
+      seed: { x: gx, y: gy },
+      pad: 16,
+      labels,
+      attractStrength: 0,
+      preserveOrder: true,
+      // Avoid treating the current groups as obstacles; we are replacing their positions
+      excludeGroupIds: list.map((g) => g.id),
+      excludeSpriteGroupIds: list.map((g) => g.id),
+      obstacleMode: "cardsOnly",
+      desiredSeeds,
+    });
+    const batch: { id: number; x: number; y: number }[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const gv = list[i];
+      const p = positions[i];
+      if (!p) continue;
+      const newX = snap(p.x);
+      const newY = snap(p.y);
+      const dx = newX - gv.gfx.x;
+      const dy = newY - gv.gfx.y;
+      if (dx === 0 && dy === 0) continue;
+      gv.gfx.x = newX;
+      gv.gfx.y = newY;
+      gv.order.forEach((cid) => {
+        const sp = sprites.find((s) => s.__id === cid);
+        if (!sp) return;
+        sp.x = snap(sp.x + dx);
+        sp.y = snap(sp.y + dy);
+        spatial.update({
+          id: sp.__id,
+          minX: sp.x,
+          minY: sp.y,
+          maxX: sp.x + CARD_W_GLOBAL,
+          maxY: sp.y + CARD_H_GLOBAL,
+        });
+        batch.push({ id: sp.__id, x: sp.x, y: sp.y });
+      });
+    }
     if (batch.length) {
       try {
         InstancesRepo.updatePositions(batch);
