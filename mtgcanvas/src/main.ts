@@ -5927,7 +5927,7 @@ const splashEl = document.getElementById("splash");
       }
       return { imported: created.length, unknown, limited } as any;
     },
-    scryfallSearchAndPlace: async (query, opt) => {
+  scryfallSearchAndPlace: async (query, opt) => {
       // Prevent overlapping runs at the backend level as well
       const anyWin = window as any;
       if (anyWin.__mtg_scry_inflight) {
@@ -5942,22 +5942,41 @@ const splashEl = document.getElementById("splash");
         // Determine allowed fetch size based on remaining capacity
         const cap = remainingCapacity();
         const fetchMax = Math.max(0, Math.min(cap, opt.maxCards ?? Infinity));
-        const cards = await searchScryfall(query, {
-          maxCards: fetchMax,
-          signal: (opt as any).signal,
-          onProgress: (n, total) => {
-            opt.onProgress?.(n, total);
-            if (n % 60 === 0)
-              console.log("[scryfall] fetched", n, total ? `/ ${total}` : "");
-          },
-        });
-        if (!cards.length) return { imported: 0 };
+        const partial: any[] = [];
+        let results: any[] = [];
+        try {
+          const cards = await searchScryfall(query, {
+            maxCards: fetchMax,
+            signal: (opt as any).signal,
+            onProgress: (n, total) => {
+              opt.onProgress?.(n, total);
+              if (n % 60 === 0)
+                console.log("[scryfall] fetched", n, total ? `/ ${total}` : "");
+            },
+            onCards: (newCards) => {
+              // Accumulate progressively so we can still import on cancel
+              partial.push(...newCards);
+            },
+          });
+          results = cards.length ? cards : partial;
+        } catch (err: any) {
+          // On abort, still proceed with whatever we have so far
+          const msg = err?.message || String(err || "");
+          const aborted = err?.name === "AbortError" || /aborted/i.test(msg);
+          if (aborted) {
+            results = partial;
+          } else {
+            throw err;
+          }
+        }
+        // Proceed if any results accumulated
+        if (!results.length) return { imported: 0 };
         // Create sprites for results
         const created: CardSprite[] = [];
         let maxId = sprites.length
           ? Math.max(...sprites.map((s) => s.__id))
           : 0;
-        const total = cards.length;
+  const total = results.length;
         const planned = planImportPositions(total, buildPlacementContext());
         const positions = planned.positions;
         // Fallback: if positions fewer than total, append clamped viewport-origin grid
@@ -5977,7 +5996,7 @@ const splashEl = document.getElementById("splash");
           }
         }
         // Bulk create
-        const bulkItems = positions.map(
+    const bulkItems = positions.map(
           ({ x, y }: { x: number; y: number }, i: number) => {
             let id: number;
             try {
@@ -5985,14 +6004,14 @@ const splashEl = document.getElementById("splash");
             } catch {
               id = ++maxId;
             }
-            return { id, x, y, z: zCounter++, card: cards[i] };
+      return { id, x, y, z: zCounter++, card: results[i] };
           },
         );
         const bulkSprites = createSpritesBulk(bulkItems);
         created.push(...bulkSprites);
         // Persist raw imported cards so they rehydrate on reload
         try {
-          await addImportedCards(cards);
+          await addImportedCards(results);
         } catch {}
         // Persist positions
         try {
@@ -6011,7 +6030,7 @@ const splashEl = document.getElementById("splash");
             h: window.innerHeight,
           });
         }
-        const limited = (opt.maxCards ?? Infinity) > fetchMax;
+  const limited = (opt.maxCards ?? Infinity) > fetchMax;
         return { imported: created.length, limited } as any;
       } catch (e: any) {
         console.warn("[scryfall] search failed", e);

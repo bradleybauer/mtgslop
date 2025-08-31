@@ -25,6 +25,9 @@ export interface SearchOptions {
   order?: string; // e.g. 'released'
   dir?: "asc" | "desc";
   onProgress?: (fetched: number, total?: number) => void;
+  // Optional: invoked whenever a page of cards is emitted in order.
+  // Receives only the new cards since the previous callback.
+  onCards?: (cards: ScryfallCard[]) => void;
   signal?: AbortSignal;
   // Performance controls
   throttleMs?: number; // optional tiny delay between page fetches
@@ -57,6 +60,7 @@ export async function searchScryfall(
     order = "released",
     dir = "desc",
     onProgress,
+  onCards,
     signal,
     throttleMs = 0,
     cache = "default",
@@ -158,6 +162,8 @@ export async function searchScryfall(
     while (pages.has(nextEmit)) {
       const cards = pages.get(nextEmit)!;
       pages.delete(nextEmit);
+  // Emit this page to the callback before appending to output
+  if (onCards && cards.length) onCards(cards.slice());
       for (const card of cards) {
         out.push(card);
         if (onProgress) onProgress(out.length, total);
@@ -319,9 +325,14 @@ export async function fetchScryfallByNames(
   }
   for (let i = 0; i < cc; i++) workers.push(worker());
   report();
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } catch (e: any) {
+    // If aborted, proceed with whatever has been resolved so far
+    if (e?.name !== "AbortError") throw e;
+  }
   // Fallback: try fuzzy Named API for unresolved names (common for DFC face names)
-  if (notFound.size) {
+  if (!controller.signal.aborted && notFound.size) {
     const unresolved = [...notFound];
     notFound.clear();
     const worker2 = async () => {
@@ -353,7 +364,11 @@ export async function fetchScryfallByNames(
     };
     const workers2: Promise<void>[] = [];
     for (let i = 0; i < cc; i++) workers2.push(worker2());
-    await Promise.all(workers2);
+    try {
+      await Promise.all(workers2);
+    } catch (e: any) {
+      if (e?.name !== "AbortError") throw e;
+    }
   }
   // Derive unknowns by comparing the unique set to resolved keys, union not_found
   for (const n of unique) {

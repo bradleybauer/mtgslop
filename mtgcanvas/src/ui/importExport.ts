@@ -115,6 +115,14 @@ export function installImportExport(
       scryStatusEl.textContent = otherBusyMsg;
   };
 
+  function summarizeUnknown(unknown: string[], maxShow = 20): string {
+    const n = unknown.length | 0;
+    if (n <= 0) return "All resolved.";
+    if (n <= maxShow) return `Unknown: ${unknown.join(", ")}`;
+    const first = unknown.slice(0, maxShow);
+    return `Unknown: ${n} names (showing first ${maxShow}): ${first.join(", ")}`;
+  }
+
   function ensure() {
     if (panel) return panel;
     const el = createPanel({
@@ -288,7 +296,7 @@ export function installImportExport(
             signal: textAbort.signal,
           });
           if (statusEl)
-            statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+            statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
         } catch (e: any) {
           if (e && (e.name === "AbortError" || /aborted/i.test(e.message || ""))) {
             if (statusEl) statusEl.textContent = "Canceled.";
@@ -323,7 +331,7 @@ export function installImportExport(
           signal: textAbort.signal,
         });
         if (statusEl)
-          statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
+          statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
       } catch (e: any) {
         if (e && (e.name === "AbortError" || /aborted/i.test(e.message || ""))) {
           if (statusEl) statusEl.textContent = "Canceled.";
