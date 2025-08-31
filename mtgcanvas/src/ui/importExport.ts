@@ -192,6 +192,53 @@ export function installImportExport(
   let importArea: HTMLTextAreaElement | null = null;
   let scopeAll = true; // true=all, false=selection
   let statusEl: HTMLDivElement | null = null;
+  // Busy state to prevent concurrent operations
+  let textInFlight = false;
+  let scryInFlight = false;
+  // Refs to Scryfall controls (if present)
+  let scryRunBtn: HTMLButtonElement | null = null;
+  let scryQueryEl: HTMLInputElement | null = null;
+  let scryStatusEl: HTMLDivElement | null = null;
+
+  // Keep both panes in sync when one is busy
+  const updateBusyUI = () => {
+    const otherBusyMsg = "Blocked: another import is in progress.";
+    // Text import controls
+    if (importArea) importArea.disabled = scryInFlight; // prevent editing while Scryfall runs
+    const importBtn = panel?.querySelector(
+      "#ie-import-btn",
+    ) as HTMLButtonElement | null;
+    if (importBtn) {
+      // Disable when our own import is running, or when Scryfall blocks it
+      importBtn.disabled = textInFlight || scryInFlight;
+      importBtn.title = scryInFlight
+        ? "Scryfall import is in progress. Cancel it to enable."
+        : textInFlight
+          ? "Import is in progress."
+          : "";
+    }
+    if (scryInFlight && statusEl && !textInFlight)
+      statusEl.textContent = otherBusyMsg;
+
+    // Scryfall controls
+    if (scryQueryEl) scryQueryEl.disabled = textInFlight || scryInFlight; // disabled during either busy state
+    if (scryRunBtn) {
+      // When Scryfall is busy, button is active as "Cancel"; otherwise disabled if text import is busy
+      if (scryInFlight) {
+        scryRunBtn.disabled = false;
+        scryRunBtn.textContent = "Cancel";
+        scryRunBtn.title = "Click to cancel the Scryfall import.";
+      } else {
+        scryRunBtn.disabled = textInFlight;
+        scryRunBtn.textContent = "Import";
+        scryRunBtn.title = textInFlight
+          ? "Text import is in progress. Wait or cancel it first."
+          : "Run Scryfall import";
+      }
+    }
+    if (textInFlight && scryStatusEl && !scryInFlight)
+      scryStatusEl.textContent = otherBusyMsg;
+  };
 
   function ensure() {
     if (panel) return panel;
@@ -231,7 +278,7 @@ export function installImportExport(
           <textarea id="ie-import" class="ui-input" style="width:100%;min-height:300px;white-space:pre;resize:none;" placeholder="Paste decklist: e.g.\n4 Lightning Bolt\n2 Counterspell\nIsland x8"></textarea>
           <div style="display:flex;gap:10px;margin-top:10px;align-items:center;">
             <button id="ie-import-btn" type="button" class="ui-btn">Import</button>
-            <div id="ie-status" style="opacity:.8;font-size:12px;"></div>
+            <div id="ie-status" style="opacity:.88;font-size:16px;"></div>
           </div>
         </div>
         ${
@@ -243,7 +290,7 @@ export function installImportExport(
             <input id="ie-scry-query" class="ui-input" style="flex:1;padding:10px 12px;" placeholder="Scryfall query (e.g., o:infect t:creature cmc<=3)"/>
             <button id="ie-scry-run" class="ui-btn" type="button">Import</button>
           </div>
-          <div id="ie-scry-status" style="opacity:.8;font-size:12px;"></div>
+          <div id="ie-scry-status" style="opacity:.88;font-size:16px;"></div>
         </div>`
             : ""
         }
@@ -261,6 +308,8 @@ export function installImportExport(
     const scopeAllEl = el.querySelector("#ie-scope-all") as HTMLInputElement;
     const scopeSelEl = el.querySelector("#ie-scope-sel") as HTMLInputElement;
     const importBtn = el.querySelector("#ie-import-btn") as HTMLButtonElement;
+    // Initialize disabled state after wiring up controls
+    updateBusyUI();
     const scryPane = el.querySelector("#ie-scry-pane") as HTMLDivElement | null;
 
     const refreshExport = () => {
@@ -311,6 +360,13 @@ export function installImportExport(
     // Clear Data moved to Debug panel
     importBtn.onclick = async () => {
       if (!importArea) return;
+      if (scryInFlight) {
+        // Don't allow text import while Scryfall is running
+        if (statusEl)
+          statusEl.textContent =
+            "Scryfall import is in progress. Cancel it first.";
+        return;
+      }
       const inputText = importArea.value;
       if (!inputText.trim()) {
         if (statusEl) statusEl.textContent = "Nothing to import.";
@@ -322,6 +378,8 @@ export function installImportExport(
       const prevLabel = importBtn.textContent;
       importBtn.disabled = true;
       importBtn.textContent = "Importing…";
+      textInFlight = true;
+      updateBusyUI();
       // Try groups format first
       const asGroups = parseGroupsText(inputText);
       if (asGroups && opts.importGroups) {
@@ -338,6 +396,8 @@ export function installImportExport(
           statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${res.unknown.length ? "Unknown: " + res.unknown.join(", ") : "All resolved."}`;
         importBtn.disabled = false;
         importBtn.textContent = prevLabel || "Import";
+        textInFlight = false;
+        updateBusyUI();
         return;
       }
       // Fallback to decklist format
@@ -346,6 +406,8 @@ export function installImportExport(
         if (statusEl) statusEl.textContent = "Nothing to import.";
         importBtn.disabled = false;
         importBtn.textContent = prevLabel || "Import";
+        textInFlight = false;
+        updateBusyUI();
         return;
       }
       if (statusEl) statusEl.textContent = "Importing…";
@@ -363,28 +425,21 @@ export function installImportExport(
       } finally {
         importBtn.disabled = false;
         importBtn.textContent = prevLabel || "Import";
+        textInFlight = false;
+        updateBusyUI();
       }
     };
 
     // Scryfall search wiring
     if (opts.scryfallSearchAndPlace && scryPane) {
-      const runBtn = el.querySelector(
-        "#ie-scry-run",
-      ) as HTMLButtonElement | null;
-      const qEl = el.querySelector("#ie-scry-query") as HTMLInputElement | null;
-      const scryStatus = el.querySelector(
+      scryRunBtn = el.querySelector("#ie-scry-run") as HTMLButtonElement | null;
+      scryQueryEl = el.querySelector(
+        "#ie-scry-query",
+      ) as HTMLInputElement | null;
+      scryStatusEl = el.querySelector(
         "#ie-scry-status",
       ) as HTMLDivElement | null;
-      let scryInFlight = false;
       let scryAbort: AbortController | null = null;
-      const setScryBusy = (busy: boolean) => {
-        scryInFlight = busy;
-        if (qEl) qEl.disabled = busy;
-        if (runBtn) {
-          runBtn.disabled = false;
-          runBtn.textContent = busy ? "Cancel" : "Import";
-        }
-      };
       const runOrCancel = async () => {
         if (scryInFlight) {
           // Treat click as cancel
@@ -393,28 +448,35 @@ export function installImportExport(
           } catch {}
           return;
         }
-        const q = (qEl?.value || "").trim();
+        if (textInFlight) {
+          if (scryStatusEl)
+            scryStatusEl.textContent =
+              "Text import is in progress. Wait or cancel it first.";
+          return;
+        }
+        const q = (scryQueryEl?.value || "").trim();
         if (!q) {
-          if (scryStatus) scryStatus.textContent = "Enter a query.";
+          if (scryStatusEl) scryStatusEl.textContent = "Enter a query.";
           return;
         }
         const groupName = q.slice(0, 64);
-        if (scryStatus) scryStatus.textContent = "Searching…";
+        if (scryStatusEl) scryStatusEl.textContent = "Searching…";
         scryAbort = new AbortController();
-        setScryBusy(true);
+        scryInFlight = true;
+        updateBusyUI();
         try {
           const res = await opts.scryfallSearchAndPlace!(q, {
             groupName,
             signal: scryAbort.signal,
             onProgress: (fetched, total) => {
-              if (!scryStatus) return;
+              if (!scryStatusEl) return;
               if (typeof total === "number" && total > 0)
-                scryStatus.textContent = `Fetching ${fetched}/${total}…`;
-              else scryStatus.textContent = `Fetching ${fetched}…`;
+                scryStatusEl.textContent = `Fetching ${fetched}/${total}…`;
+              else scryStatusEl.textContent = `Fetching ${fetched}…`;
             },
           });
-          scryStatus &&
-            (scryStatus.textContent = res.error
+          scryStatusEl &&
+            (scryStatusEl.textContent = res.error
               ? res.error
               : `Imported ${res.imported} cards${(res as any).limited ? " (limited by cap)" : ""}.`);
         } catch (e: any) {
@@ -422,24 +484,27 @@ export function installImportExport(
             e &&
             (e.name === "AbortError" || /aborted/i.test(e.message || ""))
           ) {
-            scryStatus && (scryStatus.textContent = "Canceled.");
+            scryStatusEl && (scryStatusEl.textContent = "Canceled.");
           } else {
-            scryStatus &&
-              (scryStatus.textContent =
+            scryStatusEl &&
+              (scryStatusEl.textContent =
                 "Search failed: " + (e?.message || String(e)));
           }
         } finally {
-          setScryBusy(false);
+          scryInFlight = false;
+          updateBusyUI();
           scryAbort = null;
         }
       };
-      runBtn?.addEventListener("click", runOrCancel);
-      qEl?.addEventListener("keydown", (ev) => {
+      scryRunBtn?.addEventListener("click", runOrCancel);
+      scryQueryEl?.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" && !ev.shiftKey) {
           ev.preventDefault();
-          if (!scryInFlight) runOrCancel();
+          if (!scryInFlight && !textInFlight) runOrCancel();
         }
       });
+      // Initialize disabled state on first render
+      updateBusyUI();
     }
 
     document.body.appendChild(el);

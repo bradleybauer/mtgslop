@@ -158,10 +158,10 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     wrap.appendChild(navEl);
     const hint = document.createElement("div");
     hint.style.cssText =
-      "font-size:12px;opacity:.6;white-space:normal;line-height:1.35;";
+      "font-size:16px;opacity:.75;white-space:normal;line-height:1.4;";
     hint.innerHTML = `
 <details>
-  <summary style="cursor:pointer">Search syntax cheatsheet</summary>
+  <summary style="cursor:pointer;font-size:16px">Search syntax cheatsheet</summary>
   <div style="margin-top:6px"></div>
   <div><b>Basics</b></div>
   <ul style="margin:6px 0 8px 18px;">
