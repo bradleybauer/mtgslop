@@ -6184,33 +6184,16 @@ const splashEl = document.getElementById("splash");
     (window as any).__camIsMoving =
       now - ((window as any).__lastCamMovedAt || 0) < 220;
     const tLoad0 = 0;
-    // Publish viewport info for priority decisions elsewhere (world-space bounds and center)
-    {
+    { // TODO SIMPLIFY THIS BULLSHIT
       const scale = world.scale.x;
-      const inv = 1 / scale;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const left = -world.position.x * inv;
-      const top = -world.position.y * inv;
-      const vwWorld = vw * inv;
-      const vhWorld = vh * inv;
-      const right = left + vwWorld;
-      const bottom = top + vhWorld;
-      const wc = world.toLocal(new PIXI.Point(vw / 2, vh / 2));
-      // Define a viewport radius in world units as half the screen diagonal
-      const radius = Math.hypot(vwWorld, vhWorld) * 0.5;
-      const padNear = 2 * radius; // "within 2 viewport radii"
-      const padFar = 3 * radius; // "within 3 viewport radii"
+      // TODO encode window rectangle coordinates in world space
+
       (window as any).__mtgView = {
-        left,
-        top,
-        right,
-        bottom,
-        cx: wc.x,
-        cy: wc.y,
-        radius,
-        padNear,
-        padFar,
+        x: left,
+        y: top,
+        w: right - left,
+        h: bottom - top,
+        zoom: world.scale.x
       };
     }
     const tLoad1 = performance.now();
@@ -6219,27 +6202,9 @@ const splashEl = document.getElementById("splash");
     {
       const view: any = (window as any).__mtgView;
       if (view) {
-        const zoom = world.scale.x;
-        const { left, top, right, bottom } = view;
         for (const s of sprites) {
           if (!s.__card) continue;
-          // Check if this card intersects the current view rectangle (world space)
-          const sW = s.width;
-          const sH = s.height;
-          const inView =
-            s.x + sW >= left &&
-            s.x <= right &&
-            s.y + sH >= top &&
-            s.y <= bottom;
-          if (inView) {
-            let desired: 0 | 1 | 2 = 1;
-            if (zoom > 1.7) desired = 2;
-            else if (zoom > 0.8) desired = 1;
-            else desired = 0;
-            ensureTextureTier(s, desired);
-          } else {
-            ensureLowOrPlaceholder(s);
-          }
+          ensureTexture(s, view);
         }
       }
     }

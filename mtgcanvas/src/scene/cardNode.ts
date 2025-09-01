@@ -3,6 +3,7 @@ import { SelectionStore } from "../state/selectionStore";
 import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
+import { KeyedMinHeap } from "./keyedMinHeap";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -37,112 +38,10 @@ type PrioTask = {
   enqAt: number;
   state: TaskState;
   waiters: { resolve: (t: PIXI.Texture) => void; reject: (e: any) => void }[];
-  heapIndex: number;
+  heapIndex?: number;
 };
 
-class KeyedMinHeap {
-  private arr: PrioTask[] = [];
-  private pos = new Map<string, number>(); // url -> index
-  size() {
-    return this.arr.length;
-  }
-  has(url: string) {
-    return this.pos.has(url);
-  }
-  get(url: string) {
-    const i = this.pos.get(url);
-    return i === undefined ? undefined : this.arr[i];
-  }
-  push(task: PrioTask) {
-    task.heapIndex = this.arr.length;
-    this.arr.push(task);
-    this.pos.set(task.url, task.heapIndex);
-    this.siftUp(task.heapIndex);
-  }
-  popMin(): PrioTask | undefined {
-    if (!this.arr.length) return undefined;
-    const min = this.arr[0];
-    const last = this.arr.pop()!;
-    this.pos.delete(min.url);
-    min.heapIndex = -1;
-    if (this.arr.length) {
-      this.arr[0] = last;
-      last.heapIndex = 0;
-      this.pos.set(last.url, 0);
-      this.siftDown(0);
-    }
-    return min;
-  }
-  updatePriority(url: string, newPrio: number) {
-    const i = this.pos.get(url);
-    if (i === undefined) return false;
-    const n = this.arr[i];
-    if (n.priority === newPrio) return true;
-    const old = n.priority;
-    n.priority = newPrio;
-    if (newPrio < old) this.siftUp(i);
-    else this.siftDown(i);
-    return true;
-  }
-  remove(url: string) {
-    const i = this.pos.get(url);
-    if (i === undefined) return undefined;
-    const rem = this.arr[i];
-    const last = this.arr.pop()!;
-    this.pos.delete(rem.url);
-    rem.heapIndex = -1;
-    if (i < this.arr.length) {
-      this.arr[i] = last;
-      last.heapIndex = i;
-      this.pos.set(last.url, i);
-      this.fix(i);
-    }
-    return rem;
-  }
-  private less(a: number, b: number) {
-    const A = this.arr[a],
-      B = this.arr[b];
-    if (A.priority !== B.priority) return A.priority < B.priority;
-    return A.enqAt <= B.enqAt;
-  }
-  private swap(a: number, b: number) {
-    const va = this.arr[a],
-      vb = this.arr[b];
-    this.arr[a] = vb;
-    this.arr[b] = va;
-    va.heapIndex = b;
-    vb.heapIndex = a;
-    this.pos.set(va.url, b);
-    this.pos.set(vb.url, a);
-  }
-  private siftUp(i: number) {
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (!this.less(i, p)) break;
-      this.swap(i, p);
-      i = p;
-    }
-  }
-  private siftDown(i: number) {
-    const n = this.arr.length;
-    while (true) {
-      let m = i;
-      const l = (i << 1) + 1,
-        r = l + 1;
-      if (l < n && this.less(l, m)) m = l;
-      if (r < n && this.less(r, m)) m = r;
-      if (m === i) break;
-      this.swap(i, m);
-      i = m;
-    }
-  }
-  private fix(i: number) {
-    if (i > 0 && this.less(i, (i - 1) >> 1)) this.siftUp(i);
-    else this.siftDown(i);
-  }
-}
-
-const decodePQ = new KeyedMinHeap();
+const decodePQ = new KeyedMinHeap<PrioTask>((t) => t.url);
 const tasksByUrl = new Map<string, PrioTask>();
 // Simple waiter list so workers can sleep when queue is empty
 const pqWaiters: Array<() => void> = [];
@@ -151,40 +50,6 @@ function notifyTaskAvailable() {
   if (w) w();
 }
 
-// --- Diagnostics ---
-function decodeDbgOn() {
-  try {
-    return localStorage.getItem("decodeDbg") === "1";
-  } catch {
-    return false;
-  }
-}
-function dlog(...args: any[]) {
-  if (decodeDbgOn()) console.log("[decode]", ...args);
-}
-// Quick dump of scheduler state
-(function attachDecodeDump() {
-  try {
-    (window as any).__dumpDecode = () => {
-      const queued: any[] = [];
-      // Reflect heap contents via tasksByUrl filtered by state
-      tasksByUrl.forEach((t) => {
-        if (t.state === "queued")
-          queued.push({ url: t.url, prio: t.priority, enqAt: t.enqAt });
-      });
-      const inflight: string[] = [];
-      inflightTex.forEach((_, k) => inflight.push(k));
-      console.log("[decode dump]", {
-        activeDecodes,
-        pqSize: decodePQ.size(),
-        queuedCount: queued.length,
-        inflightCount: inflight.length,
-        queued: queued.slice(0, 20),
-        inflight: inflight.slice(0, 20),
-      });
-    };
-  } catch {}
-})();
 function currentDecodeLimit() {
   // Hard cap at 16 per user requirement; also respect configured cap
   return Math.min(settings.decodeParallelLimit, 16);
@@ -262,13 +127,6 @@ function enqueueOrUpdate(url: string, priority: number): Promise<PIXI.Texture> {
   tasksByUrl.set(url, task);
   decodePQ.push(task);
   // Track queue peak size for diagnostics
-  const qSize = decodePQ.size() + activeDecodes;
-  dlog("enqueue", {
-    url,
-    prio: task.priority,
-    qSize,
-    desiredRefs: desiredUrlRefs.get(url) || 0,
-  });
   const p = new Promise<PIXI.Texture>((resolve, reject) =>
     task.waiters.push({ resolve, reject }),
   );
@@ -278,30 +136,15 @@ function enqueueOrUpdate(url: string, priority: number): Promise<PIXI.Texture> {
 }
 async function runDecodeTask(task: PrioTask) {
   activeDecodes++;
-  dlog("start", { url: task.url, activeDecodes });
   try {
     // Fetch & decode only when running (strict concurrency)
     const ci = await getCachedImage(task.url);
-    dlog("fetched", {
-      url: task.url,
-      source: (ci as any).source,
-      size: (ci as any).size,
-      hasBlob: !!ci.blob,
-    });
     let blob = ci.blob as Blob | undefined;
     if (!blob) {
-      // Fallback: fetch objectURL into blob (should be fast; objectURL is memory-local)
-      try {
-        const resp = await fetch(ci.objectURL);
-        blob = await resp.blob();
-        dlog("blobFromObjectURL", { url: task.url, size: blob.size });
-      } catch (e) {
-        dlog("blobFetchFail", { url: task.url, err: String(e) });
-        throw e;
-      }
+      const resp = await fetch(ci.objectURL);
+      blob = await resp.blob();
     }
     const t0 = performance.now();
-    dlog("decodeBegin", { url: task.url, bytes: blob.size });
     const source = await (window as any).createImageBitmap(blob);
     const tex = PIXI.Texture.from(source as any);
     const bt = tex.source;
@@ -322,13 +165,7 @@ async function runDecodeTask(task: PrioTask) {
     // Wake all waiters
     for (const w of task.waiters) w.resolve(tex);
     const dt = performance.now() - t0;
-    dlog("done", {
-      url: task.url,
-      ms: dt.toFixed(1),
-      activeDecodes: activeDecodes - 1,
-    });
   } catch (e) {
-    dlog("error", { url: task.url, err: String(e) });
     for (const w of task.waiters) w.reject(e);
   } finally {
     activeDecodes--;
@@ -342,14 +179,11 @@ async function workerLoop() {
     const task: PrioTask | undefined = decodePQ.popMin();
     if (!task) {
       // sleep until a task is enqueued
-      dlog("sleep");
       await new Promise<void>((res) => pqWaiters.push(res));
-      dlog("wake");
       continue;
     }
     // If no longer desired, cancel
     if (!desiredUrlRefs.has(task.url)) {
-      dlog("cancelStale", { url: task.url });
       tasksByUrl.delete(task.url);
       for (const w of task.waiters)
         w.reject(new Error("decode canceled: no longer desired"));
@@ -586,9 +420,8 @@ function forcePlaceholder(sprite: CardSprite) {
   );
 }
 
-export function ensureTextureTier(
-  sprite: CardSprite,
-  level: 0 | 1 | 2,
+export function ensureTexture(
+  sprite: CardSprite, view
 ): "noop" | "swap" | "scheduled" | "placeholder" {
   const target: 0 | 1 | 2 = (
     settings.disablePngTier && level === 2 ? 1 : level
