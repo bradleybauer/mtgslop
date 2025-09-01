@@ -310,7 +310,6 @@ function enforceTextureBudget() {
     droppedBytes += ent.bytes;
     droppedCount++;
   }
-  compactHiResQueue();
   __dbg.evict.count += droppedCount;
   __dbg.evict.bytes += droppedBytes;
   __dbg.evict.lastMs = performance.now() - t0;
@@ -379,8 +378,6 @@ function demoteSpriteTextureToPlaceholder(s: CardSprite) {
   s.__hiResAt = undefined;
   // Switch to placeholder visuals based on selection/grouping
   updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
-  // Keep tracking clean
-  compactHiResQueue();
 }
 
 // Attempt to downgrade a sprite's texture by one tier (2->1 or 1->0) using cached lower-tier
@@ -440,12 +437,7 @@ function tryDowngradeSpriteTexture(
       s.width = 100;
       s.height = 140;
       s.__qualityLevel = target;
-      if (target >= 1) {
-        s.__hiResLoaded = true;
-        s.__hiResUrl = url;
-        s.__hiResAt = performance.now();
-        hiResQueue.push(s);
-      } else {
+      if (target < 1) {
         s.__hiResLoaded = false;
         s.__hiResUrl = undefined;
         s.__hiResAt = undefined;
@@ -510,17 +502,7 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
   });
   __lastBudgetHadCandidates = candidates.length > 0;
   __lastBudgetCheckAt = now;
-  // Sort by quality desc, then by texture lastUsed ascending (older first)
   candidates.sort((a, b) => {
-    const qa = a.__qualityLevel ?? 0;
-    const qb = b.__qualityLevel ?? 0;
-    if (qa !== qb) return qb - qa;
-    const ua =
-      textureCache.get((a as any).__currentTexUrl || "")?.lastUsed ?? 0;
-    const ub =
-      textureCache.get((b as any).__currentTexUrl || "")?.lastUsed ?? 0;
-    if (ua !== ub) return ua - ub;
-    // Tiebreaker: furthest from center demotes first
     if (view) {
       const acx = a.x + 50,
         acy = a.y + 70;
@@ -608,31 +590,6 @@ export function ensureCardImage(sprite: CardSprite) {
       sprite.__imgLoading = false;
     });
 }
-const hiResQueue: CardSprite[] = []; // oldest at index 0
-// Periodically compact the hi-res queue to drop stale entries
-function compactHiResQueue() {
-  if (!hiResQueue.length) return;
-  let write = 0;
-  const now = performance.now();
-  let recentMs = 5 * 60 * 1000;
-  const v = Number(localStorage.getItem("hiResRecentMs") || "");
-  if (Number.isFinite(v) && v >= 0) recentMs = v;
-  for (let i = 0; i < hiResQueue.length; i++) {
-    const s = hiResQueue[i];
-    if (!s || (s as any)._destroyed) continue;
-    const stillHi =
-      !!s.__hiResLoaded &&
-      !!s.__hiResUrl &&
-      (s as any).__currentTexUrl === s.__hiResUrl;
-    const recent = !!s.__hiResAt && now - (s.__hiResAt || 0) < recentMs;
-    if (stillHi && recent) {
-      if (write !== i) hiResQueue[write] = s;
-      write++;
-    }
-  }
-  if (write < hiResQueue.length) hiResQueue.length = write;
-}
-
 export function getHiResQueueDiagnostics() {
   const now = performance.now();
   let loaded = 0,
@@ -642,35 +599,8 @@ export function getHiResQueueDiagnostics() {
   let oldest = 0,
     newest = 0;
   const sample: any[] = [];
-  for (let i = 0; i < hiResQueue.length; i++) {
-    const s = hiResQueue[i];
-    if (!s) continue;
-    const curUrl: any = (s as any).__currentTexUrl;
-    const isLoaded =
-      !!s.__hiResLoaded && !!s.__hiResUrl && curUrl === s.__hiResUrl;
-    const isLoading = !!s.__hiResLoading;
-    const age = s.__hiResAt ? now - (s.__hiResAt || 0) : Number.NaN;
-    if (oldest === 0 || (age > oldest && isFinite(age))) oldest = age;
-    if (age > 0 && (newest === 0 || age < newest)) newest = age;
-    if (isLoaded) loaded++;
-    else if (isLoading) loading++;
-    else stale++;
-    if (s.visible) visible++;
-    if (sample.length < 10) {
-      sample.push({
-        id: s.__id,
-        q: s.__qualityLevel,
-        vis: s.visible,
-        ageMs: Math.round(age || 0),
-        inflightLevel: (s as any).__inflightLevel || 0,
-        pendingLevel: (s as any).__pendingLevel || 0,
-        url: ("" + (s.__hiResUrl || "")).slice(-48),
-        cur: ("" + (curUrl || "")).slice(-48),
-      });
-    }
-  }
   return {
-    length: hiResQueue.length,
+    length: 0,
     loaded,
     loading,
     stale,
@@ -681,23 +611,9 @@ export function getHiResQueueDiagnostics() {
   };
 }
 
-// Public helper: demote one step if possible; optionally drop to placeholder when far and lower-tier isn't cached.
-export function demoteSpriteOneStep(
-  s: CardSprite,
-  allowPlaceholder = false,
-): boolean {
-  const ok = tryDowngradeSpriteTexture(s, /*immediateOnly*/ true);
-  if (ok) return true;
-  if (allowPlaceholder) {
-    demoteSpriteTextureToPlaceholder(s);
-    return true;
-  }
-  return false;
-}
-
 // --- Monitoring helpers ---
 export function getHiResQueueLength() {
-  return hiResQueue.length;
+  return 0;
 }
 export function getInflightTextureCount() {
   return inflightTex.size;
