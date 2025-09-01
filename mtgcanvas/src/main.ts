@@ -4037,7 +4037,7 @@ const splashEl = document.getElementById("splash");
       const mb = used / 1048576;
       jsHeapLine = `JS ${mb.toFixed(1)} MB`;
     } else jsHeapLine = "JS n/a";
-    // Rough texture memory estimate (unique baseTextures)
+    // Rough texture memory estimate (unique source)
     const seen = new Set<any>();
     let bytes = 0;
     let hi = 0,
@@ -4050,7 +4050,7 @@ const splashEl = document.getElementById("splash");
       loading = 0;
     for (const s of sprites) {
       const tex: any = s.texture;
-      const bt = tex?.baseTexture || tex?.source?.baseTexture || tex?.source;
+      const bt = tex?.source || tex?.source?.source || tex?.source;
       if (!bt) continue;
       if (!seen.has(bt)) {
         seen.add(bt);
@@ -5381,6 +5381,25 @@ const splashEl = document.getElementById("splash");
     else if (q > 200) suggest = 16;
     else if (q < 50) suggest = 8;
     const perFrame = Math.min(cap, suggest, visibles.length);
+    // Instrumentation: toggle with window.__mtgUpgradeDebug = true or localStorage.upgradeDebug = "1"
+    const upgDbgOn =
+      (window as any).__mtgUpgradeDebug === true ||
+      (typeof localStorage !== "undefined" &&
+        localStorage.getItem("upgradeDebug") === "1");
+    const upgDbg: any = upgDbgOn
+      ? {
+          scale,
+          dpr: getEffectiveDpr(),
+          q,
+          anyOverlay,
+          perFrame,
+          cap,
+          suggest,
+          lastZoomAgo: performance.now() - lastAt,
+          visibles: visibles.length,
+          counters: { promoted: 0 },
+        }
+      : undefined;
     // Boost priority using distance to the viewport center computed in world space (no per-sprite toGlobal)
     const cx = window.innerWidth / 2,
       cy = window.innerHeight / 2;
@@ -5413,6 +5432,7 @@ const splashEl = document.getElementById("splash");
       const d: any = ((window as any).__frameDiag ||= {});
       d.upg = (d.upg || 0) + 1;
       processed++;
+      if (upgDbg) upgDbg.counters.promoted++;
     }
     // Second pass: round-robin remainder to keep breadth
     for (let i = 0; i < visibles.length && processed < perFrame; i++) {
@@ -5421,68 +5441,10 @@ const splashEl = document.getElementById("splash");
       const d: any = ((window as any).__frameDiag ||= {});
       d.upg = (d.upg || 0) + 1;
       processed++;
+      if (upgDbg) upgDbg.counters.promoted++;
     }
+    if (upgDbgOn) (window as any).__upgradeDiag = upgDbg;
   }
-
-  // Hotkey: press 'U' to force immediate hi-res request for all visible cards
-  window.addEventListener("keydown", (e) => {
-    // If typing in an input/textarea/contentEditable, allow native editing keys (arrows, Ctrl+A, etc.)
-    const active = document.activeElement as HTMLElement | null;
-    const editing =
-      active &&
-      (active.tagName === "INPUT" ||
-        active.tagName === "TEXTAREA" ||
-        active.isContentEditable);
-    // Skip global handlers that would conflict with text editing
-    if (editing) {
-      // Allow palette-specific Esc (handled elsewhere) and Enter (handled in palette) to bubble.
-      // Prevent canvas-wide shortcuts below from firing while editing.
-      // Exceptions: Ctrl+F still opens new search (avoid recursion) so if already in search input ignore.
-      if ((e.key === "a" || e.key === "A") && (e.ctrlKey || e.metaKey)) return; // let browser select-all
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key))
-        return; // let caret move
-      if (
-        (e.key === "g" || e.key === "G") &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        !e.altKey
-      )
-        return; // prevent accidental group creation
-      if ((e.key === "f" || e.key === "F") && (e.ctrlKey || e.metaKey)) return; // rely on browser find when inside other inputs (search palette already overrides inside itself)
-    }
-    // Search palette open shortcuts
-    // Ctrl/Cmd+F: open search (override default find) when not in another input
-    if (
-      (e.key === "f" || e.key === "F") &&
-      (e.ctrlKey || e.metaKey) &&
-      !e.shiftKey &&
-      !e.altKey
-    ) {
-      e.preventDefault();
-      searchUI.show("");
-      return; // prevent falling through to fit logic below
-    }
-    // '/' quick open (common in web apps). Ignore if typing inside an editable element.
-    if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const target = e.target as HTMLElement | null;
-      const editingTarget =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (!editingTarget) {
-        e.preventDefault();
-        searchUI.show("");
-        return;
-      }
-    }
-    if (e.key === "u" || e.key === "U") {
-      const scale = world.scale.x;
-      sprites.forEach((s) => {
-        if (s.visible && s.__imgLoaded) updateCardTextureForScale(s, scale);
-      });
-    }
-  });
 
   // Centralized clear function used by Debug and Import/Export integration
   async function clearAllData(): Promise<void> {
@@ -6383,119 +6345,53 @@ const splashEl = document.getElementById("splash");
     d.cullToggled = (d.cullToggled || 0) + toggled;
   }
 
-  // Lazy image loader: load some visible card images each frame
-  let imgCursor = 0;
-  let LOAD_PER_FRAME = 70; // adaptive prefetch budget
+  // Image loader
   function loadVisibleImages() {
     const len = sprites.length;
     if (!len) return;
     let loaded = 0;
-    let attempts = 0;
-    // Adapt based on decode queue size
-    const q = getDecodeQueueSize();
-    if (q > 400) LOAD_PER_FRAME = 24;
-    else if (q > 200) LOAD_PER_FRAME = 48;
-    else if (q < 50) LOAD_PER_FRAME = 140;
-    else LOAD_PER_FRAME = 90;
-    const allowPromotions = true;
-    let promoteBudget = allowPromotions ? 12 : 0; // hard cap promotions from loader per frame
     const scale = world.scale.x;
-    // Compute an expanded culling rect to prefetch just-outside cards
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const inv = 1 / scale;
-    const basePad = 300; // fallback when view metadata missing
+    // Iterate across all sprites once per frame (starting from the rolling cursor) and process those in view
     const view: any = (window as any).__mtgView;
-    const left = view
-      ? view.left - (view.padNear || 0)
-      : -world.position.x * inv - basePad;
-    const top = view
-      ? view.top - (view.padNear || 0)
-      : -world.position.y * inv - basePad;
-    const right = view
-      ? view.right + (view.padNear || 0)
-      : left + vw * inv + basePad * 2;
-    const bottom = view
-      ? view.bottom + (view.padNear || 0)
-      : top + vh * inv + basePad * 2;
-    const MAX_ATTEMPTS = Math.min(len, LOAD_PER_FRAME * 10);
-    // Snapshot network pressure and pending upgrade need
-    const net = getImageCacheStats?.();
-    const netBusy = !!net && net.activeFetches > 24 && net.queuedFetches > 0;
-    let upgradesPending = false;
-    const dpr = globalThis.devicePixelRatio || 1;
-    const scaleNow = world.scale.x;
-    const pxH = 140 * scaleNow * dpr;
-    const desired = pxH > 140 ? 2 : pxH > 90 ? 1 : 0;
-    if (desired > 0) {
-      // Limit scan to a small window around cursor for perf
-      for (let i = 0; i < Math.min(len, 256); i++) {
-        const s = sprites[(imgCursor + i) % len];
-        if (!s || !s.visible || !s.__imgLoaded) continue;
-        if ((s as any).__groupOverlayActive) continue;
-        const q = s.__qualityLevel ?? 0;
-        if (q < desired) {
-          upgradesPending = true;
-          break;
-        }
-      }
-    }
-    while (loaded < LOAD_PER_FRAME && attempts < MAX_ATTEMPTS) {
-      imgCursor = (imgCursor + 1) % len;
-      attempts++;
-      const s = sprites[imgCursor];
+    if (!view) return;
+    for (const s of sprites) {
       if (!s.__card) continue;
       // Prefetch if in expanded bounds
       const inPrefetch =
-        s.x + CARD_W_GLOBAL >= left &&
-        s.x <= right &&
-        s.y + CARD_H_GLOBAL >= top &&
-        s.y <= bottom;
+        s.x + CARD_W_GLOBAL >= view.left &&
+        s.x <= view.right &&
+        s.y + CARD_H_GLOBAL >= view.top &&
+        s.y <= view.bottom;
       if (!inPrefetch) continue;
-      // Further prioritize by center distance; skip promotions for far-off-center even if visible, when pressure
-      const view: any = (window as any).__mtgView;
-      let farOffCenter = false;
-      let inNear = false;
-      if (view) {
+      let inView = false;
+      {
         const sx = s.x + CARD_W_GLOBAL / 2;
         const sy = s.y + CARD_H_GLOBAL / 2;
         const dx = sx - view.cx;
         const dy = sy - view.cy;
         const d2 = dx * dx + dy * dy;
-        const far2 = (view.padFar ?? 1200) * (view.padFar ?? 1200);
-        const near2 = (view.padNear ?? 300) * (view.padNear ?? 300);
-        farOffCenter = d2 > far2;
-        inNear = d2 <= near2;
+        const near = (view.padNear ?? 300) * (view.padNear ?? 300);
+        inView = d2 <= near;
       }
       if (!s.__imgLoaded) {
-        if ((s as any).__groupOverlayActive) continue; // don't kick base loads for hidden-by-overlay items at macro zoom
-        // If network saturated & upgrades pending, defer offscreen small fetches to free bandwidth for upgrades
-        if (!s.visible && netBusy && upgradesPending) {
+        if ((s as any).__groupOverlayActive) continue;
+        if (!s.visible) {
           continue;
         }
         ensureCardImage(s);
-        // Count near-region loads slightly more aggressively to push them through even if attempts are high
-        loaded += inNear ? 1 : 1;
+        loaded += inView ? 1 : 1;
         const d: any = ((window as any).__frameDiag ||= {});
         d.load = (d.load || 0) + 1;
       } else {
-        // Avoid promotions while camera is moving to reduce churn
-        if (
-          !(s as any).__groupOverlayActive &&
-          allowPromotions &&
-          promoteBudget > 0
-        ) {
-          // During movement we continue loading; under heavy decode pressure we still skip far-off-center
-          if (farOffCenter && q > 200) continue;
+        if (!(s as any).__groupOverlayActive) {
+          // Use the current scale in this function scope to compute desired tier correctly
           updateCardTextureForScale(s, scale);
-          promoteBudget--;
           const d: any = ((window as any).__frameDiag ||= {});
           d.upg = (d.upg || 0) + 1;
         }
       }
     }
     const d: any = ((window as any).__frameDiag ||= {});
-    d.loadAttempts = (d.loadAttempts || 0) + attempts;
     d.loadLoaded = (d.loadLoaded || 0) + loaded;
   }
 

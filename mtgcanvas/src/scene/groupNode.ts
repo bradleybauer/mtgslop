@@ -649,23 +649,23 @@ export function updateGroupTextQuality(
     lbl.resolution = target;
     lbl.dirty = true;
     lbl.updateText && lbl.updateText();
-  } else if (lbl.texture?.baseTexture?.setResolution)
-    lbl.texture.baseTexture.setResolution(target);
+  } else if (lbl.texture?.source?.setResolution)
+    lbl.texture.source.setResolution(target);
   if (cnt.resolution !== undefined) {
     cnt.resolution = target;
     cnt.dirty = true;
     cnt.updateText && cnt.updateText();
-  } else if (cnt.texture?.baseTexture?.setResolution)
-    cnt.texture.baseTexture.setResolution(target);
+  } else if (cnt.texture?.source?.setResolution)
+    cnt.texture.source.setResolution(target);
   if (pr.resolution !== undefined) {
     pr.resolution = target;
     pr.dirty = true;
     pr.updateText && pr.updateText();
-  } else if (pr.texture?.baseTexture?.setResolution)
-    pr.texture.baseTexture.setResolution(target);
+  } else if (pr.texture?.source?.setResolution)
+    pr.texture.source.setResolution(target);
   // Ensure mipmaps & filtering for text base textures (helps minified readability when zoomed out)
   [lbl, cnt, pr].forEach((t) => {
-    const bt: any = t.texture?.baseTexture;
+    const bt: any = t.texture?.source;
     if (bt?.style) {
       bt.style.mipmap = "on";
       bt.style.scaleMode = "linear";

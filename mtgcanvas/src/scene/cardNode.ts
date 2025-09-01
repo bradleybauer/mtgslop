@@ -127,7 +127,7 @@ async function runDecodeTask(task: DecodeTask) {
       });
     }
     const tex = PIXI.Texture.from(source as any);
-    const bt: any = tex.baseTexture as any;
+    const bt: any = tex.source as any;
     if (bt?.style) {
       bt.style.mipmap = "on";
       bt.style.scaleMode = "linear";
@@ -382,7 +382,7 @@ export function createCardSprite(opts: CardVisualOptions) {
 }
 
 function estimateTextureBytes(tex: PIXI.Texture): number {
-  const bt: any = tex.baseTexture;
+  const bt: any = tex.source;
   const w = bt?.width || tex.width;
   const h = bt?.height || tex.height;
   if (w && h) return w * h * 4;
@@ -460,7 +460,7 @@ export function flushPendingTextureDestroys() {
 
 function isTextureUsable(tex: PIXI.Texture | null | undefined): boolean {
   if (!tex) return false;
-  const bt: any = (tex as any).baseTexture;
+  const bt: any = (tex as any).source;
   if (!bt) return false;
   if (bt.destroyed === true) return false;
   if (bt.valid === false) return false;
@@ -971,7 +971,7 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
   if (!url) return;
   // If already at this URL skip
   if (
-    sprite.texture?.baseTexture?.resource?.url === url ||
+    sprite.texture?.source?.resource?.url === url ||
     sprite.__hiResUrl === url
   ) {
     sprite.__qualityLevel = desired;
