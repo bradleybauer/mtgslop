@@ -3,7 +3,6 @@ import { SelectionStore } from "../state/selectionStore";
 import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
-import { getEffectiveDpr } from "../ui/dpr";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -354,94 +353,6 @@ function isTextureUsable(tex: PIXI.Texture | null | undefined): boolean {
   return true;
 }
 
-function demoteSpriteTextureToPlaceholder(s: CardSprite) {
-  const prevUrl: string | undefined = (s as any).__currentTexUrl;
-  if (prevUrl) {
-    const pe = textureCache.get(prevUrl);
-    if (pe) {
-      pe.refs = Math.max(
-        0,
-        pe.refs - 1,
-      ); /* defer actual destroy to global budget pass to avoid mid-frame races */
-    }
-    (s as any).__currentTexUrl = undefined;
-  }
-  s.__imgLoaded = false;
-  s.__imgLoading = false;
-  s.__qualityLevel = 0;
-  // Switch to placeholder visuals based on selection/grouping
-  updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
-}
-
-// Attempt to downgrade a sprite's texture by one tier (2->1 or 1->0) using cached lower-tier
-// textures when available. Returns true if a downgrade action was applied.
-function tryDowngradeSpriteTexture(
-  s: CardSprite,
-  immediateOnly = true,
-): boolean {
-  const q = s.__qualityLevel ?? 0;
-  if (q <= 0) return false; // nothing lower than small
-  const faceIdx = s.__faceIndex || 0;
-  const card = s.__card;
-  if (!card) return false;
-  // Helper to resolve a URL for a given level, honoring face index
-  const urlFor = (level: number): string | undefined => {
-    const face = (card.card_faces && card.card_faces[faceIdx]) || null;
-    if (level === 2)
-      return (
-        face?.image_uris?.png ||
-        card.image_uris?.png ||
-        face?.image_uris?.large ||
-        card.image_uris?.large
-      );
-    if (level === 1)
-      return (
-        face?.image_uris?.normal ||
-        card.image_uris?.normal ||
-        face?.image_uris?.large ||
-        card.image_uris?.large
-      );
-    return (
-      face?.image_uris?.small ||
-      card.image_uris?.small ||
-      face?.image_uris?.normal ||
-      card.image_uris?.normal
-    );
-  };
-  const targets: number[] = q >= 2 ? [1, 0] : [0];
-  const currentUrl: string | undefined = (s as any).__currentTexUrl;
-  for (const target of targets) {
-    const url = urlFor(target);
-    if (!url || url === currentUrl) continue;
-    const cached = textureCache.get(url);
-    if (cached) {
-      // Apply cached lower-tier immediately
-      cached.refs++;
-      cached.lastUsed = performance.now();
-      // Release previous reference; let budget pass clean up unreferenced entries
-      if (currentUrl && currentUrl !== url) {
-        const prev = textureCache.get(currentUrl);
-        if (prev) {
-          prev.refs = Math.max(0, prev.refs - 1);
-        }
-      }
-      (s as any).__currentTexUrl = url;
-      s.texture = cached.tex;
-      s.width = 100;
-      s.height = 140;
-      s.__qualityLevel = target;
-      // Ensure eventual budget cleanup
-      scheduleEnforceTextureBudget();
-      return true;
-    } else if (!immediateOnly) {
-      // Under pressure we avoid extra decodes; caller may allow async reload of lower-tier
-      demoteSpriteTextureToPlaceholder(s);
-      return true; // action taken; lower-tier will be restored later by loader
-    }
-  }
-  return false;
-}
-
 // Public: reduce GPU usage by demoting offscreen sprites until under budget.
 // Backoff state to avoid scanning all sprites every frame when over budget but no demotions are possible
 let __lastBudgetCheckAt = 0;
@@ -477,8 +388,8 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
       const pad = (view.padNear ?? 300) * 1.25; // a bit larger than upgrade near-pad
       const x1 = s.x,
         y1 = s.y,
-        x2 = x1 + 100,
-        y2 = y1 + 140;
+        x2 = x1 + s.width,
+        y2 = y1 + s.height;
       const nearViewport =
         x2 >= view.left - pad &&
         x1 <= view.right + pad &&
@@ -492,10 +403,10 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
   __lastBudgetCheckAt = now;
   candidates.sort((a, b) => {
     if (view) {
-      const acx = a.x + 50,
-        acy = a.y + 70;
-      const bcx = b.x + 50,
-        bcy = b.y + 70;
+      const acx = a.x + a.width * 0.5,
+        acy = a.y + a.height * 0.5;
+      const bcx = b.x + b.width * 0.5,
+        bcy = b.y + b.height * 0.5;
       const ad2 =
         (acx - view.cx) * (acx - view.cx) + (acy - view.cy) * (acy - view.cy);
       const bd2 =
@@ -514,8 +425,8 @@ export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
     const ent = url ? textureCache.get(url) : undefined;
     if (ent) freedEstimate += ent.bytes;
     // Prefer downgrading to a lower-tier texture over full placeholder eviction
-    const downgraded = tryDowngradeSpriteTexture(s, /*immediateOnly*/ true);
-    if (!downgraded) demoteSpriteTextureToPlaceholder(s);
+    // const downgraded = demote
+    // if (!downgraded)  demote to placeholder
     downCount++;
   }
   // Final sweep of unreferenced textures (LRU) if still over
@@ -609,6 +520,151 @@ export function getTextureBudgetStats() {
       lastMs: __dbg.evict.lastMs,
     },
   };
+}
+
+// --- Tiered texture helpers for simple, robust policy up/downgrading ---
+// 0 = small, 1 = normal, 2 = png/large (may be capped to 1 by settings.disablePngTier)
+export function resolveTierUrl(
+  sprite: CardSprite,
+  level: 0 | 1 | 2,
+): string | undefined {
+  const card = sprite.__card;
+  if (!card) return undefined;
+  let target = level;
+  if (settings.disablePngTier && target === 2) target = 1;
+  const faceIdx = sprite.__faceIndex || 0;
+  const face = (card.card_faces && card.card_faces[faceIdx]) || null;
+  if (target === 2) {
+    return (
+      face?.image_uris?.png ||
+      card.image_uris?.png ||
+      face?.image_uris?.large ||
+      card.image_uris?.large
+    );
+  }
+  if (target === 1) {
+    return (
+      face?.image_uris?.normal ||
+      card.image_uris?.normal ||
+      face?.image_uris?.large ||
+      card.image_uris?.large
+    );
+  }
+  // level 0
+  return (
+    face?.image_uris?.small ||
+    card.image_uris?.small ||
+    face?.image_uris?.normal ||
+    card.image_uris?.normal
+  );
+}
+
+function adoptCachedTexture(
+  sprite: CardSprite,
+  url: string,
+  ent: TexCacheEntry,
+  level: 0 | 1 | 2,
+) {
+  ent.refs++;
+  ent.lastUsed = performance.now();
+  const prevUrl: any = (sprite as any).__currentTexUrl;
+  if (prevUrl && prevUrl !== url) {
+    const prevEnt = textureCache.get(prevUrl);
+    if (prevEnt) prevEnt.refs = Math.max(0, prevEnt.refs - 1);
+  }
+  (sprite as any).__currentTexUrl = url;
+  sprite.texture = ent.tex;
+  sprite.width = 100;
+  sprite.height = 140;
+  sprite.__imgLoaded = true;
+  sprite.__imgLoading = false;
+  sprite.__qualityLevel = level;
+}
+
+function forcePlaceholder(sprite: CardSprite) {
+  const prevUrl: string | undefined = (sprite as any).__currentTexUrl;
+  if (prevUrl) {
+    const pe = textureCache.get(prevUrl);
+    if (pe) pe.refs = Math.max(0, pe.refs - 1);
+    (sprite as any).__currentTexUrl = undefined;
+  }
+  sprite.__imgLoaded = false;
+  sprite.__imgLoading = false;
+  sprite.__qualityLevel = 0;
+  updateCardSpriteAppearance(sprite, SelectionStore.state.cardIds.has(sprite.__id));
+}
+
+export async function ensureTextureTier(
+  sprite: CardSprite,
+  level: 0 | 1 | 2
+): Promise<"noop" | "swap" | "decoded" | "placeholder"> {
+  const target: 0 | 1 | 2 = (settings.disablePngTier && level === 2 ? 1 : level) as 0 | 1 | 2;
+  const wantUrl = resolveTierUrl(sprite, target);
+  const curUrl: string | undefined = (sprite as any).__currentTexUrl;
+  const curQ = sprite.__qualityLevel ?? -1;
+  if (wantUrl && curUrl === wantUrl && curQ >= target && isTextureUsable(sprite.texture)) {
+    return "noop";
+  }
+  if (wantUrl) {
+    const cached = textureCache.get(wantUrl);
+    if (cached) {
+      adoptCachedTexture(sprite, wantUrl, cached, target);
+      // Ensure eventual cleanup of any newly unreferenced textures
+      scheduleEnforceTextureBudget();
+      return "swap";
+    }
+    const tex = await loadTextureFromCachedURL(wantUrl);
+    const ent = textureCache.get(wantUrl);
+    if (ent) {
+      adoptCachedTexture(sprite, wantUrl, ent, target);
+      scheduleEnforceTextureBudget();
+      return "decoded";
+    } else {
+      // Fallback adopt direct
+      const prevUrl: any = (sprite as any).__currentTexUrl;
+      if (prevUrl) {
+        const prevEnt = textureCache.get(prevUrl);
+        if (prevEnt) prevEnt.refs = Math.max(0, prevEnt.refs - 1);
+      }
+      (sprite as any).__currentTexUrl = wantUrl;
+      sprite.texture = tex;
+      sprite.width = 100;
+      sprite.height = 140;
+      sprite.__imgLoaded = true;
+      sprite.__qualityLevel = target;
+      scheduleEnforceTextureBudget();
+      return "decoded";
+    }
+  }
+  // Could not adopt desired URL (no decode allowed or no URL); prefer small cached else placeholder
+  const smallUrl = resolveTierUrl(sprite, 0);
+  if (smallUrl) {
+    const smallEnt = textureCache.get(smallUrl);
+    if (smallEnt) {
+      adoptCachedTexture(sprite, smallUrl, smallEnt, 0);
+      scheduleEnforceTextureBudget();
+      return "swap";
+    }
+  }
+  forcePlaceholder(sprite);
+  return "placeholder";
+}
+
+export function ensureLowOrPlaceholder(sprite: CardSprite): "low" | "placeholder" | "noop" {
+  const curQ = sprite.__qualityLevel ?? -1;
+  const curUrl: string | undefined = (sprite as any).__currentTexUrl;
+  if (curQ === 0 && curUrl && isTextureUsable(sprite.texture)) return "noop";
+  const url0 = resolveTierUrl(sprite, 0);
+  if (url0) {
+    const ent = textureCache.get(url0);
+    if (ent) {
+      adoptCachedTexture(sprite, url0, ent, 0);
+      scheduleEnforceTextureBudget();
+      return "low";
+    }
+  }
+  forcePlaceholder(sprite);
+  return "placeholder";
 }
 
 export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {

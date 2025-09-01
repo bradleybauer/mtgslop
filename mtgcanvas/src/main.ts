@@ -20,6 +20,8 @@ import {
   getDecodeQueueStats,
   getTextureBudgetStats,
   flushPendingTextureDestroys,
+  ensureTextureTier,
+  ensureLowOrPlaceholder,
 } from "./scene/cardNode";
 import {
   configureTextureSettings,
@@ -3602,8 +3604,8 @@ const splashEl = document.getElementById("splash");
           .filter((s) => {
             if (!idSet.has(s.__id)) return false;
             if ((s as any).__groupId) return false;
-            const cx = s.x + 50;
-            const cy = s.y + 70;
+            const cx = s.x + CARD_W_GLOBAL * 0.5;
+            const cy = s.y + CARD_H_GLOBAL * 0.5;
             return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
           })
           .map((s) => s.__id);
@@ -3620,8 +3622,8 @@ const splashEl = document.getElementById("splash");
         const cardIds = sprites
           .filter((s) => {
             if (!idSet.has(s.__id)) return false;
-            const cx = s.x + 50;
-            const cy = s.y + 70;
+            const cx = s.x + CARD_W_GLOBAL * 0.5;
+            const cy = s.y + CARD_H_GLOBAL * 0.5;
             return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
           })
           .map((s) => s.__id);
@@ -6321,6 +6323,31 @@ const splashEl = document.getElementById("splash");
     loadVisibleImages();
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
+    // Enforce simple tier policy: inView gets med/hi by zoom; out of view gets low/placeholder.
+    {
+      const view: any = (window as any).__mtgView;
+      if (view) {
+        const scaleNow = world.scale.x;
+        const zoom = scaleNow;
+        const { left, top, right, bottom } = view;
+        for (const s of sprites) {
+          if (!s.__card) continue;
+          // Check if this card intersects the current view rectangle (world space)
+          const sW = s.width;
+          const sH = s.height;
+          const inView = s.x + sW >= left && s.x <= right && s.y + sH >= top && s.y <= bottom;
+          if (inView) {
+            let desired: 0 | 1 | 2 = 1;
+            if (zoom > 1.7) desired = 2;
+            else if (zoom > 0.8) desired = 1;
+            else desired = 0;
+            ensureTextureTier(s, desired);
+          } else {
+            ensureLowOrPlaceholder(s);
+          }
+        }
+      }
+    }
     const tUpg1 = performance.now();
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
