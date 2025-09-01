@@ -345,11 +345,6 @@ export async function getCachedImage(url: string): Promise<CachedImage> {
   return p;
 }
 
-// Backward compatible (string-only) API retained
-export async function getCachedObjectURL(url: string): Promise<string> {
-  return (await getCachedImage(url)).objectURL;
-}
-
 // Utility to clear cache (not wired to UI yet)
 export async function clearImageCache() {
   const db = await openDB();

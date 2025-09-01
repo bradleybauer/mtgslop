@@ -4,6 +4,7 @@ import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
 import { getEffectiveDpr } from "../ui/dpr";
+import { MinMaxHeap } from "./minMaxHeap";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -63,14 +64,10 @@ type DecodeTask = {
   priority?: number;
   enqAt: number;
 };
-const decodeQueue: DecodeTask[] = [];
-// Small helper to get current limit (adaptive or UI-defined)
+
+const decodeHeap = new MinMaxHeap<DecodeTask>();
 function currentDecodeLimit() {
-  let lim = settings.decodeParallelLimit;
-  const q = getDecodeQueueSize();
-  if (q > 600) lim = Math.min(lim, 8);
-  else if (q > 400) lim = Math.min(lim, 12);
-  return lim;
+  return settings.decodeParallelLimit;
 }
 
 function scheduleDecode(
@@ -79,33 +76,20 @@ function scheduleDecode(
   priority = 0,
 ): Promise<PIXI.Texture> {
   return new Promise((resolve, reject) => {
-    decodeQueue.push({
+    const task: DecodeTask = {
       blob,
       url,
       resolve,
       reject,
       priority,
       enqAt: performance.now(),
-    });
-    // If queue too large, drop a lowest-priority task (largest priority number)
-    if (decodeQueue.length > DECODE_QUEUE_MAX) {
-      let dropIdx = -1;
-      let worst = -Infinity;
-      for (let i = 0; i < decodeQueue.length; i++) {
-        const p = decodeQueue[i].priority ?? 0;
-        // prefer dropping low-priority (higher numeric value); never drop top-priority negatives if avoidable
-        if (p > worst) {
-          worst = p;
-          dropIdx = i;
-        }
-      }
-      if (dropIdx >= 0) {
-        const dropped = decodeQueue.splice(dropIdx, 1)[0];
-        dropped.reject(new Error("decode queue overflow"));
-      }
+    };
+    decodeHeap.push(task, priority);
+    // If queue too large, drop a lowest-urgency task (highest numeric priority)
+    if (decodeHeap.size() > DECODE_QUEUE_MAX) {
+      const dropped = decodeHeap.popMax();
+      if (dropped) dropped.reject(new Error("decode queue overflow"));
     }
-    const current = decodeQueue.length + activeDecodes;
-    if (current > __dbg.qPeak) __dbg.qPeak = current;
     pumpDecodeQueue();
   });
 }
@@ -113,25 +97,11 @@ async function runDecodeTask(task: DecodeTask) {
   activeDecodes++;
   try {
     const t0 = performance.now();
-    const canBitmap = typeof (window as any).createImageBitmap === "function";
-    let source: any;
-    if (canBitmap) {
-      source = await (window as any).createImageBitmap(task.blob);
-    } else {
-      // Fallback image element decode
-      source = await new Promise<HTMLImageElement>((res, rej) => {
-        const img = new Image();
-        img.onload = () => res(img);
-        img.onerror = () => rej(new Error("img error"));
-        img.src = URL.createObjectURL(task.blob);
-      });
-    }
+  const source = await (window as any).createImageBitmap(task.blob);
     const tex = PIXI.Texture.from(source as any);
-    const bt: any = tex.source as any;
-    if (bt?.style) {
-      bt.style.mipmap = "on";
+    const bt = tex.source
+    if (bt.style) {
       bt.style.scaleMode = "linear";
-      bt.style.anisotropicLevel = 8;
     }
     task.resolve(tex);
     const dt = performance.now() - t0;
@@ -146,39 +116,30 @@ async function runDecodeTask(task: DecodeTask) {
   }
 }
 function pumpDecodeQueue() {
-  if (!decodeQueue.length) return;
+  if (decodeHeap.isEmpty()) return;
   const limit = currentDecodeLimit();
-  const windowSize = Math.min(96, decodeQueue.length); // scan a small window for best priority
-  while (activeDecodes < limit && decodeQueue.length) {
-    // Find best (lowest number) priority within the scan window to minimize O(n log n) overhead.
-    let bestIdx = 0;
-    let bestP = decodeQueue[0].priority ?? 0;
-    const scanN = Math.min(windowSize, decodeQueue.length);
-    for (let i = 1; i < scanN; i++) {
-      const p = decodeQueue[i].priority ?? 0;
-      if (p < bestP) {
-        bestP = p;
-        bestIdx = i;
-      }
-    }
-    const task = decodeQueue.splice(bestIdx, 1)[0];
+  while (activeDecodes < limit && !decodeHeap.isEmpty()) {
+    const task = decodeHeap.popMin();
+    if (!task) break;
     runDecodeTask(task);
   }
 }
 
 export function getDecodeQueueSize() {
-  return decodeQueue.length + activeDecodes;
+  return decodeHeap.size() + activeDecodes;
 }
 
 export function getDecodeQueueStats() {
   const now = performance.now();
-  const qLen = decodeQueue.length;
+  const qLen = decodeHeap.size();
   let oldestWait = 0;
   let totalWait = 0;
-  for (let i = 0; i < qLen; i++) {
-    const w = now - (decodeQueue[i].enqAt || now);
-    if (w > oldestWait) oldestWait = w;
-    totalWait += w;
+  if (qLen) {
+    decodeHeap.forEachAlive((t) => {
+      const w = now - (t.enqAt || now);
+      if (w > oldestWait) oldestWait = w;
+      totalWait += w;
+    });
   }
   const avgWait = qLen ? totalWait / qLen : 0;
   return {
@@ -189,23 +150,11 @@ export function getDecodeQueueStats() {
   };
 }
 
-function shouldThrottle(priority: number) {
-  const q = getDecodeQueueSize();
-  // When queue is very full, only allow very high-priority work through
-  if (q > 600) return priority > -30; // only center/visible/hi-tier proceed
-  if (q > 400) return priority > -10;
-  return false;
-}
-
 function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
   // Lower numbers == higher priority. Visible center-most cards get the lowest values.
   // Offscreen cards get neutral/positive values so they are throttled first.
-  if (!s) return 0;
+  if (!s) return Number.POSITIVE_INFINITY; // treat null as far-away/background work (positive => throttled under pressure)
   let p = 0;
-  // Strongly prioritize on-screen work
-  if (s.visible) p -= 80;
-  // Slight boost for higher desired tier
-  if (desiredLevel >= 2) p -= 10;
   // Distance-from-center shaping using per-frame view data (set by main loop)
   const view: any = (window as any).__mtgView;
   if (view) {
@@ -249,6 +198,12 @@ function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
   if (hidAt && performance.now() - hidAt < 800) p += 5;
   // Selection bias: prioritize selected cards so they sharpen first
   if (SelectionStore.state.cardIds.has(s.__id)) p -= 8;
+  // Desired level bias: request higher quality sooner (clamped)
+  if (Number.isFinite(desiredLevel)) {
+    const dl = Math.max(0, Math.min(3, Math.floor(desiredLevel)));
+    // Each tier increases priority a bit (~-4 per level up to -12)
+    p -= dl * 4;
+  }
   return p;
 }
 
@@ -680,18 +635,16 @@ export function ensureCardImage(sprite: CardSprite) {
   sprite.__imgUrl = url;
   sprite.__imgLoading = true;
   const prio = priorityForSprite(sprite, 0);
-  if (shouldThrottle(prio)) {
-    sprite.__imgLoading = false;
-    return;
-  }
   loadTextureFromCachedURL(url, prio)
     .then((tex) => {
       if (!tex) {
+        sprite.__imgLoaded = false;
         sprite.__imgLoading = false;
         return;
       }
       // Stale load guard (face flipped or generation advanced)
       if (((sprite as any).__loadGen ?? 0) !== myGen) {
+        sprite.__imgLoaded = false;
         sprite.__imgLoading = false;
         return;
       }
@@ -715,6 +668,7 @@ export function ensureCardImage(sprite: CardSprite) {
       scheduleEnforceTextureBudget();
     })
     .catch(() => {
+      sprite.__imgLoaded = false;
       sprite.__imgLoading = false;
     });
 }
@@ -816,100 +770,6 @@ export function getHiResQueueDiagnostics() {
   };
 }
 
-// Proactively taper hi-tier (png) textures to medium when far from viewport.
-// This runs even when not over budget to reduce VRAM churn and favor nearby detail.
-let __taperCursor = 0;
-export function taperHiResByDistance(maxPerFrame = 16) {
-  if (settings.disablePngTier) return; // nothing to taper if PNG tier capped
-  if (!hiResQueue.length) return;
-  const view: any = (window as any).__mtgView;
-  if (!view) return;
-  const near = (view.padNear ?? 300) * 1.0;
-  const start = __taperCursor % hiResQueue.length;
-  let processed = 0;
-  let downgraded = 0;
-  const now = performance.now();
-  for (let i = 0; i < hiResQueue.length && processed < maxPerFrame; i++) {
-    const idx = (start + i) % hiResQueue.length;
-    const s = hiResQueue[idx];
-    if (!s || (s as any)._destroyed) continue;
-    processed++;
-    // Only consider true hi tier
-    if ((s.__qualityLevel ?? 0) < 2) continue;
-    // Avoid very fresh upgrades to prevent instant oscillation
-    if (s.__hiResAt && now - (s.__hiResAt || 0) < 800) continue;
-    // Compute center distance
-    const sx = s.x + 50;
-    const sy = s.y + 70;
-    const dx = sx - view.cx;
-    const dy = sy - view.cy;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    // Not close to viewport: beyond 2 radii; prefer offscreen to avoid visible swaps
-    if (dist > near && !s.visible) {
-      const ok = tryDowngradeSpriteTexture(s, /*immediateOnly*/ true);
-      if (ok) downgraded++;
-    }
-  }
-  __taperCursor = (start + processed) % Math.max(1, hiResQueue.length);
-  if (downgraded) {
-    compactHiResQueue();
-    scheduleEnforceTextureBudget();
-  }
-}
-
-// Medium taper: gently step 1->0 for far and offscreen cards to keep VRAM below cliff.
-let __medTaperCursor = 0;
-export function taperMediumByDistance(maxPerFrame = 12) {
-  const view: any = (window as any).__mtgView;
-  if (!view) return;
-  // Walk texture cache indirectly via hiResQueue plus sprite registry map for breadth.
-  // We’ll scan the same hiResQueue and also include a global id->sprite map if available.
-  const pool: CardSprite[] = [];
-  // Prefer visible data structures we already maintain
-  if (Array.isArray(hiResQueue) && hiResQueue.length) pool.push(...hiResQueue);
-  const idMap: Map<number, CardSprite> | undefined = (window as any)
-    .__mtgIdToSprite as Map<number, CardSprite> | undefined;
-  if (idMap) {
-    for (const s of idMap.values()) pool.push(s);
-  }
-  if (!pool.length) return;
-  // Dedup lightweight by id
-  const seen = new Set<number>();
-  const list: CardSprite[] = [];
-  for (const s of pool) {
-    if (!s || (s as any)._destroyed) continue;
-    if (seen.has(s.__id)) continue;
-    seen.add(s.__id);
-    list.push(s);
-  }
-  if (!list.length) return;
-  const start = __medTaperCursor % list.length;
-  let processed = 0;
-  let action = 0;
-  const near = (view.padNear ?? 300) * 1.0;
-  const now = performance.now();
-  for (let i = 0; i < list.length && processed < maxPerFrame; i++) {
-    const s = list[(start + i) % list.length];
-    processed++;
-    const q = s.__qualityLevel ?? 0;
-    if (q !== 1) continue; // only medium
-    if (s.visible) continue; // avoid visible swaps
-    const sx = s.x + 50;
-    const sy = s.y + 70;
-    const dx = sx - view.cx;
-    const dy = sy - view.cy;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    // Only far outside 2R and leaning toward 3R
-    if (dist <= near) continue;
-    // Recently loaded/changed? give it a moment to avoid churn
-    const hidAt: number | undefined = (s as any).__hiddenAt;
-    if (hidAt && now - hidAt < 800) continue;
-    if (demoteSpriteOneStep(s, /*allowPlaceholder*/ false)) action++;
-  }
-  __medTaperCursor = (start + processed) % list.length;
-  if (action) scheduleEnforceTextureBudget();
-}
-
 // Public helper: demote one step if possible; optionally drop to placeholder when far and lower-tier isn't cached.
 export function demoteSpriteOneStep(
   s: CardSprite,
@@ -983,11 +843,6 @@ export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
   sprite.__hiResLoading = true;
   sprite.__hiResUrl = url;
   const prio = priorityForSprite(sprite, cappedDesired);
-  if (shouldThrottle(prio)) {
-    sprite.__hiResLoading = false;
-    (sprite as any).__inflightLevel = 0;
-    return;
-  }
   loadTextureFromCachedURL(url, prio)
     .then((tex) => {
       // Clear inflight flag for this level

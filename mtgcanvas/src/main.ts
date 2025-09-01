@@ -23,8 +23,6 @@ import {
   getDecodeQueueStats,
   getTextureBudgetStats,
   flushPendingTextureDestroys,
-  taperHiResByDistance,
-  taperMediumByDistance,
 } from "./scene/cardNode";
 import {
   configureTextureSettings,
@@ -85,8 +83,6 @@ import {
 import { clearImageCache } from "./services/imageCache";
 import { disableSpellAndGrammarGlobally } from "./ui/inputs";
 import { getEffectiveDpr, watchDpr } from "./ui/dpr";
-
-// Phase 1 refactor: this file now bootstraps the Pixi application and delegates to scene modules.
 
 const GRID_SIZE = 8; // global grid size
 // To align cards to the grid while keeping them as close as possible, we need (CARD + GAP) % GRID_SIZE === 0.
@@ -152,6 +148,7 @@ const splashEl = document.getElementById("splash");
   // React to DPR changes (monitor swaps, OS scale changes, browser zoom) and re-init resolution
   const onDprChange = () => {
     const eff = getEffectiveDpr();
+    console.log("DPR changed:", eff);
     if ((app.renderer as any).resolution !== eff) {
       (app.renderer as any).resolution = eff;
       // Trigger a resize to apply new backbuffer size
@@ -267,70 +264,27 @@ const splashEl = document.getElementById("splash");
     lastBounds = { ...b };
   }
 
-  // Top-of-canvas title banner (fixed, above world)
-  const bannerLayer = new PIXI.Container();
-  bannerLayer.zIndex = 1000000; // above everything
-  bannerLayer.eventMode = "none"; // ignore pointer events
-  app.stage.addChild(bannerLayer);
+  // Top-of-canvas title banner: now HTML/CSS, not Pixi (non-interactive overlay)
   (app.stage as any).sortableChildren = true;
-
-  // Modern pill background + bold title
-  const banner = new PIXI.Container();
-  bannerLayer.addChild(banner);
-  const bannerBg = new PIXI.Graphics();
-  const titleText = new PIXI.Text({
-    text: "MTG Slop",
-    style: {
-      fill: Colors.bannerText() as any,
-      fontFamily:
-        "Inter, system-ui, ui-sans-serif, Segoe UI, Roboto, Helvetica, Arial",
-      fontWeight: "900" as any,
-      fontSize: 56,
-      letterSpacing: 1.2,
-      dropShadow: true,
-      dropShadowColor: Colors.bannerShadow() as any,
-      dropShadowBlur: 2,
-      dropShadowDistance: 2,
-      dropShadowAngle: Math.PI / 6,
-      align: "left",
-    } as any,
-  });
-  titleText.alpha = 0.95;
-  banner.addChild(bannerBg);
-  banner.addChild(titleText);
-
-  function drawBannerBg() {
-    const padX = 18;
-    const padY = 12;
-    const radius = 12;
-    const w = Math.ceil(titleText.width) + padX * 2;
-    const h = Math.ceil(titleText.height) + padY * 2;
-    bannerBg.clear();
-    bannerBg
-      .roundRect(0, 0, w, h, radius)
-      .fill({ color: Colors.panelBgAlt() as any, alpha: 0.92 })
-      .stroke({ color: Colors.panelBorder() as any, width: 1.5 });
-    // Title position
-    titleText.x = padX;
-    titleText.y = padY;
+  let htmlBanner: HTMLDivElement | null = null;
+  function ensureHtmlBanner() {
+    if (htmlBanner) return htmlBanner;
+    const el = document.createElement("div");
+    el.id = "title-banner";
+    el.className = "title-banner"; // styled via theme.css vars
+    el.textContent = "MTG Slop";
+    // Do not intercept mouse/touch so canvas interactions work underneath
+  el.style.pointerEvents = "none";
+  // Ensure fixed placement even before theme CSS is injected
+  el.style.position = "fixed";
+  el.style.left = "calc(16px * var(--ui-scale))";
+  el.style.top = "calc(12px * var(--ui-scale))";
+  el.style.zIndex = "10050";
+    document.body.appendChild(el);
+    htmlBanner = el;
+    return el;
   }
-
-  // Theme reactivity
-  registerThemeListener(() => {
-    (titleText.style as any).fill = Colors.bannerText() as any;
-    (titleText.style as any).dropShadowColor = Colors.bannerShadow() as any;
-    drawBannerBg();
-  });
-
-  function layoutBanner() {
-    const marginX = 16;
-    const marginY = 12;
-    drawBannerBg();
-    banner.x = marginX;
-    banner.y = marginY;
-  }
-  layoutBanner();
-  window.addEventListener("resize", layoutBanner);
+  ensureHtmlBanner();
 
   // Controls helper overlay (on-canvas) — shown whenever there are zero cards & zero groups
   let ctrlsOverlay: PIXI.Container | null = null;
@@ -6212,6 +6166,36 @@ const splashEl = document.getElementById("splash");
     },
   });
 
+  // Global search hotkeys
+  // - Ctrl/Cmd+F: always open the search palette (even when focus is in an input)
+  // - '/' or '?': open when not typing in an input/textarea/contenteditable
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      const key = e.key;
+      const isFind = key === "f" || key === "F";
+      if ((e.ctrlKey || e.metaKey) && isFind) {
+        e.preventDefault();
+        (searchUI as any).show("");
+        return;
+      }
+      if (key === "/" || key === "?") {
+        const t = e.target as HTMLElement | null;
+        const inText = !!(
+          t &&
+          (t.tagName === "INPUT" ||
+            t.tagName === "TEXTAREA" ||
+            t.isContentEditable)
+        );
+        if (!inText) {
+          e.preventDefault();
+          (searchUI as any).show("");
+        }
+      }
+    },
+    { capture: true },
+  );
+
   // --- Utility: create a new group from a list of card names ---
   function createGroupWithCardIds(
     ids: number[],
@@ -6465,10 +6449,6 @@ const splashEl = document.getElementById("splash");
     const tUpg0 = tLoad1;
     upgradeVisibleHiRes();
     const tUpg1 = performance.now();
-    // Proactive hi-tier taper: gently downgrade far-away hi-tier to medium
-    taperHiResByDistance?.(24);
-    // Proactive medium taper: gently downgrade far-away medium to small
-    taperMediumByDistance?.(16);
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
     (window as any).__fc = fc;
