@@ -4,7 +4,6 @@ import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
 import { getEffectiveDpr } from "../ui/dpr";
-import { MinMaxHeap } from "./minMaxHeap";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -61,11 +60,10 @@ type DecodeTask = {
   url: string;
   resolve: (t: PIXI.Texture) => void;
   reject: (e: any) => void;
-  priority?: number;
   enqAt: number;
 };
 
-const decodeHeap = new MinMaxHeap<DecodeTask>();
+const decodeQueue: DecodeTask[] = [];
 function currentDecodeLimit() {
   return settings.decodeParallelLimit;
 }
@@ -73,7 +71,6 @@ function currentDecodeLimit() {
 function scheduleDecode(
   blob: Blob,
   url: string,
-  priority = 0,
 ): Promise<PIXI.Texture> {
   return new Promise((resolve, reject) => {
     const task: DecodeTask = {
@@ -81,13 +78,13 @@ function scheduleDecode(
       url,
       resolve,
       reject,
-      priority,
       enqAt: performance.now(),
     };
-    decodeHeap.push(task, priority);
-    // If queue too large, drop a lowest-urgency task (highest numeric priority)
-    if (decodeHeap.size() > DECODE_QUEUE_MAX) {
-      const dropped = decodeHeap.popMax();
+    // Enqueue at the end (FIFO)
+    decodeQueue.push(task);
+    // If queue too large, drop the newest enqueued task to preserve FIFO fairness for earlier requests
+    if (decodeQueue.length > DECODE_QUEUE_MAX) {
+      const dropped = decodeQueue.pop();
       if (dropped) dropped.reject(new Error("decode queue overflow"));
     }
     pumpDecodeQueue();
@@ -116,30 +113,31 @@ async function runDecodeTask(task: DecodeTask) {
   }
 }
 function pumpDecodeQueue() {
-  if (decodeHeap.isEmpty()) return;
   const limit = currentDecodeLimit();
-  while (activeDecodes < limit && !decodeHeap.isEmpty()) {
-    const task = decodeHeap.popMin();
+  while (activeDecodes < limit && decodeQueue.length > 0) {
+    // Dequeue from the front (oldest task first)
+    const task = decodeQueue.shift();
     if (!task) break;
     runDecodeTask(task);
   }
 }
 
 export function getDecodeQueueSize() {
-  return decodeHeap.size() + activeDecodes;
+  return decodeQueue.length + activeDecodes;
 }
 
 export function getDecodeQueueStats() {
   const now = performance.now();
-  const qLen = decodeHeap.size();
+  const qLen = decodeQueue.length;
   let oldestWait = 0;
   let totalWait = 0;
   if (qLen) {
-    decodeHeap.forEachAlive((t) => {
+    for (let i = 0; i < decodeQueue.length; i++) {
+      const t = decodeQueue[i];
       const w = now - (t.enqAt || now);
       if (w > oldestWait) oldestWait = w;
       totalWait += w;
-    });
+    }
   }
   const avgWait = qLen ? totalWait / qLen : 0;
   return {
@@ -150,66 +148,8 @@ export function getDecodeQueueStats() {
   };
 }
 
-function priorityForSprite(s: CardSprite | null, desiredLevel: number): number {
-  // Lower numbers == higher priority. Visible center-most cards get the lowest values.
-  // Offscreen cards get neutral/positive values so they are throttled first.
-  if (!s) return Number.POSITIVE_INFINITY; // treat null as far-away/background work (positive => throttled under pressure)
-  let p = 0;
-  // Distance-from-center shaping using per-frame view data (set by main loop)
-  const view: any = (window as any).__mtgView;
-  if (view) {
-    const cx = view.cx,
-      cy = view.cy;
-    const sx = s.x + 50; // card center x
-    const sy = s.y + 70; // card center y
-    const dx = sx - cx;
-    const dy = sy - cy;
-    const d = Math.sqrt(dx * dx + dy * dy);
-    // Convert distance into additive priority using viewport-based radii (2R near, 3R far)
-    const near = (view.padNear ?? 300) * 1.0;
-    const far = (view.padFar ?? 1200) * 1.0;
-    let w = 0;
-    if (d <= near)
-      w = -45; // very near center: stronger boost to reduce placeholders
-    else if (d <= far) {
-      const t = (d - near) / Math.max(1, far - near);
-      w = -45 + t * 35; // blend up toward ~ -10
-    } else {
-      w = 12; // far away -> de-prioritize a bit more
-    }
-    p += w;
-    // If just outside viewport, still slightly prioritize to prewarm edges
-    if (!s.visible && view) {
-      const pad = view.padNear ?? 300;
-      const x1 = s.x,
-        y1 = s.y,
-        x2 = x1 + 100,
-        y2 = y1 + 140;
-      const inNear =
-        x2 >= view.left - pad &&
-        x1 <= view.right + pad &&
-        y2 >= view.top - pad &&
-        y1 <= view.bottom + pad;
-      if (inNear) p -= 6;
-    }
-  }
-  // Recent hide grace: reduce priority briefly to avoid churn right after cull
-  const hidAt: number | undefined = (s as any)?.__hiddenAt;
-  if (hidAt && performance.now() - hidAt < 800) p += 5;
-  // Selection bias: prioritize selected cards so they sharpen first
-  if (SelectionStore.state.cardIds.has(s.__id)) p -= 8;
-  // Desired level bias: request higher quality sooner (clamped)
-  if (Number.isFinite(desiredLevel)) {
-    const dl = Math.max(0, Math.min(3, Math.floor(desiredLevel)));
-    // Each tier increases priority a bit (~-4 per level up to -12)
-    p -= dl * 4;
-  }
-  return p;
-}
-
 export async function loadTextureFromCachedURL(
   url: string,
-  priority = 0,
 ): Promise<PIXI.Texture> {
   if (textureCache.has(url)) return textureCache.get(url)!.tex;
   if (inflightTex.has(url)) return inflightTex.get(url)!;
@@ -222,7 +162,7 @@ export async function loadTextureFromCachedURL(
       const resp = await fetch(ci.objectURL);
       blob = await resp.blob();
     }
-    const tex = await scheduleDecode(blob, url, priority);
+    const tex = await scheduleDecode(blob, url);
     const bytes = estimateTextureBytes(tex);
     textureCache.set(url, {
       tex,
@@ -634,8 +574,7 @@ export function ensureCardImage(sprite: CardSprite) {
   if (!url) return;
   sprite.__imgUrl = url;
   sprite.__imgLoading = true;
-  const prio = priorityForSprite(sprite, 0);
-  loadTextureFromCachedURL(url, prio)
+  loadTextureFromCachedURL(url)
     .then((tex) => {
       if (!tex) {
         sprite.__imgLoaded = false;
@@ -672,32 +611,7 @@ export function ensureCardImage(sprite: CardSprite) {
       sprite.__imgLoading = false;
     });
 }
-
-// ---- High Resolution Upgrade Logic ----
-// Relaxed hi-res cache: allow more upgraded textures to stay resident before eviction.
-// (Adjustable if memory pressure observed; tuned upward per user request.)
-// Hi-res retention limit now reads from centralized settings dynamically
 const hiResQueue: CardSprite[] = []; // oldest at index 0
-
-function evictHiResIfNeeded() {
-  const limit = settings.hiResLimit;
-  if (!isFinite(limit)) return; // unlimited; rely on GPU budget eviction only
-  while (hiResQueue.length > limit) {
-    const victim = hiResQueue.shift();
-    if (victim && victim.__hiResLoaded) {
-      // Proactively downgrade to reduce VRAM pressure. Prefer stepping down one tier; if unavailable, drop to placeholder.
-      const downgraded = tryDowngradeSpriteTexture(
-        victim,
-        /*immediateOnly*/ true,
-      );
-      if (!downgraded) demoteSpriteTextureToPlaceholder(victim);
-      // Clear hi-res bookkeeping either way.
-      victim.__hiResLoaded = false;
-      victim.__hiResUrl = undefined;
-      victim.__hiResAt = undefined;
-    }
-  }
-}
 // Periodically compact the hi-res queue to drop stale entries
 function compactHiResQueue() {
   if (!hiResQueue.length) return;
@@ -782,117 +696,6 @@ export function demoteSpriteOneStep(
     return true;
   }
   return false;
-}
-
-// Multi-tier quality loader: 0=small,1=normal/large,2=png (highest)
-export function updateCardTextureForScale(sprite: CardSprite, scale: number) {
-  if ((sprite as any).__groupOverlayActive) return;
-  if (!sprite.__card) return;
-  const myGen = (sprite as any).__loadGen ?? 0;
-  // Estimate on-screen pixel height
-  const deviceRatio = getEffectiveDpr();
-  const pxHeight = 140 * scale * deviceRatio;
-  let desired = 0;
-  // Lower thresholds so we promote quality sooner (helps moderate zoom levels remain crisp)
-  if (pxHeight >= 140)
-    desired = 2; // promote to png at lower on-screen size
-  else if (pxHeight > 90) desired = 1; // switch to normal sooner
-  // Avoid downgrade churn
-  if (settings.disablePngTier && desired === 2) desired = 1; // cap at normal when PNG disabled
-  // If already at or above desired, no action
-  if (sprite.__qualityLevel !== undefined && desired <= sprite.__qualityLevel)
-    return;
-  // Track pending desired level to allow escalation even while a lower-tier is inflight
-  const pending = (sprite as any).__pendingLevel ?? 0;
-  const cappedDesired = settings.disablePngTier
-    ? Math.min(desired, 1)
-    : desired;
-  if (cappedDesired > pending) (sprite as any).__pendingLevel = cappedDesired;
-  const inflightLevel: number = (sprite as any).__inflightLevel ?? 0;
-  if (inflightLevel && inflightLevel >= desired) return; // a higher or equal tier is already on the way
-  // If already decoding lower tier and higher tier requested, we allow parallel because decode queue throttles globally.
-  const card = sprite.__card;
-  const faceIdx = sprite.__faceIndex || 0;
-  const face = (card.card_faces && card.card_faces[faceIdx]) || null;
-  let url: string | undefined;
-  if (desired === 2) {
-    url =
-      face?.image_uris?.png ||
-      card.image_uris?.png ||
-      face?.image_uris?.large ||
-      card.image_uris?.large;
-  } else if (desired === 1) {
-    url =
-      face?.image_uris?.normal ||
-      card.image_uris?.normal ||
-      face?.image_uris?.large ||
-      card.image_uris?.large;
-  }
-  if (!url) return;
-  // If already at this URL skip
-  if (
-    sprite.texture?.source?.resource?.url === url ||
-    sprite.__hiResUrl === url
-  ) {
-    sprite.__qualityLevel = desired;
-    return;
-  }
-  const prevUrl: string | undefined = (sprite as any).__currentTexUrl;
-  // mark inflight for this desired tier
-  (sprite as any).__inflightLevel = cappedDesired;
-  sprite.__hiResLoading = true;
-  sprite.__hiResUrl = url;
-  const prio = priorityForSprite(sprite, cappedDesired);
-  loadTextureFromCachedURL(url, prio)
-    .then((tex) => {
-      // Clear inflight flag for this level
-      if (((sprite as any).__inflightLevel ?? 0) === cappedDesired)
-        (sprite as any).__inflightLevel = 0;
-      sprite.__hiResLoading = false;
-      if (!tex) return;
-      if (((sprite as any).__loadGen ?? 0) !== myGen) return;
-      const ent = textureCache.get(url);
-      if (ent) {
-        ent.refs++;
-        ent.level = cappedDesired;
-        ent.lastUsed = performance.now();
-      }
-      (sprite as any).__currentTexUrl = url;
-      if (prevUrl && prevUrl !== url) {
-        const pe = textureCache.get(prevUrl);
-        if (pe) pe.refs = Math.max(0, pe.refs - 1);
-      }
-      if (isTextureUsable(tex)) sprite.texture = tex;
-      sprite.width = 100;
-      sprite.height = 140;
-      sprite.__qualityLevel = cappedDesired;
-      if (cappedDesired >= 1) {
-        sprite.__hiResLoaded = true;
-        sprite.__hiResAt = performance.now();
-        hiResQueue.push(sprite);
-        evictHiResIfNeeded();
-      }
-      if (SelectionStore.state.cardIds.has(sprite.__id))
-        updateCardSpriteAppearance(sprite, true);
-      if (sprite.__card && isDoubleSided(sprite.__card))
-        ensureDoubleSidedBadge(sprite);
-      else if (sprite.__doubleBadge) {
-        sprite.__doubleBadge.destroy();
-        sprite.__doubleBadge = undefined;
-      }
-      // If a higher pending level exists, immediately try to promote again
-      const pend: number = (sprite as any).__pendingLevel ?? 0;
-      if (pend > (sprite.__qualityLevel ?? 0)) {
-        // reuse same scale argument
-        updateCardTextureForScale(sprite, scale);
-      }
-    })
-    .catch(() => {
-      if (((sprite as any).__inflightLevel ?? 0) === cappedDesired)
-        (sprite as any).__inflightLevel = 0;
-      sprite.__hiResLoading = false;
-    });
-  scheduleEnforceTextureBudget();
 }
 
 // --- Monitoring helpers ---
@@ -1103,13 +906,13 @@ function flipCardFace(sprite: CardSprite) {
     } else {
       // Load small immediately, then promote without waiting an extra frame
       ensureCardImage(sprite);
-      updateCardTextureForScale(sprite, scale);
+      // updateCardTextureForScale(sprite, scale);
     }
   } catch {
     ensureCardImage(sprite);
     requestAnimationFrame(() => {
       const scale = (sprite.parent as any)?.scale?.x || 1;
-      updateCardTextureForScale(sprite, scale);
+      // updateCardTextureForScale(sprite, scale);
     });
   }
   ensureDoubleSidedBadge(sprite); // reposition after flip

@@ -13,7 +13,7 @@ import {
   attachCardInteractions,
   type CardSprite,
   ensureCardImage,
-  updateCardTextureForScale,
+ // updateCardTextureForScale,
   getHiResQueueLength,
   getInflightTextureCount,
   enforceGpuBudgetForSprites,
@@ -5305,99 +5305,6 @@ const splashEl = document.getElementById("splash");
 
   // (placement helpers moved to src/placement.ts)
 
-  // Explicit hi-res upgrade pass: ensure visible cards promote quickly (not limited by LOAD_PER_FRAME small image loader)
-  let hiResCursor = 0;
-  function upgradeVisibleHiRes() {
-    const scale = world.scale.x;
-    // Detect if any group overlay is active; if so, clamp throughput and avoid upgrades for cards hidden by overlay
-    let anyOverlay = false;
-    groups.forEach((gv) => {
-      if ((gv._lastZoomPhase || 0) > 0.5) anyOverlay = true;
-    });
-    const visibles = sprites.filter(
-      (s) => s.visible && s.__imgLoaded && !(s as any).__groupOverlayActive,
-    );
-    if (!visibles.length) return;
-    // Adaptive throughput based on decode queue pressure
-    const q = getDecodeQueueSize();
-    // Start with a hard cap that only decreases
-    let cap = anyOverlay ? 6 : 40;
-    if ((window as any).__mtgSafeMode) cap = Math.min(cap, 6);
-    // If zoom just changed very recently, keep throughput very low to avoid jank
-    const lastAt: number = (window as any).__lastZoomChangedAt || 0;
-    if (performance.now() - lastAt < 150) cap = Math.min(cap, 4);
-    // Suggestion based on decode queue; never increase above cap
-    let suggest = 12;
-    if (q > 600) suggest = 6;
-    else if (q > 400) suggest = 10;
-    else if (q > 200) suggest = 16;
-    else if (q < 50) suggest = 8;
-    const perFrame = Math.min(cap, suggest, visibles.length);
-    // Instrumentation: toggle with window.__mtgUpgradeDebug = true or localStorage.upgradeDebug = "1"
-    const upgDbgOn =
-      (window as any).__mtgUpgradeDebug === true ||
-      (typeof localStorage !== "undefined" &&
-        localStorage.getItem("upgradeDebug") === "1");
-    const upgDbg: any = upgDbgOn
-      ? {
-          scale,
-          dpr: getEffectiveDpr(),
-          q,
-          anyOverlay,
-          perFrame,
-          cap,
-          suggest,
-          lastZoomAgo: performance.now() - lastAt,
-          visibles: visibles.length,
-          counters: { promoted: 0 },
-        }
-      : undefined;
-    // Boost priority using distance to the viewport center computed in world space (no per-sprite toGlobal)
-    const cx = window.innerWidth / 2,
-      cy = window.innerHeight / 2;
-    const wc = world.toLocal(new PIXI.Point(cx, cy));
-    const scored = visibles.map((s) => {
-      const sx = s.x + CARD_W_GLOBAL / 2;
-      const sy = s.y + CARD_H_GLOBAL / 2;
-      const dx = sx - wc.x;
-      const dy = sy - wc.y;
-      const dist2 = dx * dx + dy * dy;
-      // Heavier weight to center proximity to align with priorityForSprite behavior
-      return { s, dist2 };
-    });
-    scored.sort((a, b) => a.dist2 - b.dist2);
-    let processed = 0;
-    // First pass: upgrade closest N, but stop early under extreme pressure
-    const burst = (window as any).__mtgSafeMode
-      ? 1
-      : q > 600
-        ? 2
-        : q > 400
-          ? 4
-          : 8;
-    for (
-      let i = 0;
-      i < scored.length && processed < Math.min(burst, perFrame);
-      i++
-    ) {
-      updateCardTextureForScale(scored[i].s, scale);
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.upg = (d.upg || 0) + 1;
-      processed++;
-      if (upgDbg) upgDbg.counters.promoted++;
-    }
-    // Second pass: round-robin remainder to keep breadth
-    for (let i = 0; i < visibles.length && processed < perFrame; i++) {
-      hiResCursor = (hiResCursor + 1) % visibles.length;
-      updateCardTextureForScale(visibles[hiResCursor], scale);
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.upg = (d.upg || 0) + 1;
-      processed++;
-      if (upgDbg) upgDbg.counters.promoted++;
-    }
-    if (upgDbgOn) (window as any).__upgradeDiag = upgDbg;
-  }
-
   // Centralized clear function used by Debug and Import/Export integration
   async function clearAllData(): Promise<void> {
     // Clear persisted artifacts
@@ -6338,36 +6245,28 @@ const splashEl = document.getElementById("splash");
     if (!view) return;
     for (const s of sprites) {
       if (!s.__card) continue;
-      // Prefetch if in expanded bounds
-      const inPrefetch =
-        s.x + CARD_W_GLOBAL >= view.left &&
-        s.x <= view.right &&
-        s.y + CARD_H_GLOBAL >= view.top &&
-        s.y <= view.bottom;
-      if (!inPrefetch) continue;
-      let inView = false;
-      {
-        const sx = s.x + CARD_W_GLOBAL / 2;
-        const sy = s.y + CARD_H_GLOBAL / 2;
-        const dx = sx - view.cx;
-        const dy = sy - view.cy;
-        const d2 = dx * dx + dy * dy;
-        const near = (view.padNear ?? 300) * (view.padNear ?? 300);
-        inView = d2 <= near;
-      }
+      // Use sprite's current logical size (world units) in case card dimensions differ from global defaults
+      const sW = s.width;
+      const sH = s.height;
+      const inView =
+           s.x + sW >= view.left
+        && s.x <= view.right
+        && s.y + sH >= view.top
+        && s.y <= view.bottom;
+      if (!inView) continue;
       if (!s.__imgLoaded) {
         if ((s as any).__groupOverlayActive) continue;
         if (!s.visible) {
           continue;
         }
         ensureCardImage(s);
-        loaded += inView ? 1 : 1;
+        loaded += 1;
         const d: any = ((window as any).__frameDiag ||= {});
         d.load = (d.load || 0) + 1;
       } else {
         if (!(s as any).__groupOverlayActive) {
           // Use the current scale in this function scope to compute desired tier correctly
-          updateCardTextureForScale(s, scale);
+          // updateCardTextureForScale(s, scale);
           const d: any = ((window as any).__frameDiag ||= {});
           d.upg = (d.upg || 0) + 1;
         }
@@ -6445,7 +6344,6 @@ const splashEl = document.getElementById("splash");
     loadVisibleImages();
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
-    upgradeVisibleHiRes();
     const tUpg1 = performance.now();
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
