@@ -5,7 +5,6 @@ export interface TextureSettings {
   disablePngTier: boolean; // If true, cap at 'normal' tier (skip PNG)
   allowEvict: boolean; // If true, allow LRU eviction of unused textures
   decodeParallelLimit: number; // Max parallel image decodes
-  hiResLimit: number; // Max number of hi-res-upgraded sprites to keep
 }
 
 // Defaults are conservative; can be tuned at runtime via configureTextureSettings()
@@ -14,7 +13,6 @@ export const textureSettings: TextureSettings = {
   disablePngTier: true,
   allowEvict: true,
   decodeParallelLimit: 32,
-  hiResLimit: 2000, // unlimited; rely on GPU budget for eviction
 };
 
 export function configureTextureSettings(p: Partial<TextureSettings>) {
@@ -29,8 +27,5 @@ export function configureTextureSettings(p: Partial<TextureSettings>) {
       64,
       Math.max(1, Math.floor(p.decodeParallelLimit)),
     );
-  }
-  if (typeof p.hiResLimit === "number" && p.hiResLimit >= 0) {
-    textureSettings.hiResLimit = Math.floor(p.hiResLimit);
   }
 }

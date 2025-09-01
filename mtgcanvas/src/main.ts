@@ -16,8 +16,6 @@ import {
   getInflightTextureCount,
   enforceGpuBudgetForSprites,
   enforceTextureBudgetNow,
-  getDecodeQueueSize,
-  getDecodeQueueStats,
   getTextureBudgetStats,
   flushPendingTextureDestroys,
   ensureTextureTier,
@@ -1489,8 +1487,7 @@ const splashEl = document.getElementById("splash");
     // Keep other runtime defaults; do not overwrite auto-detected budget here
     allowEvict: true,
     disablePngTier: false,
-    decodeParallelLimit: 16,
-    hiResLimit: 6000, // allow more level-1 textures resident to reduce churn with many groups
+    decodeParallelLimit: 16
   });
   // (Ticker added later to include overlay presentation updates.)
 
@@ -3852,9 +3849,6 @@ const splashEl = document.getElementById("splash");
       })();
   // Quick debug toggles surfaced to window
   (window as any).__imgDebug = (on: boolean) => enableImageCacheDebug(!!on);
-  (window as any).__dumpDecodeQ = () => {
-    console.log("[DecodeQ dump]", getDecodeQueueStats());
-  };
   // One-call aggregated snapshot for bug reports
   function buildPerfSnapshot() {
     const scale = world.scale.x;
@@ -3881,7 +3875,6 @@ const splashEl = document.getElementById("splash");
       else if (q === 2) q2++;
       if (s.__imgLoaded && q < targetMaxLevel) pending++;
     }
-    const decodeQ = getDecodeQueueStats?.();
     const tex = getTextureBudgetStats?.();
     const mem: any = (performance as any).memory;
     const jsMB = mem ? mem.usedJSHeapSize / 1048576 : undefined;
@@ -3889,7 +3882,6 @@ const splashEl = document.getElementById("splash");
       safeMode: !!(window as any).__mtgSafeMode,
       camMoving: !!(window as any).__camIsMoving,
       decodeParallelLimit: texSettings.decodeParallelLimit,
-      hiResLimit: texSettings.hiResLimit,
       disablePngTier: texSettings.disablePngTier,
     };
     const ops: any = (window as any).__frameDiag || {};
@@ -3899,7 +3891,6 @@ const splashEl = document.getElementById("splash");
       cam,
       counts: { cards: sprites.length, visible: vis, groups: groups.size },
       quality: { small: q0, mid: q1, hi: q2, loading, pending },
-      decodeQ,
       texture: tex,
       inflight: getInflightTextureCount(),
       flags,
@@ -4018,14 +4009,6 @@ const splashEl = document.getElementById("splash");
     texResLine = `TexRes low:${low} med:${med} hi:${hi}`;
     hiResPendingLine = `GlobalPending ${pending}`;
     qualLine = `Qual q0:${q0} q1:${q1} q2:${q2} load:${loading}`;
-    const dqs = getDecodeQueueStats?.();
-    if (dqs) {
-      decodeQLine = `DecodeQ ${getDecodeQueueSize()}`;
-      decodeDiagLine = `Decodes act:${dqs.active} q:${dqs.queued} oldest:${dqs.oldestWaitMs.toFixed(0)}ms avg:${dqs.avgWaitMs.toFixed(0)}ms`;
-    } else {
-      decodeQLine = "DecodeQ n/a";
-      decodeDiagLine = "DecodeDiag n/a";
-    }
     texLine = `Tex ~${(bytes / 1048576).toFixed(1)} MB`;
   }
   function updatePerf() {
@@ -6175,51 +6158,6 @@ const splashEl = document.getElementById("splash");
 
   // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
   let last = performance.now();
-  // Basic culling: hide sprites far outside viewport (>2x viewport bounds)
-  // Cache last bounds to avoid redundant full scans on tiny camera moves
-  let __lastCull = { left: NaN, top: NaN, right: NaN, bottom: NaN };
-  function runCulling() {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const margin = 200; // allow some slack
-    const invScale = 1 / world.scale.x;
-    const left = -world.position.x * invScale - margin;
-    const top = -world.position.y * invScale - margin;
-    const right = left + vw * invScale + margin * 2;
-    const bottom = top + vh * invScale + margin * 2;
-    // Early-out if bounds change is negligible in world units
-    if (
-      Math.abs(left - __lastCull.left) < 0.5 &&
-      Math.abs(top - __lastCull.top) < 0.5 &&
-      Math.abs(right - __lastCull.right) < 0.5 &&
-      Math.abs(bottom - __lastCull.bottom) < 0.5
-    ) {
-      return;
-    }
-    __lastCull = { left, top, right, bottom };
-    const now = performance.now();
-    let checked = 0;
-    let toggled = 0;
-    for (const s of sprites) {
-      checked++;
-      const vis =
-        s.x + CARD_W_GLOBAL >= left &&
-        s.x <= right &&
-        s.y + CARD_H_GLOBAL >= top &&
-        s.y <= bottom;
-      if (vis !== s.visible) {
-        s.visible = vis; // toggle both for safety
-        const anyS: any = s as any;
-        if (!vis) anyS.__hiddenAt = now;
-        else if (anyS.__hiddenAt) anyS.__hiddenAt = undefined;
-        toggled++;
-      }
-    }
-    const d: any = ((window as any).__frameDiag ||= {});
-    d.cullChecked = (d.cullChecked || 0) + checked;
-    d.cullToggled = (d.cullToggled || 0) + toggled;
-  }
-
   // Image loader
   function loadVisibleImages() {
     const len = sprites.length;
@@ -6287,10 +6225,7 @@ const splashEl = document.getElementById("splash");
       (window as any).__lastCamMovedAt = now;
     (window as any).__camIsMoving =
       now - ((window as any).__lastCamMovedAt || 0) < 220;
-    const tCull0 = performance.now();
-    runCulling();
-    const tCull1 = performance.now();
-    const tLoad0 = tCull1;
+    const tLoad0 = 0;
     // Publish viewport info for priority decisions elsewhere (world-space bounds and center)
     {
       const scale = world.scale.x;
@@ -6323,12 +6258,10 @@ const splashEl = document.getElementById("splash");
     loadVisibleImages();
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
-    // Enforce simple tier policy: inView gets med/hi by zoom; out of view gets low/placeholder.
     {
       const view: any = (window as any).__mtgView;
       if (view) {
-        const scaleNow = world.scale.x;
-        const zoom = scaleNow;
+        const zoom = world.scale.x;
         const { left, top, right, bottom } = view;
         for (const s of sprites) {
           if (!s.__card) continue;
@@ -6450,7 +6383,6 @@ const splashEl = document.getElementById("splash");
     // Aggregate timings and expose optional N-frame profiler buffer
     const d: any = ((window as any).__frameDiag ||= {});
     d.camMs = (d.camMs || 0) + (tAfterCam - fStart);
-    d.cullMs = (d.cullMs || 0) + (tCull1 - tCull0);
     d.loadMs = (d.loadMs || 0) + (tLoad1 - tLoad0);
     d.upgMs = (d.upgMs || 0) + (tUpg1 - tUpg0);
     d.idMapMs = (d.idMapMs || 0) + (tId1 - tId0);
@@ -6460,7 +6392,6 @@ const splashEl = document.getElementById("splash");
     const userMs =
       tAfterCam -
       fStart +
-      (tCull1 - tCull0) +
       (tLoad1 - tLoad0) +
       (tUpg1 - tUpg0) +
       (tId1 - tId0) +
