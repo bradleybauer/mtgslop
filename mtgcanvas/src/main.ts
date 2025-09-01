@@ -274,12 +274,12 @@ const splashEl = document.getElementById("splash");
     el.className = "title-banner"; // styled via theme.css vars
     el.textContent = "MTG Slop";
     // Do not intercept mouse/touch so canvas interactions work underneath
-  el.style.pointerEvents = "none";
-  // Ensure fixed placement even before theme CSS is injected
-  el.style.position = "fixed";
-  el.style.left = "calc(16px * var(--ui-scale))";
-  el.style.top = "calc(12px * var(--ui-scale))";
-  el.style.zIndex = "10050";
+    el.style.pointerEvents = "none";
+    // Ensure fixed placement even before theme CSS is injected
+    el.style.position = "fixed";
+    el.style.left = "calc(16px * var(--ui-scale))";
+    el.style.top = "calc(12px * var(--ui-scale))";
+    el.style.zIndex = "10050";
     document.body.appendChild(el);
     htmlBanner = el;
     return el;
@@ -710,8 +710,6 @@ const splashEl = document.getElementById("splash");
             }),
         ),
       );
-      // Fire image loads after they exist to parallelize
-      created.forEach((s) => ensureCardImage(s));
     } finally {
       SUPPRESS_SAVES = prevSuppress;
       updateEmptyStateOverlay();
@@ -1487,7 +1485,7 @@ const splashEl = document.getElementById("splash");
   }
   world.sortableChildren = true;
 
-  // Runtime texture/gpu settings (no localStorage). Tune here as needed.
+  // Runtime texture/gpu settings Tune here as needed.
   configureTextureSettings({
     // Keep other runtime defaults; do not overwrite auto-detected budget here
     allowEvict: true,

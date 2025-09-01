@@ -97,9 +97,9 @@ async function runDecodeTask(task: DecodeTask) {
   activeDecodes++;
   try {
     const t0 = performance.now();
-  const source = await (window as any).createImageBitmap(task.blob);
+    const source = await (window as any).createImageBitmap(task.blob);
     const tex = PIXI.Texture.from(source as any);
-    const bt = tex.source
+    const bt = tex.source;
     if (bt.style) {
       bt.style.scaleMode = "linear";
     }
