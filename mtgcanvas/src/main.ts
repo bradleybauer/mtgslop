@@ -12,12 +12,8 @@ import {
   updateCardSpriteAppearance,
   attachCardInteractions,
   type CardSprite,
-  ensureCardImage,
   getInflightTextureCount,
-  enforceGpuBudgetForSprites,
-  enforceTextureBudgetNow,
   getTextureBudgetStats,
-  flushPendingTextureDestroys,
   ensureTextureTier,
   ensureLowOrPlaceholder,
 } from "./scene/cardNode";
@@ -643,7 +639,6 @@ const splashEl = document.getElementById("splash");
   ): CardSprite[] {
     const __tm = createPhaseTimer("createSpritesBulk");
     if (!items.length) return [];
-    // Enforce global cap: truncate items if needed
     const cap = remainingCapacity();
     if (cap <= 0) return [];
     if (items.length > cap) items = items.slice(0, cap);
@@ -1487,7 +1482,7 @@ const splashEl = document.getElementById("splash");
     // Keep other runtime defaults; do not overwrite auto-detected budget here
     allowEvict: true,
     disablePngTier: false,
-    decodeParallelLimit: 16
+    decodeParallelLimit: 16,
   });
   // (Ticker added later to include overlay presentation updates.)
 
@@ -5512,7 +5507,6 @@ const splashEl = document.getElementById("splash");
             id = ++maxId;
           }
           const sp = createSpriteForInstance({ id, x, y, z: zCounter++, card });
-          ensureCardImage(sp);
           ids.push(sp.__id);
           imported++;
         }
@@ -5541,7 +5535,6 @@ const splashEl = document.getElementById("splash");
           },
         );
         const made = createSpritesBulk(bulkItems);
-        made.forEach((s) => ensureCardImage(s));
         imported += made.length;
         camera.fitBounds(planned.block, {
           w: window.innerWidth,
@@ -6222,7 +6215,7 @@ const splashEl = document.getElementById("splash");
     }
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
-    // upgrade 
+    // upgrade
     {
       const view: any = (window as any).__mtgView;
       if (view) {
@@ -6233,7 +6226,11 @@ const splashEl = document.getElementById("splash");
           // Check if this card intersects the current view rectangle (world space)
           const sW = s.width;
           const sH = s.height;
-          const inView = s.x + sW >= left && s.x <= right && s.y + sH >= top && s.y <= bottom;
+          const inView =
+            s.x + sW >= left &&
+            s.x <= right &&
+            s.y + sH >= top &&
+            s.y <= bottom;
           if (inView) {
             let desired: 0 | 1 | 2 = 1;
             if (zoom > 1.7) desired = 2;
@@ -6257,9 +6254,7 @@ const splashEl = document.getElementById("splash");
       (window as any).__mtgIdToSprite = idToSprite;
     }
     const tId1 = performance.now();
-    // Enforce GPU budget by demoting offscreen sprites when over the cap
     const tBudget0 = performance.now();
-    enforceGpuBudgetForSprites(sprites);
     // Optional: lightweight debug surface
     (window as any).__renderInfo = {
       dpr: getEffectiveDpr(),
@@ -6271,16 +6266,7 @@ const splashEl = document.getElementById("splash");
     };
     // If we're near the GPU cliff (>97% of budget), run the coalesced budget pass to carve headroom.
     const ts = getTextureBudgetStats?.();
-    if (ts && ts.budgetMB > 0) {
-      const overHigh = ts.totalTextureMB > ts.budgetMB * 0.97;
-      if (overHigh) enforceTextureBudgetNow();
-      // surface inflight count in per-frame diag as well
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.inflight = getInflightTextureCount();
-    }
     const tBudget1 = performance.now();
-    // Flush any pending texture destruction safely once per frame.
-    flushPendingTextureDestroys();
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;

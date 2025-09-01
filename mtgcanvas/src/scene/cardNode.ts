@@ -16,42 +16,8 @@ interface TexCacheEntry {
 const textureCache = new Map<string, TexCacheEntry>(); // url -> texture entry
 let totalTextureBytes = 0;
 const inflightTex = new Map<string, Promise<PIXI.Texture>>();
-// Global-ish lightweight diagnostics; attached via window for easy access
-const __dbg: any = (() => {
-  try {
-    const w: any = window as any;
-    if (!w.__texDbg)
-      w.__texDbg = {
-        decode: { count: 0, totalMs: 0, maxMs: 0 },
-        qPeak: 0,
-        evict: { count: 0, bytes: 0, lastMs: 0 },
-        budgetMB: (settings && settings.gpuBudgetMB) || 0,
-        totalBytes: 0,
-      };
-    return w.__texDbg;
-  } catch {
-    return {
-      decode: { count: 0, totalMs: 0, maxMs: 0 },
-      qPeak: 0,
-      evict: { count: 0, bytes: 0, lastMs: 0 },
-      budgetMB: (settings && settings.gpuBudgetMB) || 0,
-      totalBytes: 0,
-    };
-  }
-})();
-// Coalesced budget enforcement (avoid repeated sorts per frame)
-let __budgetScheduled = false;
-function scheduleEnforceTextureBudget() {
-  if (__budgetScheduled) return;
-  __budgetScheduled = true;
-  requestAnimationFrame(() => {
-    enforceTextureBudget();
-    __budgetScheduled = false;
-  });
-}
 
-// Central decode queue to throttle createImageBitmap to avoid main thread jank during large zoom transitions.
-// We allow a small number of parallel decodes; others queue FIFO.
+// Central decode queue (single priority queue). Only tasks popped by the scheduler start work.
 let activeDecodes = 0;
 // Track desired URL references from sprites so we can cancel stale tasks before decoding
 const desiredUrlRefs: Map<string, number> = new Map();
@@ -63,123 +29,364 @@ function decDesiredUrl(url: string) {
   if (n <= 0) desiredUrlRefs.delete(url);
   else desiredUrlRefs.set(url, n);
 }
-type DecodeTask = {
-  blob: Blob;
+// Priority-queued decode task (by URL); supports in-place priority updates
+type TaskState = "queued" | "running";
+type PrioTask = {
   url: string;
-  resolve: (t: PIXI.Texture) => void;
-  reject: (e: any) => void;
+  priority: number; // lower is sooner
   enqAt: number;
+  state: TaskState;
+  waiters: { resolve: (t: PIXI.Texture) => void; reject: (e: any) => void }[];
+  heapIndex: number;
 };
 
-// Non-dropping decode queue with O(1) dequeue; we'll prune stale tasks on pump
-const decodeQueue: DecodeTask[] = [];
-let dqHead = 0;
-function currentDecodeLimit() {
-  return settings.decodeParallelLimit;
+class KeyedMinHeap {
+  private arr: PrioTask[] = [];
+  private pos = new Map<string, number>(); // url -> index
+  size() {
+    return this.arr.length;
+  }
+  has(url: string) {
+    return this.pos.has(url);
+  }
+  get(url: string) {
+    const i = this.pos.get(url);
+    return i === undefined ? undefined : this.arr[i];
+  }
+  push(task: PrioTask) {
+    task.heapIndex = this.arr.length;
+    this.arr.push(task);
+    this.pos.set(task.url, task.heapIndex);
+    this.siftUp(task.heapIndex);
+  }
+  popMin(): PrioTask | undefined {
+    if (!this.arr.length) return undefined;
+    const min = this.arr[0];
+    const last = this.arr.pop()!;
+    this.pos.delete(min.url);
+    min.heapIndex = -1;
+    if (this.arr.length) {
+      this.arr[0] = last;
+      last.heapIndex = 0;
+      this.pos.set(last.url, 0);
+      this.siftDown(0);
+    }
+    return min;
+  }
+  updatePriority(url: string, newPrio: number) {
+    const i = this.pos.get(url);
+    if (i === undefined) return false;
+    const n = this.arr[i];
+    if (n.priority === newPrio) return true;
+    const old = n.priority;
+    n.priority = newPrio;
+    if (newPrio < old) this.siftUp(i);
+    else this.siftDown(i);
+    return true;
+  }
+  remove(url: string) {
+    const i = this.pos.get(url);
+    if (i === undefined) return undefined;
+    const rem = this.arr[i];
+    const last = this.arr.pop()!;
+    this.pos.delete(rem.url);
+    rem.heapIndex = -1;
+    if (i < this.arr.length) {
+      this.arr[i] = last;
+      last.heapIndex = i;
+      this.pos.set(last.url, i);
+      this.fix(i);
+    }
+    return rem;
+  }
+  private less(a: number, b: number) {
+    const A = this.arr[a],
+      B = this.arr[b];
+    if (A.priority !== B.priority) return A.priority < B.priority;
+    return A.enqAt <= B.enqAt;
+  }
+  private swap(a: number, b: number) {
+    const va = this.arr[a],
+      vb = this.arr[b];
+    this.arr[a] = vb;
+    this.arr[b] = va;
+    va.heapIndex = b;
+    vb.heapIndex = a;
+    this.pos.set(va.url, b);
+    this.pos.set(vb.url, a);
+  }
+  private siftUp(i: number) {
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!this.less(i, p)) break;
+      this.swap(i, p);
+      i = p;
+    }
+  }
+  private siftDown(i: number) {
+    const n = this.arr.length;
+    while (true) {
+      let m = i;
+      const l = (i << 1) + 1,
+        r = l + 1;
+      if (l < n && this.less(l, m)) m = l;
+      if (r < n && this.less(r, m)) m = r;
+      if (m === i) break;
+      this.swap(i, m);
+      i = m;
+    }
+  }
+  private fix(i: number) {
+    if (i > 0 && this.less(i, (i - 1) >> 1)) this.siftUp(i);
+    else this.siftDown(i);
+  }
 }
 
-function scheduleDecode(blob: Blob, url: string): Promise<PIXI.Texture> {
-  return new Promise((resolve, reject) => {
-    const task: DecodeTask = {
-      blob,
-      url,
-      resolve,
-      reject,
-      enqAt: performance.now(),
-    };
-  // Enqueue at the end (FIFO). Do not drop; we'll cancel stale tasks when pumping.
-  decodeQueue.push(task);
-  const qSize = decodeQueue.length - dqHead + activeDecodes;
-  if (qSize > __dbg.qPeak) __dbg.qPeak = qSize;
-    pumpDecodeQueue();
-  });
+const decodePQ = new KeyedMinHeap();
+const tasksByUrl = new Map<string, PrioTask>();
+// Simple waiter list so workers can sleep when queue is empty
+const pqWaiters: Array<() => void> = [];
+function notifyTaskAvailable() {
+  const w = pqWaiters.shift();
+  if (w) w();
 }
-async function runDecodeTask(task: DecodeTask) {
-  activeDecodes++;
+
+// --- Diagnostics ---
+function decodeDbgOn() {
   try {
+    return localStorage.getItem("decodeDbg") === "1";
+  } catch {
+    return false;
+  }
+}
+function dlog(...args: any[]) {
+  if (decodeDbgOn()) console.log("[decode]", ...args);
+}
+// Quick dump of scheduler state
+(function attachDecodeDump() {
+  try {
+    (window as any).__dumpDecode = () => {
+      const queued: any[] = [];
+      // Reflect heap contents via tasksByUrl filtered by state
+      tasksByUrl.forEach((t) => {
+        if (t.state === "queued")
+          queued.push({ url: t.url, prio: t.priority, enqAt: t.enqAt });
+      });
+      const inflight: string[] = [];
+      inflightTex.forEach((_, k) => inflight.push(k));
+      console.log("[decode dump]", {
+        activeDecodes,
+        pqSize: decodePQ.size(),
+        queuedCount: queued.length,
+        inflightCount: inflight.length,
+        queued: queued.slice(0, 20),
+        inflight: inflight.slice(0, 20),
+      });
+    };
+  } catch {}
+})();
+function currentDecodeLimit() {
+  // Hard cap at 16 per user requirement; also respect configured cap
+  return Math.min(settings.decodeParallelLimit, 16);
+}
+
+function getViewRect() {
+  const v: any = (window as any).__mtgView;
+  if (!v) return null;
+  return {
+    left: v.left,
+    top: v.top,
+    right: v.right,
+    bottom: v.bottom,
+    padNear: v.padNear ?? 300,
+    cx: v.cx ?? 0,
+    cy: v.cy ?? 0,
+  };
+}
+
+function computePriorityForSprite(sprite: CardSprite): number {
+  const vr = getViewRect();
+  if (!vr) return 50;
+  const x1 = sprite.x,
+    y1 = sprite.y,
+    x2 = x1 + sprite.width,
+    y2 = y1 + sprite.height;
+  const inView = !(
+    x2 < vr.left ||
+    x1 > vr.right ||
+    y2 < vr.top ||
+    y1 > vr.bottom
+  );
+  if (inView) {
+    const cx = x1 + sprite.width * 0.5,
+      cy = y1 + sprite.height * 0.5;
+    const d2 = (cx - vr.cx) * (cx - vr.cx) + (cy - vr.cy) * (cy - vr.cy);
+    const bucket = Math.min(9, Math.floor(d2 / 250000));
+    return bucket;
+  }
+  const pad = vr.padNear;
+  const near = !(
+    x2 < vr.left - pad ||
+    x1 > vr.right + pad ||
+    y2 < vr.top - pad ||
+    y1 > vr.bottom + pad
+  );
+  return near ? 10 : 100;
+}
+
+function enqueueOrUpdate(url: string, priority: number): Promise<PIXI.Texture> {
+  // Serve from cache immediately
+  const cached = textureCache.get(url);
+  if (cached && isTextureUsable(cached.tex)) {
+    cached.lastUsed = performance.now();
+    return Promise.resolve(cached.tex);
+  }
+  const existing = tasksByUrl.get(url);
+  if (existing) {
+    if (existing.state === "queued") {
+      decodePQ.updatePriority(url, priority);
+      existing.priority = priority;
+    }
+    return new Promise<PIXI.Texture>((resolve, reject) => {
+      existing.waiters.push({ resolve, reject });
+    });
+  }
+  const task: PrioTask = {
+    url,
+    priority: Number.isFinite(priority) ? priority : 50,
+    enqAt: performance.now(),
+    state: "queued",
+    waiters: [],
+    heapIndex: -1,
+  };
+  tasksByUrl.set(url, task);
+  decodePQ.push(task);
+  // Track queue peak size for diagnostics
+  const qSize = decodePQ.size() + activeDecodes;
+  dlog("enqueue", {
+    url,
+    prio: task.priority,
+    qSize,
+    desiredRefs: desiredUrlRefs.get(url) || 0,
+  });
+  const p = new Promise<PIXI.Texture>((resolve, reject) =>
+    task.waiters.push({ resolve, reject }),
+  );
+  ensureDecodeWorkers();
+  notifyTaskAvailable();
+  return p;
+}
+async function runDecodeTask(task: PrioTask) {
+  activeDecodes++;
+  dlog("start", { url: task.url, activeDecodes });
+  try {
+    // Fetch & decode only when running (strict concurrency)
+    const ci = await getCachedImage(task.url);
+    dlog("fetched", {
+      url: task.url,
+      source: (ci as any).source,
+      size: (ci as any).size,
+      hasBlob: !!ci.blob,
+    });
+    let blob = ci.blob as Blob | undefined;
+    if (!blob) {
+      // Fallback: fetch objectURL into blob (should be fast; objectURL is memory-local)
+      try {
+        const resp = await fetch(ci.objectURL);
+        blob = await resp.blob();
+        dlog("blobFromObjectURL", { url: task.url, size: blob.size });
+      } catch (e) {
+        dlog("blobFetchFail", { url: task.url, err: String(e) });
+        throw e;
+      }
+    }
     const t0 = performance.now();
-    const source = await (window as any).createImageBitmap(task.blob);
+    dlog("decodeBegin", { url: task.url, bytes: blob.size });
+    const source = await (window as any).createImageBitmap(blob);
     const tex = PIXI.Texture.from(source as any);
     const bt = tex.source;
     if (bt.style) {
       bt.style.scaleMode = "linear";
     }
-    task.resolve(tex);
-    const dt = performance.now() - t0;
-    __dbg.decode.count += 1;
-    __dbg.decode.totalMs += dt;
-    if (dt > __dbg.decode.maxMs) __dbg.decode.maxMs = dt;
-  } catch (e) {
-    task.reject(e);
-  } finally {
-    activeDecodes--;
-    pumpDecodeQueue();
-  }
-}
-function pumpDecodeQueue() {
-  const limit = currentDecodeLimit();
-  while (activeDecodes < limit && dqHead < decodeQueue.length) {
-    // Dequeue from the front (oldest task first)
-    const task = decodeQueue[dqHead++];
-    if (!task) continue;
-    // Compact the queue array periodically to avoid unbounded growth in memory
-    if (dqHead > 1024 && dqHead > (decodeQueue.length >> 1)) {
-      decodeQueue.splice(0, dqHead);
-      dqHead = 0;
-    }
-    // If texture already cached, resolve immediately and skip decode
-    const cached = textureCache.get(task.url);
-    if (cached && isTextureUsable(cached.tex)) {
-      cached.lastUsed = performance.now();
-      task.resolve(cached.tex);
-      continue;
-    }
-    // If no longer desired by any sprite, cancel without decoding
-    if (!desiredUrlRefs.has(task.url)) {
-      task.reject(new Error("decode canceled: no longer desired"));
-      continue;
-    }
-    runDecodeTask(task);
-  }
-}
-
-export function getDecodeQueueSize() {
-  return (decodeQueue.length - dqHead) + activeDecodes;
-}
-
-export async function loadTextureFromCachedURL(
-  url: string,
-): Promise<PIXI.Texture> {
-  if (textureCache.has(url)) return textureCache.get(url)!.tex;
-  if (inflightTex.has(url)) return inflightTex.get(url)!;
-  const p = (async () => {
-    const ci = await getCachedImage(url);
-    // Reuse existing blob (preferred) else fall back to fetching objectURL (edge legacy path)
-    let blob = ci.blob;
-    if (!blob) {
-      // Fallback: fetch once (should be memory-local since object URL); avoid double network due to persistence layer guarantee.
-      const resp = await fetch(ci.objectURL);
-      blob = await resp.blob();
-    }
-    const tex = await scheduleDecode(blob, url);
+    // Populate cache and resolve all waiters
     const bytes = estimateTextureBytes(tex);
-    textureCache.set(url, {
+    textureCache.set(task.url, {
       tex,
       level: 0,
       refs: 0,
       bytes,
       lastUsed: performance.now(),
-      url,
+      url: task.url,
     });
     totalTextureBytes += bytes;
-    return tex;
-  })();
-  inflightTex.set(url, p);
-  try {
-    return await p;
+    // Wake all waiters
+    for (const w of task.waiters) w.resolve(tex);
+    const dt = performance.now() - t0;
+    dlog("done", {
+      url: task.url,
+      ms: dt.toFixed(1),
+      activeDecodes: activeDecodes - 1,
+    });
+  } catch (e) {
+    dlog("error", { url: task.url, err: String(e) });
+    for (const w of task.waiters) w.reject(e);
   } finally {
-    inflightTex.delete(url);
+    activeDecodes--;
+    inflightTex.delete(task.url);
+    tasksByUrl.delete(task.url);
   }
+}
+async function workerLoop() {
+  while (true) {
+    // throttle by worker count; block when queue empty
+    const task: PrioTask | undefined = decodePQ.popMin();
+    if (!task) {
+      // sleep until a task is enqueued
+      dlog("sleep");
+      await new Promise<void>((res) => pqWaiters.push(res));
+      dlog("wake");
+      continue;
+    }
+    // If no longer desired, cancel
+    if (!desiredUrlRefs.has(task.url)) {
+      dlog("cancelStale", { url: task.url });
+      tasksByUrl.delete(task.url);
+      for (const w of task.waiters)
+        w.reject(new Error("decode canceled: no longer desired"));
+      continue;
+    }
+    task.state = "running";
+    const runningPromise = runDecodeTask(task);
+    inflightTex.set(
+      task.url,
+      runningPromise as unknown as Promise<PIXI.Texture>,
+    );
+    try {
+      await runningPromise;
+    } catch {
+      // swallow; individual waiters already rejected
+    }
+    // Loop to pick up next task
+  }
+}
+
+let workersStarted = false;
+function ensureDecodeWorkers() {
+  if (workersStarted) return;
+  workersStarted = true;
+  const n = currentDecodeLimit();
+  for (let i = 0; i < n; i++) workerLoop();
+}
+
+export function getDecodeQueueSize() {
+  return decodePQ.size() + activeDecodes;
+}
+
+export async function loadTextureFromCachedURL(
+  url: string,
+  priority: number = 50,
+): Promise<PIXI.Texture> {
+  return enqueueOrUpdate(url, priority);
 }
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
@@ -229,7 +436,7 @@ function buildTexture(
   return tex;
 }
 
-function ensureCardTextures(renderer: PIXI.Renderer) {
+function ensureCardBaseTextures(renderer: PIXI.Renderer) {
   if (cachedTextures) return cachedTextures;
   const w = 100,
     h = 140;
@@ -253,7 +460,7 @@ function ensureCardTextures(renderer: PIXI.Renderer) {
 }
 
 export function createCardSprite(opts: CardVisualOptions) {
-  const textures = ensureCardTextures(opts.renderer);
+  const textures = ensureCardBaseTextures(opts.renderer);
   const sp = new PIXI.Sprite(textures.base) as CardSprite;
   sp.__id = opts.id;
   sp.__baseZ = opts.z;
@@ -263,15 +470,8 @@ export function createCardSprite(opts: CardVisualOptions) {
   sp.zIndex = sp.__baseZ;
   sp.eventMode = "static";
   sp.cursor = "pointer";
-  // Enable Pixi's built-in culling for render skipping when outside viewport.
-  (sp as any).cullable = true;
-  (sp as any).cullArea = new PIXI.Rectangle(0, 0, 100, 140);
-  // If card already provided and double sided, initialize face index + badge
-  if (sp.__card && isDoubleSided(sp.__card)) {
-    sp.__faceIndex = 0;
-    ensureDoubleSidedBadge(sp);
-  }
-  // Use default (linear) scaling for image clarity; we will supply higher-res textures when zoomed.
+  // sp.cullable = true;
+  // sp.cullArea = new PIXI.Rectangle(0, 0, 100, 140);
   return sp;
 }
 
@@ -283,74 +483,6 @@ function estimateTextureBytes(tex: PIXI.Texture): number {
   return 0;
 }
 
-function enforceTextureBudget() {
-  if (!settings.allowEvict) return; // user opted out of texture eviction
-  const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
-  if (!isFinite(budgetBytes)) return;
-  // Watermarks: when we exceed highWater, evict until we reach lowWater to create headroom
-  const pctLow = 0.85;
-  const pctHigh = 0.92;
-  const lowWater = Math.floor(budgetBytes * pctLow);
-  const highWater = Math.floor(budgetBytes * pctHigh);
-  if (totalTextureBytes <= highWater) return;
-  const t0 = performance.now();
-  let droppedBytes = 0;
-  let droppedCount = 0;
-  const candidates: TexCacheEntry[] = [];
-  textureCache.forEach((ent) => {
-    if (ent.refs === 0) candidates.push(ent);
-  });
-  if (!candidates.length) return;
-  candidates.sort((a, b) => a.lastUsed - b.lastUsed);
-  const now = performance.now();
-  for (const ent of candidates) {
-    if (totalTextureBytes <= lowWater) break;
-    // Safety: only evict entries that have been idle long enough to avoid races
-    if (now - ent.lastUsed < 1200) continue;
-    // Queue for safe end-of-frame destruction instead of immediate destroy.
-    queueTextureForDestroy(ent);
-    droppedBytes += ent.bytes;
-    droppedCount++;
-  }
-  __dbg.evict.count += droppedCount;
-  __dbg.evict.bytes += droppedBytes;
-  __dbg.evict.lastMs = performance.now() - t0;
-  __dbg.totalBytes = totalTextureBytes;
-  __dbg.budgetMB = settings.gpuBudgetMB;
-}
-
-export function enforceTextureBudgetNow() {
-  scheduleEnforceTextureBudget();
-}
-
-// --- Safe destruction queue (flushed after render) ---
-const __pendingDestroyList: TexCacheEntry[] = [];
-const __pendingDestroySet: Set<string> = new Set();
-function queueTextureForDestroy(ent: TexCacheEntry) {
-  // Only queue unreferenced entries and avoid duplicates
-  if (ent.refs > 0) return;
-  if (__pendingDestroySet.has(ent.url)) return;
-  __pendingDestroySet.add(ent.url);
-  __pendingDestroyList.push(ent);
-}
-
-export function flushPendingTextureDestroys() {
-  if (!__pendingDestroyList.length) return;
-  for (let i = 0; i < __pendingDestroyList.length; i++) {
-    const ent = __pendingDestroyList[i];
-    // If entry was re-adopted, drop it from queue and allow re-queue later
-    if (ent.refs > 0) {
-      __pendingDestroySet.delete(ent.url);
-      continue;
-    }
-    textureCache.delete(ent.url);
-    __pendingDestroySet.delete(ent.url);
-    totalTextureBytes -= ent.bytes;
-  }
-  // Reset queue to survivors (none in current strategy)
-  __pendingDestroyList.length = 0;
-}
-
 function isTextureUsable(tex: PIXI.Texture | null | undefined): boolean {
   if (!tex) return false;
   const bt: any = (tex as any).source;
@@ -360,95 +492,6 @@ function isTextureUsable(tex: PIXI.Texture | null | undefined): boolean {
   return true;
 }
 
-// Public: reduce GPU usage by demoting offscreen sprites until under budget.
-// Backoff state to avoid scanning all sprites every frame when over budget but no demotions are possible
-let __lastBudgetCheckAt = 0;
-let __lastBudgetHadCandidates = true;
-export function enforceGpuBudgetForSprites(sprites: CardSprite[]) {
-  const budgetBytes = settings.gpuBudgetMB * 1024 * 1024;
-  if (!isFinite(budgetBytes) || totalTextureBytes <= budgetBytes) return;
-  const now = performance.now();
-  const t0 = now;
-  // If we were just over budget and previously found no candidates to demote (e.g., all visible),
-  // skip doing another full O(n) scan for a short interval to prevent permanent per-frame cost.
-  if (!__lastBudgetHadCandidates && now - __lastBudgetCheckAt < 1000) return;
-  // Build candidate list: offscreen sprites holding a texture, prefer highest quality and least-recently-used textures
-  const view: any = (window as any).__mtgView;
-  const candidates = sprites.filter((s) => {
-    if (s.visible) return false;
-    if (!(s as any).__currentTexUrl) return false;
-    // If hidden by group overlay, allow demotion after a grace period to avoid permanent VRAM pressure at macro zoom.
-    if ((s as any).__groupOverlayActive) {
-      const hidAt: number | undefined = (s as any).__hiddenAt;
-      if (!hidAt) return false;
-      // Grace window when overlay first activates; default ~3s, adjustable via localStorage("overlayDemoteMs").
-      let overlayMs = 3000;
-      const v = Number(localStorage.getItem("overlayDemoteMs") || "");
-      if (Number.isFinite(v) && v >= 0) overlayMs = v;
-      if (performance.now() - hidAt < overlayMs) return false;
-    }
-    // Grace period: if just hidden (e.g., due to scroll/zoom), give ~800ms before demotion to avoid churn.
-    const hidAt: number | undefined = (s as any).__hiddenAt;
-    if (hidAt && now - hidAt < 800) return false;
-    // Protect cards near the viewport bounds from demotion so they can enter smoothly
-    if (view) {
-      const pad = (view.padNear ?? 300) * 1.25; // a bit larger than upgrade near-pad
-      const x1 = s.x,
-        y1 = s.y,
-        x2 = x1 + s.width,
-        y2 = y1 + s.height;
-      const nearViewport =
-        x2 >= view.left - pad &&
-        x1 <= view.right + pad &&
-        y2 >= view.top - pad &&
-        y1 <= view.bottom + pad;
-      if (nearViewport) return false;
-    }
-    return true;
-  });
-  __lastBudgetHadCandidates = candidates.length > 0;
-  __lastBudgetCheckAt = now;
-  candidates.sort((a, b) => {
-    if (view) {
-      const acx = a.x + a.width * 0.5,
-        acy = a.y + a.height * 0.5;
-      const bcx = b.x + b.width * 0.5,
-        bcy = b.y + b.height * 0.5;
-      const ad2 =
-        (acx - view.cx) * (acx - view.cx) + (acy - view.cy) * (acy - view.cy);
-      const bd2 =
-        (bcx - view.cx) * (bcx - view.cx) + (bcy - view.cy) * (bcy - view.cy);
-      return bd2 - ad2; // larger distance first
-    }
-    return 0;
-  });
-  // Important: demoting doesn't immediately lower totalTextureBytes (we release refs first,
-  // destruction happens in enforceTextureBudget). Track an estimated freed byte count so we stop early.
-  let freedEstimate = 0;
-  let downCount = 0;
-  for (const s of candidates) {
-    if (totalTextureBytes - freedEstimate <= budgetBytes) break;
-    const url: any = (s as any).__currentTexUrl;
-    const ent = url ? textureCache.get(url) : undefined;
-    if (ent) freedEstimate += ent.bytes;
-    // Prefer downgrading to a lower-tier texture over full placeholder eviction
-    // const downgraded = demote
-    // if (!downgraded)  demote to placeholder
-    downCount++;
-  }
-  // Final sweep of unreferenced textures (LRU) if still over
-  scheduleEnforceTextureBudget();
-  const diag: any = ((window as any).__frameDiag ||= {});
-  diag.down = (diag.down || 0) + downCount;
-  const t1 = performance.now();
-  diag.budgetMs = (diag.budgetMs || 0) + (t1 - t0);
-}
-
-export function ensureCardImage(sprite: CardSprite) {
-  // Delegate to tiered loader with coalescing to avoid repeated scheduling
-  if (sprite.__imgLoaded) return;
-  ensureTextureTier(sprite, 0);
-}
 export function getInflightTextureCount() {
   return inflightTex.size;
 }
@@ -459,26 +502,12 @@ export function getTextureBudgetStats() {
     0,
     totalTextureBytes - settings.gpuBudgetMB * 1024 * 1024,
   );
-  const avgDecode = __dbg.decode.count
-    ? __dbg.decode.totalMs / __dbg.decode.count
-    : 0;
   return {
     totalTextureMB: totalTextureBytes / 1048576,
     budgetMB: settings.gpuBudgetMB,
     overBudgetMB: over / 1048576,
     cacheEntries: textureCache.size,
     inflight: inflightTex.size,
-    decode: {
-      count: __dbg.decode.count,
-      avgMs: avgDecode,
-      maxMs: __dbg.decode.maxMs,
-    },
-    qPeak: __dbg.qPeak,
-    evict: {
-      count: __dbg.evict.count,
-      bytesMB: __dbg.evict.bytes / 1048576,
-      lastMs: __dbg.evict.lastMs,
-    },
   };
 }
 
@@ -551,18 +580,28 @@ function forcePlaceholder(sprite: CardSprite) {
   sprite.__imgLoaded = false;
   sprite.__imgLoading = false;
   sprite.__qualityLevel = 0;
-  updateCardSpriteAppearance(sprite, SelectionStore.state.cardIds.has(sprite.__id));
+  updateCardSpriteAppearance(
+    sprite,
+    SelectionStore.state.cardIds.has(sprite.__id),
+  );
 }
 
 export function ensureTextureTier(
   sprite: CardSprite,
-  level: 0 | 1 | 2
+  level: 0 | 1 | 2,
 ): "noop" | "swap" | "scheduled" | "placeholder" {
-  const target: 0 | 1 | 2 = (settings.disablePngTier && level === 2 ? 1 : level) as 0 | 1 | 2;
+  const target: 0 | 1 | 2 = (
+    settings.disablePngTier && level === 2 ? 1 : level
+  ) as 0 | 1 | 2;
   const wantUrl = resolveTierUrl(sprite, target);
   const curUrl: string | undefined = (sprite as any).__currentTexUrl;
   const curQ = sprite.__qualityLevel ?? -1;
-  if (wantUrl && curUrl === wantUrl && curQ >= target && isTextureUsable(sprite.texture)) {
+  if (
+    wantUrl &&
+    curUrl === wantUrl &&
+    curQ >= target &&
+    isTextureUsable(sprite.texture)
+  ) {
     // Clear any stale pending if we already have what we want
     if (sprite.__pendingUrl) {
       // Cancel any pending desire; we're satisfied
@@ -584,12 +623,22 @@ export function ensureTextureTier(
         sprite.__pendingLevel = undefined as any;
         sprite.__pendingPromise = null;
       }
-      scheduleEnforceTextureBudget();
       return "swap";
     }
-    // If a pending request for the same desired URL exists, don't reschedule per frame
-    if (sprite.__pendingUrl === wantUrl && sprite.__pendingLevel === target && sprite.__pendingPromise) {
-      return "scheduled";
+    // If a pending request for the same desired URL exists, update its priority and don't reschedule per frame
+    if (
+      sprite.__pendingUrl === wantUrl &&
+      sprite.__pendingLevel === target &&
+      sprite.__pendingPromise
+    ) {
+      const prio = computePriorityForSprite(sprite);
+      // Update queue priority for the pending URL
+      const t = tasksByUrl.get(wantUrl);
+      if (t && t.state === "queued") {
+        decodePQ.updatePriority(wantUrl, prio);
+        t.priority = prio;
+      }
+      return "placeholder";
     }
     // Record new desired and schedule a one-time load; coalesce via inflightTex in loader
     if (sprite.__pendingUrl && sprite.__pendingUrl !== wantUrl) {
@@ -598,14 +647,17 @@ export function ensureTextureTier(
     }
     sprite.__pendingUrl = wantUrl;
     sprite.__pendingLevel = target;
-    const p = loadTextureFromCachedURL(wantUrl);
-    sprite.__pendingPromise = p;
-    // Mark desire so queue won't cancel this as stale; also mark loading for base-load
+    const prio = computePriorityForSprite(sprite);
+    // Mark desire before enqueue to avoid race with worker cancel
     incDesiredUrl(wantUrl);
+    const p = loadTextureFromCachedURL(wantUrl, prio);
+    sprite.__pendingPromise = p;
+    // Mark loading for base-load
     if (!sprite.__imgLoaded) sprite.__imgLoading = true;
     p.then((tex) => {
       // If desired changed while loading, skip adoption (newer call will handle)
-      if (sprite.__pendingUrl !== wantUrl || sprite.__pendingLevel !== target) return;
+      if (sprite.__pendingUrl !== wantUrl || sprite.__pendingLevel !== target)
+        return;
       const ent = textureCache.get(wantUrl);
       if (ent) {
         adoptCachedTexture(sprite, wantUrl, ent, target);
@@ -629,7 +681,6 @@ export function ensureTextureTier(
       sprite.__pendingUrl = undefined;
       sprite.__pendingLevel = undefined as any;
       sprite.__imgLoading = false;
-      scheduleEnforceTextureBudget();
     }).catch(() => {
       // Clear pending on failure; allow future attempts
       sprite.__pendingPromise = null;
@@ -651,7 +702,6 @@ export function ensureTextureTier(
         sprite.__pendingLevel = undefined as any;
         sprite.__pendingPromise = null;
       }
-      scheduleEnforceTextureBudget();
       return "swap";
     }
   }
@@ -665,7 +715,9 @@ export function ensureTextureTier(
   return "placeholder";
 }
 
-export function ensureLowOrPlaceholder(sprite: CardSprite): "low" | "placeholder" | "noop" {
+export function ensureLowOrPlaceholder(
+  sprite: CardSprite,
+): "low" | "placeholder" | "noop" {
   const curQ = sprite.__qualityLevel ?? -1;
   const curUrl: string | undefined = (sprite as any).__currentTexUrl;
   if (curQ === 0 && curUrl && isTextureUsable(sprite.texture)) return "noop";
@@ -674,8 +726,42 @@ export function ensureLowOrPlaceholder(sprite: CardSprite): "low" | "placeholder
     const ent = textureCache.get(url0);
     if (ent) {
       adoptCachedTexture(sprite, url0, ent, 0);
-      scheduleEnforceTextureBudget();
       return "low";
+    }
+    // Not cached: schedule small with priority so visible placeholders upgrade quickly
+    const prio = computePriorityForSprite(sprite);
+    if (sprite.__pendingUrl !== url0 || !sprite.__pendingPromise) {
+      if (sprite.__pendingUrl && sprite.__pendingUrl !== url0)
+        decDesiredUrl(sprite.__pendingUrl);
+      sprite.__pendingUrl = url0;
+      sprite.__pendingLevel = 0;
+      // Mark desire before enqueue to avoid race with worker cancel
+      incDesiredUrl(url0);
+      const p = loadTextureFromCachedURL(url0, prio);
+      sprite.__pendingPromise = p;
+      sprite.__imgLoading = true;
+      p.then(() => {
+        const ent2 = textureCache.get(url0);
+        if (ent2) adoptCachedTexture(sprite, url0, ent2, 0);
+        sprite.__pendingPromise = null;
+        decDesiredUrl(url0);
+        sprite.__pendingUrl = undefined;
+        sprite.__pendingLevel = undefined as any;
+        sprite.__imgLoading = false;
+      }).catch(() => {
+        sprite.__pendingPromise = null;
+        decDesiredUrl(url0);
+        sprite.__imgLoading = false;
+      });
+      return "placeholder";
+    } else {
+      // Update priority if already pending
+      const t = tasksByUrl.get(url0);
+      if (t && t.state === "queued") {
+        decodePQ.updatePriority(url0, prio);
+        t.priority = prio;
+      }
+      return "placeholder";
     }
   }
   forcePlaceholder(sprite);
@@ -697,165 +783,6 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
   }
   // Placeholder: only two states now (base/selected); drop in-group variants
   s.texture = selected ? cachedTextures.selected : cachedTextures.base;
-}
-
-// --- Double-sided (Reversible) Badge ---
-// Only treat true double-faced transform style cards as reversible for UI badge.
-// Exclude adventure, split, aftermath, flip etc. which have multiple faces in data but not a reversible back face.
-const TRUE_DFC_LAYOUTS = new Set([
-  "transform",
-  "modal_dfc",
-  "double_faced_token",
-  "battle",
-]);
-function isDoubleSided(card: any): boolean {
-  if (!card) return false;
-  const layout = (card.layout || "").toLowerCase();
-  if (TRUE_DFC_LAYOUTS.has(layout)) return true;
-  // Fallback: exactly two fully imaged faces, and not in excluded layouts
-  if (
-    Array.isArray(card.card_faces) &&
-    card.card_faces.length === 2 &&
-    card.card_faces.every((f: any) => f.image_uris)
-  ) {
-    // Exclude non-reversible multi-face layouts (including meld components)
-    if (/^(adventure|split|aftermath|flip|prototype|meld)$/.test(layout))
-      return false;
-    return true;
-  }
-  return false;
-}
-
-function ensureDoubleSidedBadge(sprite: CardSprite) {
-  if (!isDoubleSided(sprite.__card)) {
-    if (sprite.__doubleBadge) {
-      sprite.__doubleBadge.destroy();
-      sprite.__doubleBadge = undefined;
-    }
-    return;
-  }
-  const displayW = 100;
-  // Quarter the previous linear size: radius 18 -> ~4.5 (round to 5)
-  const targetRadius = 5;
-  const margin = 4;
-  const verticalOffset = 12; // push badge lower from top edge
-  if (!sprite.__doubleBadge) {
-    const wrap = new PIXI.Container();
-    const g = new PIXI.Graphics();
-    g.circle(0, 0, targetRadius)
-      .fill({ color: Colors.badgeBg(), alpha: 0.9 })
-      .stroke({ color: Colors.badgeStroke(), width: 2 });
-    // Smaller arrows scaled to new radius
-    g.moveTo(-2, -1)
-      .lineTo(0, -5)
-      .lineTo(2, -1)
-      .stroke({ color: Colors.badgeArrows(), width: 2 });
-    g.moveTo(2, 1)
-      .lineTo(0, 5)
-      .lineTo(-2, 1)
-      .stroke({ color: Colors.badgeArrows(), width: 2 });
-    wrap.addChild(g);
-    wrap.eventMode = "static";
-    wrap.cursor = "pointer";
-    wrap.alpha = 0.4;
-    wrap.on("pointerdown", (e: any) => {
-      e.stopPropagation();
-      flipCardFace(sprite);
-    });
-    wrap.on("mouseenter", () => {
-      wrap.alpha = 0.9;
-    });
-    wrap.on("mouseleave", () => {
-      wrap.alpha = 0.4;
-    });
-    sprite.__doubleBadge = wrap;
-    sprite.addChild(wrap);
-  }
-  const badge = sprite.__doubleBadge!;
-  // Neutralize parent scaling so badge appears fixed relative to card's 100x140 logical size.
-  const sx = sprite.scale.x || 1;
-  const sy = sprite.scale.y || 1;
-  badge.scale.set(1 / sx, 1 / sy);
-  // Desired displayed position (top-right)
-  const desiredX = displayW - (targetRadius + margin);
-  const desiredY = targetRadius + margin + verticalOffset;
-  badge.x = desiredX / sx;
-  badge.y = desiredY / sy;
-  badge.zIndex = 1000000;
-  if (sprite.__outline) sprite.__outline.zIndex = 999999;
-  (sprite as any).sortableChildren = true;
-}
-
-// Maintain roughly screen-constant badge size: call every frame with world scale
-// (Badge now scales with card; no inverse scaling function needed.)
-
-function flipCardFace(sprite: CardSprite) {
-  const card = sprite.__card;
-  if (!card || !isDoubleSided(card)) return;
-  const faces = card.card_faces;
-  if (!Array.isArray(faces) || faces.length < 2) return;
-  sprite.__faceIndex = sprite.__faceIndex ? 0 : 1;
-  // Bump generation to invalidate any in-flight loads for the previous face
-  (sprite as any).__loadGen = ((sprite as any).__loadGen ?? 0) + 1;
-  // Reset state so fresh load occurs (ephemeral; no persistence)
-  sprite.__qualityLevel = 0;
-  sprite.__imgLoaded = false;
-  sprite.__imgUrl = undefined;
-  // Try to apply a cached higher-quality texture immediately for the new face based on current scale
-  try {
-    const scale = (sprite.parent as any)?.scale?.x || 1;
-    const faceIdx = sprite.__faceIndex || 0;
-    const face = (card.card_faces && card.card_faces[faceIdx]) || null;
-    const dpr = globalThis.devicePixelRatio || 1;
-    const pxHeight = 140 * scale * dpr;
-    let desired = 0;
-    if (pxHeight > 140) desired = 2;
-    else if (pxHeight > 90) desired = 1;
-    if (settings.disablePngTier && desired === 2) desired = 1;
-    const url =
-      desired === 2
-        ? face?.image_uris?.png ||
-          card.image_uris?.png ||
-          face?.image_uris?.large ||
-          card.image_uris?.large
-        : desired === 1
-          ? face?.image_uris?.normal ||
-            card.image_uris?.normal ||
-            face?.image_uris?.large ||
-            card.image_uris?.large
-          : face?.image_uris?.small ||
-            card.image_uris?.small ||
-            face?.image_uris?.normal ||
-            card.image_uris?.normal;
-    if (url && textureCache.has(url)) {
-      const ent = textureCache.get(url)!;
-      ent.refs++;
-      ent.lastUsed = performance.now();
-      ent.level = Math.max(ent.level, desired);
-      const prevUrl: any = (sprite as any).__currentTexUrl;
-      if (prevUrl && prevUrl !== url) {
-        const pe = textureCache.get(prevUrl);
-        if (pe) pe.refs = Math.max(0, pe.refs - 1);
-      }
-      (sprite as any).__currentTexUrl = url;
-      sprite.texture = ent.tex;
-      sprite.width = 100;
-      sprite.height = 140;
-      sprite.__imgLoaded = true;
-      sprite.__qualityLevel = desired;
-    } else {
-      // Load small immediately, then promote without waiting an extra frame
-      ensureCardImage(sprite);
-      // updateCardTextureForScale(sprite, scale);
-    }
-  } catch {
-    ensureCardImage(sprite);
-    requestAnimationFrame(() => {
-      const scale = (sprite.parent as any)?.scale?.x || 1;
-      // updateCardTextureForScale(sprite, scale);
-    });
-  }
-  ensureDoubleSidedBadge(sprite); // reposition after flip
 }
 
 export function attachCardInteractions(
