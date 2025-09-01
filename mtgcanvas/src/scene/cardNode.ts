@@ -68,10 +68,7 @@ function currentDecodeLimit() {
   return settings.decodeParallelLimit;
 }
 
-function scheduleDecode(
-  blob: Blob,
-  url: string,
-): Promise<PIXI.Texture> {
+function scheduleDecode(blob: Blob, url: string): Promise<PIXI.Texture> {
   return new Promise((resolve, reject) => {
     const task: DecodeTask = {
       blob,

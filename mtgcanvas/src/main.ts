@@ -13,7 +13,7 @@ import {
   attachCardInteractions,
   type CardSprite,
   ensureCardImage,
- // updateCardTextureForScale,
+  // updateCardTextureForScale,
   getHiResQueueLength,
   getInflightTextureCount,
   enforceGpuBudgetForSprites,
@@ -6249,10 +6249,10 @@ const splashEl = document.getElementById("splash");
       const sW = s.width;
       const sH = s.height;
       const inView =
-           s.x + sW >= view.left
-        && s.x <= view.right
-        && s.y + sH >= view.top
-        && s.y <= view.bottom;
+        s.x + sW >= view.left &&
+        s.x <= view.right &&
+        s.y + sH >= view.top &&
+        s.y <= view.bottom;
       if (!inView) continue;
       if (!s.__imgLoaded) {
         if ((s as any).__groupOverlayActive) continue;
