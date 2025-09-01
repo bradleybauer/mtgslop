@@ -6158,41 +6158,6 @@ const splashEl = document.getElementById("splash");
 
   // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
   let last = performance.now();
-  // Image loader
-  function loadVisibleImages() {
-    const len = sprites.length;
-    if (!len) return;
-    let loaded = 0;
-    const scale = world.scale.x;
-    // Iterate across all sprites once per frame (starting from the rolling cursor) and process those in view
-    const view: any = (window as any).__mtgView;
-    if (!view) return;
-    for (const s of sprites) {
-      if (!s.__card) continue;
-      // Use sprite's current logical size (world units) in case card dimensions differ from global defaults
-      const sW = s.width;
-      const sH = s.height;
-      const inView =
-        s.x + sW >= view.left &&
-        s.x <= view.right &&
-        s.y + sH >= view.top &&
-        s.y <= view.bottom;
-      if (!inView) continue;
-      if (!s.__imgLoaded) {
-        if ((s as any).__groupOverlayActive) continue;
-        if (!s.visible) {
-          continue;
-        }
-        ensureCardImage(s);
-        loaded += 1;
-        const d: any = ((window as any).__frameDiag ||= {});
-        d.load = (d.load || 0) + 1;
-      }
-    }
-    const d: any = ((window as any).__frameDiag ||= {});
-    d.loadLoaded = (d.loadLoaded || 0) + loaded;
-  }
-
   // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
   app.ticker.add(() => {
     const now = performance.now();
@@ -6255,9 +6220,9 @@ const splashEl = document.getElementById("splash");
         padFar,
       };
     }
-    loadVisibleImages();
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
+    // upgrade 
     {
       const view: any = (window as any).__mtgView;
       if (view) {
