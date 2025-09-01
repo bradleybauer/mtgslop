@@ -13,13 +13,10 @@ import {
   attachCardInteractions,
   type CardSprite,
   ensureCardImage,
-  // updateCardTextureForScale,
-  getHiResQueueLength,
   getInflightTextureCount,
   enforceGpuBudgetForSprites,
   enforceTextureBudgetNow,
   getDecodeQueueSize,
-  getHiResQueueDiagnostics,
   getDecodeQueueStats,
   getTextureBudgetStats,
   flushPendingTextureDestroys,
@@ -3853,9 +3850,6 @@ const splashEl = document.getElementById("splash");
       })();
   // Quick debug toggles surfaced to window
   (window as any).__imgDebug = (on: boolean) => enableImageCacheDebug(!!on);
-  (window as any).__dumpHiRes = () => {
-    console.log("[HiRes dump]", getHiResQueueDiagnostics());
-  };
   (window as any).__dumpDecodeQ = () => {
     console.log("[DecodeQ dump]", getDecodeQueueStats());
   };
@@ -3883,11 +3877,9 @@ const splashEl = document.getElementById("splash");
       if (q === 0) q0++;
       else if (q === 1) q1++;
       else if (q === 2) q2++;
-      if (s.__hiResLoading || s.__imgLoading) loading++;
       if (s.__imgLoaded && q < targetMaxLevel) pending++;
     }
     const decodeQ = getDecodeQueueStats?.();
-    const hi = getHiResQueueDiagnostics?.();
     const tex = getTextureBudgetStats?.();
     const mem: any = (performance as any).memory;
     const jsMB = mem ? mem.usedJSHeapSize / 1048576 : undefined;
@@ -3906,10 +3898,8 @@ const splashEl = document.getElementById("splash");
       counts: { cards: sprites.length, visible: vis, groups: groups.size },
       quality: { small: q0, mid: q1, hi: q2, loading, pending },
       decodeQ,
-      hiRes: hi,
       texture: tex,
       inflight: getInflightTextureCount(),
-      hiResQueueLen: getHiResQueueLength(),
       flags,
       ops,
       jsHeapMB: jsMB,
@@ -4022,7 +4012,6 @@ const splashEl = document.getElementById("splash");
       if (q === 0) q0++;
       else if (q === 1) q1++;
       else if (q === 2) q2++;
-      if (s.__hiResLoading || s.__imgLoading) loading++;
     }
     texResLine = `TexRes low:${low} med:${med} hi:${hi}`;
     hiResPendingLine = `GlobalPending ${pending}`;
@@ -4035,10 +4024,6 @@ const splashEl = document.getElementById("splash");
       decodeQLine = "DecodeQ n/a";
       decodeDiagLine = "DecodeDiag n/a";
     }
-    const hq = getHiResQueueDiagnostics?.();
-    if (hq)
-      hiResDiagLine = `HiRes loaded:${hq.loaded} loading:${hq.loading} stale:${hq.stale} vis:${hq.visible} oldest:${(hq.oldestMs || 0).toFixed(0)}ms`;
-    else hiResDiagLine = "HiResDiag n/a";
     texLine = `Tex ~${(bytes / 1048576).toFixed(1)} MB`;
   }
   function updatePerf() {
@@ -4089,7 +4074,6 @@ const splashEl = document.getElementById("splash");
       ` Unique Tex Res: ${texResLine.replace("TexRes ", "")}\n` +
       ` Hi-Res Pending: ${hiResPendingLine.replace("GlobalPending ", "")}\n` +
       ` Quality Levels: ${qualLine.replace("Qual ", "").replace(/q0:/, "small:").replace(/q1:/, "mid:").replace(/q2:/, "hi:").replace("load:", "loading:")}\n` +
-      ` Hi-Res Queue Len: ${getHiResQueueLength()}\n` +
       ` ${hiResDiagLine}\n` +
       ` In-Flight Decodes: ${getInflightTextureCount()}\n` +
       ` Decode Queue: ${decodeQLine.replace("DecodeQ ", "")}\n` +
@@ -6263,13 +6247,6 @@ const splashEl = document.getElementById("splash");
         loaded += 1;
         const d: any = ((window as any).__frameDiag ||= {});
         d.load = (d.load || 0) + 1;
-      } else {
-        if (!(s as any).__groupOverlayActive) {
-          // Use the current scale in this function scope to compute desired tier correctly
-          // updateCardTextureForScale(s, scale);
-          const d: any = ((window as any).__frameDiag ||= {});
-          d.upg = (d.upg || 0) + 1;
-        }
       }
     }
     const d: any = ((window as any).__frameDiag ||= {});

@@ -190,10 +190,6 @@ export interface CardSprite extends PIXI.Sprite {
   __imgLoaded?: boolean;
   __imgLoading?: boolean;
   __outline?: PIXI.Graphics;
-  __hiResUrl?: string;
-  __hiResLoaded?: boolean;
-  __hiResLoading?: boolean;
-  __hiResAt?: number;
   __qualityLevel?: number;
   __doubleBadge?: PIXI.Container;
   __faceIndex?: number;
@@ -373,9 +369,6 @@ function demoteSpriteTextureToPlaceholder(s: CardSprite) {
   s.__imgLoaded = false;
   s.__imgLoading = false;
   s.__qualityLevel = 0;
-  s.__hiResLoaded = false;
-  s.__hiResUrl = undefined;
-  s.__hiResAt = undefined;
   // Switch to placeholder visuals based on selection/grouping
   updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
 }
@@ -437,11 +430,6 @@ function tryDowngradeSpriteTexture(
       s.width = 100;
       s.height = 140;
       s.__qualityLevel = target;
-      if (target < 1) {
-        s.__hiResLoaded = false;
-        s.__hiResUrl = undefined;
-        s.__hiResAt = undefined;
-      }
       // Ensure eventual budget cleanup
       scheduleEnforceTextureBudget();
       return true;
@@ -589,31 +577,6 @@ export function ensureCardImage(sprite: CardSprite) {
       sprite.__imgLoaded = false;
       sprite.__imgLoading = false;
     });
-}
-export function getHiResQueueDiagnostics() {
-  const now = performance.now();
-  let loaded = 0,
-    loading = 0,
-    stale = 0,
-    visible = 0;
-  let oldest = 0,
-    newest = 0;
-  const sample: any[] = [];
-  return {
-    length: 0,
-    loaded,
-    loading,
-    stale,
-    visible,
-    oldestMs: oldest,
-    newestMs: newest,
-    sample,
-  };
-}
-
-// --- Monitoring helpers ---
-export function getHiResQueueLength() {
-  return 0;
 }
 export function getInflightTextureCount() {
   return inflightTex.size;
@@ -764,9 +727,6 @@ function flipCardFace(sprite: CardSprite) {
   // Bump generation to invalidate any in-flight loads for the previous face
   (sprite as any).__loadGen = ((sprite as any).__loadGen ?? 0) + 1;
   // Reset state so fresh load occurs (ephemeral; no persistence)
-  sprite.__hiResLoaded = false;
-  sprite.__hiResUrl = undefined;
-  sprite.__hiResLoading = false;
   sprite.__qualityLevel = 0;
   sprite.__imgLoaded = false;
   sprite.__imgUrl = undefined;
@@ -812,10 +772,6 @@ function flipCardFace(sprite: CardSprite) {
       sprite.height = 140;
       sprite.__imgLoaded = true;
       sprite.__qualityLevel = desired;
-      if (desired >= 1) {
-        sprite.__hiResLoaded = true;
-        sprite.__hiResAt = performance.now();
-      }
     } else {
       // Load small immediately, then promote without waiting an extra frame
       ensureCardImage(sprite);
