@@ -6508,8 +6508,16 @@ const splashEl = document.getElementById("splash");
     (window as any).__frameDiag = {};
     const fStart = now;
     camera.update(dt);
-    // Align world transform to device pixels when camera is not actively moving to reduce subpixel blur
-    const moving: boolean = !!(window as any).__camIsMoving;
+    // Align world transform to device pixels when camera is not actively moving or gliding
+    // Use camera's internal speed to decide instead of a coarse movement heuristic.
+    const camSpeed = (camera as any).getSpeed ? (camera as any).getSpeed() : 0;
+    const camActive = (camera as any).isPanning
+      ? (camera as any).isPanning()
+      : false;
+    const camAnimating = (camera as any).isAnimating
+      ? (camera as any).isAnimating()
+      : false;
+    const moving: boolean = camActive || camAnimating || camSpeed > 0.02;
     if (!moving) {
       const dpr = (app.renderer as any).resolution || getEffectiveDpr();
       if (isFinite(dpr) && dpr > 0) {
@@ -6518,18 +6526,11 @@ const splashEl = document.getElementById("splash");
       }
     }
     const tAfterCam = performance.now();
-    // Track camera movement in world units to detect active panning/zooming and throttle work while moving
-    const scaleNow = world.scale.x;
-    const camWX = -world.position.x / scaleNow;
-    const camWY = -world.position.y / scaleNow;
-    const prevWX: number = (window as any).__camWX ?? camWX;
-    const prevWY: number = (window as any).__camWY ?? camWY;
-    const moved = Math.hypot(camWX - prevWX, camWY - prevWY);
-    (window as any).__camWX = camWX;
-    (window as any).__camWY = camWY;
-    if (moved > 2) (window as any).__lastCamMovedAt = now;
-    const lastCamMoved: number = (window as any).__lastCamMovedAt || 0;
-    (window as any).__camIsMoving = now - lastCamMoved < 220;
+    // Track camera movement using internal speed; avoid axis-quantized wobble at low velocities
+    if (camSpeed > 0.02 || camActive || camAnimating)
+      (window as any).__lastCamMovedAt = now;
+    (window as any).__camIsMoving =
+      now - ((window as any).__lastCamMovedAt || 0) < 220;
     const tCull0 = performance.now();
     runCulling();
     const tCull1 = performance.now();

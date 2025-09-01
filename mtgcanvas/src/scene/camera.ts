@@ -32,7 +32,9 @@ export class Camera {
   private frictionTauMs = 420; // exponential decay time constant (larger = longer glide)
   private frictionTauActiveMs = 140; // faster decay while mouse is down (significantly shorter glide)
   private velocitySmoothing = 0.22; // 0..1, how much to trust latest sample when dragging
-  private minSpeedToGlide = 22; // px/sec, below this we stop
+  // External glide threshold now defaults to 0 to avoid abrupt halts; we still use a tiny
+  // internal epsilon to eventually settle to exact zero to avoid infinite subpixel drift.
+  private minSpeedToGlide = 0; // px/sec, allow gliding at any speed
   private maxSpeedClamp = 4800; // px/sec, clamp extreme flicks
   private worldBounds?: { x: number; y: number; w: number; h: number };
   private clampFrac = 0.75; // fraction of viewport kept within bounds (centered)
@@ -223,13 +225,8 @@ export class Camera {
     }
   }
   endPan() {
+    // Stop active sampling; keep current velocity for inertial glide without abrupt cutoff.
     this.panActive = false;
-    /* if below threshold, drop to zero */ if (
-      Math.hypot(this.vx, this.vy) < this.minSpeedToGlide
-    ) {
-      this.vx = 0;
-      this.vy = 0;
-    }
   }
   // Immediately halt inertial movement without changing panActive state
   stopMomentum() {
@@ -259,8 +256,9 @@ export class Camera {
       }
     }
     const speed = Math.hypot(this.vx, this.vy);
-    // Inertial glide when not actively panning and no animation target for position
-    if (!this.panActive && !this.anim && speed >= this.minSpeedToGlide) {
+    // Inertial glide when not actively panning and no animation target for position.
+    // Allow gliding at any non-zero speed. Decay below will naturally bring it to rest.
+    if (!this.panActive && !this.anim && speed > 0) {
       const dtSec = dtMs / 1000;
       this.world.position.x += this.vx * dtSec;
       this.world.position.y += this.vy * dtSec;
@@ -273,12 +271,24 @@ export class Camera {
       const decay = Math.exp(-dtMs / tau);
       this.vx *= decay;
       this.vy *= decay;
-      if (Math.hypot(this.vx, this.vy) < this.minSpeedToGlide) {
+      // Tiny epsilon settle to fully stop after decay becomes imperceptible
+      if (Math.hypot(this.vx, this.vy) < 0.02) {
         this.vx = 0;
         this.vy = 0;
       }
     }
     // Enforce bounds after movement each tick
     this.clampToBounds();
+  }
+
+  // Public helpers for UI logic
+  getSpeed(): number {
+    return Math.hypot(this.vx, this.vy);
+  }
+  isPanning(): boolean {
+    return this.panActive;
+  }
+  isAnimating(): boolean {
+    return !!this.anim;
   }
 }
