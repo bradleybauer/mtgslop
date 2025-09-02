@@ -13,9 +13,7 @@ import {
   attachCardInteractions,
   type CardSprite,
   getInflightTextureCount,
-  getTextureBudgetStats,
-  ensureTextureTier,
-  ensureLowOrPlaceholder,
+  ensureTexture,
 } from "./scene/cardNode";
 import {
   configureTextureSettings,
@@ -82,7 +80,7 @@ const GRID_SIZE = 8; // global grid size
 // Card width=100 -> 100 % 8 = 4, so choose GAP_X=4 (smallest non-zero making 100+4=104 divisible by 8).
 // Card height=140 -> 140 % 8 = 4, so choose GAP_Y=4 (makes 140+4=144 divisible by 8).
 const CARD_W_GLOBAL = 100,
-  CARD_H_GLOBAL = 140;
+  CARD_H_GLOBAL = 140; // TODO MAKE THESE GLOBAL SO OTHER FILES CAN USE THEM
 const GAP_X_GLOBAL = 4,
   GAP_Y_GLOBAL = 4; // minimal gaps achieving grid alignment
 const SPACING_X = CARD_W_GLOBAL + GAP_X_GLOBAL;
@@ -186,8 +184,7 @@ const splashEl = document.getElementById("splash");
   // Guard against accidental CSS scaling of the WebGL canvas (which would blur)
   app.canvas.style.imageRendering = "auto"; // let WebGL handle filtering
   app.canvas.style.transform = ""; // ensure we don't have CSS transforms
-  // WebGL context loss handling: pause ticker and surface a message; try to recover on restore
-  const canvas: any = app.renderer?.canvas || app.canvas;
+  const canvas: any = app.renderer.canvas;
   let ctxLostBanner: HTMLDivElement | null = null;
   function showCtxLostBanner(msg: string) {
     if (!ctxLostBanner) {
@@ -223,7 +220,7 @@ const splashEl = document.getElementById("splash");
   const world = new PIXI.Container();
   app.stage.addChild(world);
   app.stage.eventMode = "static";
-  // World bounds: reduced by 1/2 in each dimension (center preserved)
+  // World bounds
   app.stage.hitArea = new PIXI.Rectangle(-25000, -25000, 50000, 50000);
   // Ensure world respects zIndex for proper layering (bounds marker behind cards)
   (world as any).sortableChildren = true;
@@ -257,8 +254,7 @@ const splashEl = document.getElementById("splash");
     lastBounds = { ...b };
   }
 
-  // Top-of-canvas title banner: now HTML/CSS, not Pixi (non-interactive overlay)
-  (app.stage as any).sortableChildren = true;
+  app.stage.sortableChildren = true;
   let htmlBanner: HTMLDivElement | null = null;
   function ensureHtmlBanner() {
     if (htmlBanner) return htmlBanner;
@@ -877,13 +873,13 @@ const splashEl = document.getElementById("splash");
           const gid: number | null = entry.group_id;
           id = (InstancesRepo as any).createWithId
             ? (InstancesRepo as any).createWithId({
-                id,
-                card_id: 1,
-                x,
-                y,
-                z,
-                group_id: gid,
-              })
+              id,
+              card_id: 1,
+              x,
+              y,
+              z,
+              group_id: gid,
+            })
             : id;
           bulkItems.push({
             id,
@@ -2348,11 +2344,11 @@ const splashEl = document.getElementById("splash");
     const ha: any = app.stage.hitArea as any;
     return ha && typeof ha.x === "number"
       ? {
-          x: ha.x as number,
-          y: ha.y as number,
-          w: ha.width as number,
-          h: ha.height as number,
-        }
+        x: ha.x as number,
+        y: ha.y as number,
+        w: ha.width as number,
+        h: ha.height as number,
+      }
       : { x: -25000, y: -25000, w: 50000, h: 50000 };
   }
   function clampGroupXY(gv: GroupVisual, x: number, y: number) {
@@ -3117,7 +3113,7 @@ const splashEl = document.getElementById("splash");
       return it;
     }
     if (!openGroups.length) {
-      addItem("(No open groups)", () => {}, true);
+      addItem("(No open groups)", () => { }, true);
     } else {
       openGroups
         .sort((a, b) => a.id - b.id)
@@ -3826,81 +3822,25 @@ const splashEl = document.getElementById("splash");
   const perfEl: HTMLDivElement | null = HIDE_STATUS_PANE
     ? null
     : (() => {
-        const el = document.createElement("div");
-        el.id = "perf-overlay";
-        // Use shared panel theme (ensure fixed positioning & stacking above canvas)
-        el.className = "ui-panel perf-grid";
-        el.style.position = "fixed";
-        el.style.left = "10px";
-        el.style.bottom = "10px";
-        el.style.zIndex = "10002";
-        el.style.minWidth = "280px";
-        el.style.padding = "14px 16px";
-        el.style.fontSize = "15px";
-        el.style.pointerEvents = "none";
-        document.body.appendChild(el);
-        (window as any).__perfOverlay = el;
-        return el;
-      })();
+      const el = document.createElement("div");
+      el.id = "perf-overlay";
+      // Use shared panel theme (ensure fixed positioning & stacking above canvas)
+      el.className = "ui-panel perf-grid";
+      el.style.position = "fixed";
+      el.style.left = "10px";
+      el.style.bottom = "10px";
+      el.style.zIndex = "10002";
+      el.style.minWidth = "280px";
+      el.style.padding = "14px 16px";
+      el.style.fontSize = "15px";
+      el.style.pointerEvents = "none";
+      document.body.appendChild(el);
+      (window as any).__perfOverlay = el;
+      return el;
+    })();
   // Quick debug toggles surfaced to window
   (window as any).__imgDebug = (on: boolean) => enableImageCacheDebug(!!on);
   // One-call aggregated snapshot for bug reports
-  function buildPerfSnapshot() {
-    const scale = world.scale.x;
-    const fps = (window as any).__lastFps || 60;
-    const cam = {
-      scale,
-      wx: -world.position.x / scale,
-      wy: -world.position.y / scale,
-      moving: !!(window as any).__camIsMoving,
-    };
-    // Counts and quality/pending
-    const targetMaxLevel = texSettings.disablePngTier ? 1 : 2;
-    let q0 = 0,
-      q1 = 0,
-      q2 = 0,
-      loading = 0,
-      pending = 0,
-      vis = 0;
-    for (const s of sprites) {
-      if (s.visible) vis++;
-      const q = s.__qualityLevel ?? 0;
-      if (q === 0) q0++;
-      else if (q === 1) q1++;
-      else if (q === 2) q2++;
-      if (s.__imgLoaded && q < targetMaxLevel) pending++;
-    }
-    const tex = getTextureBudgetStats?.();
-    const mem: any = (performance as any).memory;
-    const jsMB = mem ? mem.usedJSHeapSize / 1048576 : undefined;
-    const flags = {
-      safeMode: !!(window as any).__mtgSafeMode,
-      camMoving: !!(window as any).__camIsMoving,
-      decodeParallelLimit: texSettings.decodeParallelLimit,
-      disablePngTier: texSettings.disablePngTier,
-    };
-    const ops: any = (window as any).__frameDiag || {};
-    return {
-      ts: Date.now(),
-      fps,
-      cam,
-      counts: { cards: sprites.length, visible: vis, groups: groups.size },
-      quality: { small: q0, mid: q1, hi: q2, loading, pending },
-      texture: tex,
-      inflight: getInflightTextureCount(),
-      flags,
-      ops,
-      jsHeapMB: jsMB,
-    };
-  }
-  (window as any).__mtgPerfSnapshot = () => buildPerfSnapshot();
-  (window as any).__mtgPerfCopy = async () => {
-    const snap = buildPerfSnapshot();
-    const json = JSON.stringify(snap, null, 2);
-    await (navigator as any).clipboard?.writeText?.(json);
-    console.log("[mtgcanvas] Perf snapshot copied to clipboard.");
-    return snap;
-  };
   let frameCount = 0;
   let lastFpsTime = performance.now();
   let fps = 0;
@@ -4947,11 +4887,11 @@ const splashEl = document.getElementById("splash");
         | ["left", number, number]
         | ["above", number, number]
       )[] = [
-        ["right", umaxX + margin, uminY],
-        ["below", uminX, umaxY + margin],
-        ["left", uminX - margin, uminY],
-        ["above", uminX, uminY - margin],
-      ];
+          ["right", umaxX + margin, uminY],
+          ["below", uminX, umaxY + margin],
+          ["left", uminX - margin, uminY],
+          ["above", uminX, uminY - margin],
+        ];
       for (const [side, baseX, baseY] of sides) {
         for (const s of scales) {
           let targetW = Math.max(minWNeeded, Math.round(base * s));
@@ -6162,39 +6102,18 @@ const splashEl = document.getElementById("splash");
     camera.update(dt);
     // Align world transform to device pixels when camera is not actively moving or gliding
     // Use camera's internal speed to decide instead of a coarse movement heuristic.
-    const camSpeed = (camera as any).getSpeed ? (camera as any).getSpeed() : 0;
-    const camActive = (camera as any).isPanning
-      ? (camera as any).isPanning()
-      : false;
-    const camAnimating = (camera as any).isAnimating
-      ? (camera as any).isAnimating()
-      : false;
-    const moving: boolean = camActive || camAnimating || camSpeed > 0.02;
-    if (!moving) {
-      const dpr = (app.renderer as any).resolution || getEffectiveDpr();
-      if (isFinite(dpr) && dpr > 0) {
-        world.position.x = Math.round(world.position.x * dpr) / dpr;
-        world.position.y = Math.round(world.position.y * dpr) / dpr;
-      }
-    }
     const tAfterCam = performance.now();
-    // Track camera movement using internal speed; avoid axis-quantized wobble at low velocities
-    if (camSpeed > 0.02 || camActive || camAnimating)
-      (window as any).__lastCamMovedAt = now;
-    (window as any).__camIsMoving =
-      now - ((window as any).__lastCamMovedAt || 0) < 220;
     const tLoad0 = 0;
-    { // TODO SIMPLIFY THIS BULLSHIT
-      const scale = world.scale.x;
-      // TODO encode window rectangle coordinates in world space
-
-      (window as any).__mtgView = {
-        x: left,
-        y: top,
-        w: right - left,
-        h: bottom - top,
-        zoom: world.scale.x
-      };
+    {
+      // Compute viewport rect in world space
+      const vw = app.renderer.width;
+      const vh = app.renderer.height;
+      const inv = 1 / (world.scale.x || 1);
+      const left = -world.position.x * inv;
+      const top = -world.position.y * inv;
+      const right = left + vw * inv;
+      const bottom = top + vh * inv;
+      (window as any).__mtgView = { left, top, right, bottom };
     }
     const tLoad1 = performance.now();
     const tUpg0 = tLoad1;
@@ -6230,7 +6149,6 @@ const splashEl = document.getElementById("splash");
       },
     };
     // If we're near the GPU cliff (>97% of budget), run the coalesced budget pass to carve headroom.
-    const ts = getTextureBudgetStats?.();
     const tBudget1 = performance.now();
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;

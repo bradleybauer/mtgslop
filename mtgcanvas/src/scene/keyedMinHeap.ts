@@ -11,8 +11,12 @@ export class KeyedMinHeap<T extends HasPriorityTime> {
   private arr: T[] = [];
   private pos = new Map<string, number>(); // key -> index
   constructor(private keyOf: (item: T) => string) {}
-  size() { return this.arr.length; }
-  has(key: string) { return this.pos.has(key); }
+  size() {
+    return this.arr.length;
+  }
+  has(key: string) {
+    return this.pos.has(key);
+  }
   get(key: string): T | undefined {
     const i = this.pos.get(key);
     return i === undefined ? undefined : this.arr[i];
@@ -61,13 +65,16 @@ export class KeyedMinHeap<T extends HasPriorityTime> {
     return rem;
   }
   private less(aIdx: number, bIdx: number) {
-    const A = this.arr[aIdx], B = this.arr[bIdx];
+    const A = this.arr[aIdx],
+      B = this.arr[bIdx];
     if (A.priority !== B.priority) return A.priority < B.priority;
     return A.enqAt <= B.enqAt;
   }
   private swap(a: number, b: number) {
-    const va = this.arr[a], vb = this.arr[b];
-    this.arr[a] = vb; this.arr[b] = va;
+    const va = this.arr[a],
+      vb = this.arr[b];
+    this.arr[a] = vb;
+    this.arr[b] = va;
     this.pos.set(this.keyOf(va), b);
     this.pos.set(this.keyOf(vb), a);
   }
@@ -83,7 +90,8 @@ export class KeyedMinHeap<T extends HasPriorityTime> {
     const n = this.arr.length;
     while (true) {
       let m = i;
-      const l = (i << 1) + 1, r = l + 1;
+      const l = (i << 1) + 1,
+        r = l + 1;
       if (l < n && this.less(l, m)) m = l;
       if (r < n && this.less(r, m)) m = r;
       if (m === i) break;
