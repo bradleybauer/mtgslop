@@ -197,13 +197,11 @@ export function createGroupVisual(
     },
   });
   zoomLabel.visible = false;
-  zoomLabel.alpha = 0; // start hidden
   zoomLabel.zIndex = 4;
   gv._zoomLabel = zoomLabel;
   // Dedicated transparent drag surface placed below text
   const overlayDrag = new PIXI.Graphics();
   overlayDrag.visible = false;
-  overlayDrag.alpha = 0;
   (overlayDrag as any).eventMode = "none";
   overlayDrag.zIndex = 5;
   gv._overlayDrag = overlayDrag;
@@ -217,13 +215,9 @@ export function createGroupVisual(
     overlayDrag,
     zoomLabel,
   );
-  // Ensure default (non-overlay) alphas are applied at creation
-  gfx.alpha = 1;
   frame.alpha = GROUP_DIM_ALPHA;
   header.alpha = GROUP_DIM_ALPHA;
-  label.alpha = 1;
-  count.alpha = 1;
-  price.alpha = 1;
+
   drawGroup(gv, false);
   return gv;
 }
@@ -241,8 +235,6 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   (label.style as any).fill = HEADER_TEXT_COLOR;
   (count.style as any).fill = COUNT_TEXT_COLOR;
   // Keep default header text fully opaque unless overlay presentation dims them later
-  label.alpha = 1;
-  count.alpha = 1;
   // Unify title bar font sizes (label, count, price) to a comfortable size
   const innerHeaderH = Math.max(0, HEADER_HEIGHT - bw);
   const desiredCommonBase = 18; // previous comfortable size
@@ -295,7 +287,6 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   // y set later with common baseline
   // Update price style and opacity after price is in scope
   (price.style as any).fill = PRICE_TEXT_COLOR;
-  price.alpha = 1;
   count.text = gv.items.size.toString();
   count.x = Math.max(bw + 8, price.x - count.width - 6);
   // y set later with common baseline
@@ -765,7 +756,6 @@ export function updateGroupZoomPresentation(
   if (gv.collapsed) {
     if (gv._zoomLabel) {
       gv._zoomLabel.visible = false;
-      gv._zoomLabel.alpha = 0;
     }
     gv._lastZoomPhase = 0;
     return;
@@ -791,10 +781,8 @@ export function updateGroupZoomPresentation(
     if (toggled) {
       if (overlayActive && !wasVisible) {
         overlay.visible = true;
-        overlay.alpha = 1;
         positionZoomOverlay(gv);
       } else if (!overlayActive && wasVisible) {
-        overlay.alpha = 0;
         overlay.visible = false;
       }
     }
@@ -869,20 +857,13 @@ export function updateGroupZoomPresentation(
       (sp as any).eventMode = desiredMode as any;
     if (overlayActive) {
       if (sp.cursor !== "default") sp.cursor = "default";
-      if (sp.alpha !== 0) sp.alpha = 0;
       if (sp.visible) {
         sp.visible = false;
-        (sp as any).__hiddenAt = now;
-        // Mark overlay-hidden time for budget logic and optionally schedule a budget pass soon.
-        (window as any).__overlayHiddenCount =
-          ((window as any).__overlayHiddenCount | 0) + 1;
       }
     } else {
       if (sp.cursor !== "pointer") sp.cursor = "pointer";
-      if (sp.alpha !== 1) sp.alpha = 1;
       if (!sp.visible) {
         sp.visible = true;
-        (sp as any).__hiddenAt = undefined;
       }
     }
   }

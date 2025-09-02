@@ -18,16 +18,6 @@ const inflightTex = new Map<string, Promise<PIXI.Texture>>();
 
 // Central decode queue (single priority queue). Only tasks popped by the scheduler start work.
 let activeDecodes = 0;
-// Track desired URL references from sprites so we can cancel stale tasks before decoding
-const desiredUrlRefs: Map<string, number> = new Map();
-function incDesiredUrl(url: string) {
-  desiredUrlRefs.set(url, (desiredUrlRefs.get(url) || 0) + 1);
-}
-function decDesiredUrl(url: string) {
-  const n = (desiredUrlRefs.get(url) || 0) - 1;
-  if (n <= 0) desiredUrlRefs.delete(url);
-  else desiredUrlRefs.set(url, n);
-}
 // Priority-queued decode task (by URL); supports in-place priority updates
 type TaskState = "queued" | "running";
 type PrioTask = {
@@ -35,6 +25,8 @@ type PrioTask = {
   priority: number; // lower is sooner
   enqAt: number;
   state: TaskState;
+  // Number of sprites currently desiring this URL (not the number of waiters)
+  refCount: number;
   waiters: { resolve: (t: PIXI.Texture) => void; reject: (e: any) => void }[];
   heapIndex?: number;
 };
@@ -97,8 +89,8 @@ async function workerLoop() {
       await new Promise<void>((res) => pqWaiters.push(res));
       continue;
     }
-    // If no longer desired, cancel
-    if (!desiredUrlRefs.has(task.url)) {
+    // If no longer desired, cancel before starting decode
+    if (task.refCount <= 0) {
       tasksByUrl.delete(task.url);
       for (const w of task.waiters)
         w.reject(new Error("decode canceled: no longer desired"));
@@ -131,45 +123,6 @@ export function getDecodeQueueSize() {
   return decodePQ.size() + activeDecodes;
 }
 
-async function loadTextureFromCachedURL(
-  url: string,
-  priority: number = 50,
-): Promise<PIXI.Texture> {
-  // Serve from cache immediately
-  const cached = textureCache.get(url);
-  if (cached && isTextureUsable(cached.tex)) {
-    return Promise.resolve(cached.tex);
-  }
-  const existing = tasksByUrl.get(url);
-  if (existing) {
-    if (existing.state === "queued") {
-      decodePQ.updatePriority(url, priority);
-      existing.priority = priority;
-    }
-    return new Promise<PIXI.Texture>((resolve, reject) => {
-      existing.waiters.push({ resolve, reject });
-    });
-  }
-  const task: PrioTask = {
-    url,
-    priority: Number.isFinite(priority) ? priority : 50,
-    enqAt: performance.now(),
-    state: "queued",
-    waiters: [],
-    heapIndex: -1,
-  };
-  tasksByUrl.set(url, task);
-  decodePQ.push(task);
-  // Track queue peak size for diagnostics
-  const p = new Promise<PIXI.Texture>((resolve, reject) =>
-    task.waiters.push({ resolve, reject }),
-  );
-  ensureDecodeWorkers();
-  notifyTaskAvailable();
-  return p;
-
-}
-
 // --- Card Sprite Implementation (Sprite + cached textures) ---
 export interface CardSprite extends PIXI.Sprite {
   __id: number;
@@ -179,14 +132,12 @@ export interface CardSprite extends PIXI.Sprite {
   __imgUrl?: string;
   __imgLoaded?: boolean;
   __imgLoading?: boolean;
-  __outline?: PIXI.Graphics;
   __qualityLevel?: number;
   __doubleBadge?: PIXI.Container;
   __faceIndex?: number;
   // Pending texture upgrade bookkeeping (to avoid per-frame duplicate scheduling)
-  __pendingUrl?: string;
-  __pendingLevel?: 0 | 1 | 2;
-  __pendingPromise?: Promise<PIXI.Texture> | null;
+  __scheduledUrl?: string;
+  __currentTexUrl?: string;
 }
 
 export interface CardVisualOptions {
@@ -264,15 +215,6 @@ function estimateTextureBytes(tex: PIXI.Texture): number {
   return 0;
 }
 
-function isTextureUsable(tex: PIXI.Texture | null | undefined): boolean {
-  if (!tex) return false;
-  const bt: any = (tex as any).source;
-  if (!bt) return false;
-  if (bt.destroyed === true) return false;
-  if (bt.valid === false) return false;
-  return true;
-}
-
 export function getInflightTextureCount() {
   return inflightTex.size;
 }
@@ -306,20 +248,22 @@ export function resolveTierUrl(
   const face = (card.card_faces && card.card_faces[faceIdx]) || null;
   let res = null;
   if (target === 2) {
-    res = face?.image_uris?.png ||
+    res =
+      face?.image_uris?.png ||
       card.image_uris?.png ||
       face?.image_uris?.large ||
       card.image_uris?.large;
   }
   if (target === 1 || !res) {
-    res = face?.image_uris?.normal ||
+    res =
+      face?.image_uris?.normal ||
       card.image_uris?.normal ||
       face?.image_uris?.large ||
       card.image_uris?.large;
   }
-  if (target === 0 || !res)
-  {
-    res = face?.image_uris?.small ||
+  if (target === 0 || !res) {
+    res =
+      face?.image_uris?.small ||
       card.image_uris?.small ||
       face?.image_uris?.normal ||
       card.image_uris?.normal;
@@ -333,23 +277,29 @@ function adoptCachedTexture(
   ent: TexCacheEntry,
   level: 0 | 1 | 2,
 ) {
-  (sprite as any).__currentTexUrl = url;
+  sprite.__currentTexUrl = url;
   sprite.texture = ent.tex;
   sprite.width = 100; // TODO USE CARD_W_GLOBAL
   sprite.height = 140; // TODO USE CARD_H_GLOBAL
   sprite.__imgLoaded = true;
   sprite.__imgLoading = false;
   sprite.__qualityLevel = level;
+  if (sprite.__scheduledUrl) {
+    const oldTask = tasksByUrl.get(sprite.__scheduledUrl);
+    if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+    sprite.__scheduledUrl = undefined;
+  }
 }
 
 function forcePlaceholder(sprite: CardSprite) {
-  const prevUrl: string | undefined = (sprite as any).__currentTexUrl;
+  const prevUrl: string | undefined = sprite.__currentTexUrl;
   if (prevUrl) {
-    (sprite as any).__currentTexUrl = undefined;
+    sprite.__currentTexUrl = undefined;
   }
   sprite.__imgLoaded = false;
   sprite.__imgLoading = false;
   sprite.__qualityLevel = 0;
+  sprite.__scheduledUrl = undefined;
   updateCardSpriteAppearance(
     sprite,
     SelectionStore.state.cardIds.has(sprite.__id),
@@ -358,10 +308,10 @@ function forcePlaceholder(sprite: CardSprite) {
 
 type ViewRect = { left: number; top: number; right: number; bottom: number };
 export function ensureTexture(sprite: CardSprite, view: ViewRect) {
-  const x1 = sprite.x,
-    y1 = sprite.y,
-    x2 = x1 + sprite.width,
-    y2 = y1 + sprite.height;
+  const x1 = sprite.x;
+  const y1 = sprite.y;
+  const x2 = x1 + sprite.width;
+  const y2 = y1 + sprite.height;
   const inView = !(
     x2 < view.left ||
     x1 > view.right ||
@@ -382,104 +332,80 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   }
   if (settings.disablePngTier && desired === 2) desired = 1;
   const wantUrl = resolveTierUrl(sprite, desired);
-  const curUrl: string | undefined = (sprite as any).__currentTexUrl;
-  const curQ = sprite.__qualityLevel ?? -1;
-  if (
-    wantUrl &&
-    curUrl === wantUrl &&
-    isTextureUsable(sprite.texture)
-  ) {
-    if (sprite.__pendingUrl) {
-      decDesiredUrl(sprite.__pendingUrl);
-      sprite.__pendingUrl = undefined;
-      sprite.__pendingLevel = undefined as any;
-      sprite.__pendingPromise = null;
+  if (!wantUrl) { // if no URL, ensure placeholder
+    forcePlaceholder(sprite);
+    if (sprite.__scheduledUrl) {
+      const oldTask = tasksByUrl.get(sprite.__scheduledUrl);
+      if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+      sprite.__scheduledUrl = undefined;
     }
     return;
   }
-  if (wantUrl) {
-    const cached = textureCache.get(wantUrl);
-    if (cached) {
-      adoptCachedTexture(sprite, wantUrl, cached, desired);
-      if (sprite.__pendingUrl) {
-        decDesiredUrl(sprite.__pendingUrl);
-        sprite.__pendingUrl = undefined;
-        sprite.__pendingLevel = undefined as any;
-        sprite.__pendingPromise = null;
-      }
-      return;
+  const curUrl: string | undefined = sprite.__currentTexUrl;
+  if (curUrl === wantUrl) {
+    if (sprite.__scheduledUrl) {
+      const oldTask = tasksByUrl.get(sprite.__scheduledUrl);
+      if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+      sprite.__scheduledUrl = undefined;
     }
-    if (
-      sprite.__pendingUrl === wantUrl &&
-      sprite.__pendingLevel === desired &&
-      sprite.__pendingPromise
-    ) {
-      // Update priority of existing queued task
-      const t = tasksByUrl.get(wantUrl);
-      if (t && t.state === "queued") {
-        decodePQ.updatePriority(wantUrl, prio);
-        t.priority = prio;
-      }
-      return;
+    return;
+  }
+  const cached = textureCache.get(wantUrl);
+  if (cached) {
+    adoptCachedTexture(sprite, wantUrl, cached, desired);
+    return;
+  }
+  if (sprite.__scheduledUrl && sprite.__scheduledUrl === wantUrl) {
+    // Update priority of existing queued task
+    const t = tasksByUrl.get(sprite.__scheduledUrl);
+    if (t && t.state === "queued") {
+      decodePQ.updatePriority(wantUrl, prio); //could probalby avoid work here
+      t.priority = prio;
     }
+    return;
+  }
 
-    // New schedule
-    if (sprite.__pendingUrl && sprite.__pendingUrl !== wantUrl) {
-      decDesiredUrl(sprite.__pendingUrl);
+  // New schedule
+  if (sprite.__scheduledUrl && sprite.__scheduledUrl !== wantUrl) {
+    const oldTask = tasksByUrl.get(sprite.__scheduledUrl);
+    if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+  }
+  sprite.__scheduledUrl = wantUrl;
+  sprite.__imgLoading = true;
+  sprite.__imgLoaded = false;
+  const existing = tasksByUrl.get(wantUrl);
+  if (existing) {
+    // New schedule for an existing task
+    existing.refCount += 1;
+    if (existing.state === "queued") {
+      decodePQ.updatePriority(wantUrl, prio);
+      existing.priority = prio;
     }
-    sprite.__pendingUrl = wantUrl;
-    sprite.__pendingLevel = desired;
-    incDesiredUrl(wantUrl);
-    const p = loadTextureFromCachedURL(wantUrl, prio);
-    sprite.__pendingPromise = p;
-    if (!sprite.__imgLoaded) sprite.__imgLoading = true;
-    p.then((tex) => {
-      if (sprite.__pendingUrl !== wantUrl || sprite.__pendingLevel !== desired)
-        return;
-      const ent = textureCache.get(wantUrl);
-      if (ent) adoptCachedTexture(sprite, wantUrl, ent, desired);
-      else if (isTextureUsable(tex)) {
-        (sprite as any).__currentTexUrl = wantUrl;
-        sprite.texture = tex;
-        sprite.width = 100;
-        sprite.height = 140;
-        sprite.__imgLoaded = true;
-        sprite.__qualityLevel = desired;
-      }
-      sprite.__pendingPromise = null;
-      decDesiredUrl(wantUrl);
-      sprite.__pendingUrl = undefined;
-      sprite.__pendingLevel = undefined as any;
-      sprite.__imgLoading = false;
-    }).catch(() => {
-      sprite.__pendingPromise = null;
-      decDesiredUrl(wantUrl);
-      sprite.__imgLoading = false;
-    });
-    return;
   }
-  // No URL; ensure placeholder
-  forcePlaceholder(sprite);
-  if (sprite.__pendingUrl) {
-    decDesiredUrl(sprite.__pendingUrl);
-    sprite.__pendingUrl = undefined;
-    sprite.__pendingLevel = undefined as any;
-    sprite.__pendingPromise = null;
+  else
+  {
+    const task: PrioTask = {
+      url: wantUrl,
+      priority: Number.isFinite(prio) ? prio : 50,
+      enqAt: performance.now(),
+      state: "queued",
+      refCount: 1,
+      waiters: [],
+      heapIndex: -1,
+    };
+    tasksByUrl.set(wantUrl, task);
+    decodePQ.push(task);
+    ensureDecodeWorkers();
+    notifyTaskAvailable();
   }
-  return;
 }
 
 export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
   if (!cachedTextures) return; // should exist after first card
   if (s.__imgLoaded) {
     // Simpler selection styling to avoid nested Graphics on Sprites in Pixi v8: tint when selected
-    (s as any).tint = selected
-      ? Colors.cardSelectedTint()
-      : Colors.cardDefaultTint();
+    s.tint = selected ? Colors.cardSelectedTint() : Colors.cardDefaultTint();
     // Hide legacy outline if present
-    if (s.__outline) {
-      s.__outline.visible = false;
-    }
     return;
   }
   // Placeholder: only two states now (base/selected); drop in-group variants

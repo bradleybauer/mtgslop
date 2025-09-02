@@ -24,7 +24,6 @@ import { autoConfigureTextureBudget } from "./config/gpuBudget";
 import {
   getImageCacheStats,
   getCacheUsage,
-  enableImageCacheDebug,
 } from "./services/imageCache";
 import {
   createGroupVisual,
@@ -56,9 +55,6 @@ import {
   ensureThemeToggleButton,
   ensureThemeStyles,
   registerThemeListener,
-  applyUiScaleFromStorageOrAuto,
-  isUiScaleManual,
-  setUiScaleManual,
   setUiScale,
   getUiScale,
 } from "./ui/theme";
@@ -73,7 +69,6 @@ import {
 } from "./services/cardStore";
 import { clearImageCache } from "./services/imageCache";
 import { disableSpellAndGrammarGlobally } from "./ui/inputs";
-import { getEffectiveDpr, watchDpr } from "./ui/dpr";
 
 const GRID_SIZE = 8; // global grid size
 // To align cards to the grid while keeping them as close as possible, we need (CARD + GAP) % GRID_SIZE === 0.
@@ -98,15 +93,7 @@ const app = new PIXI.Application();
 // Disable grammar/spellcheck in all text entry surfaces
 disableSpellAndGrammarGlobally({ includeContentEditable: true });
 // Normalize UI scale early (Windows high-DPI heuristic + persisted value)
-applyUiScaleFromStorageOrAuto();
 // Expose quick UI-scale helpers for manual tweaking
-(window as any).mtgUiScale = {
-  get: () => getUiScale(),
-  set: (v: number) => setUiScale(v),
-  inc: (d = 0.05) => setUiScale(getUiScale() + d),
-  dec: (d = 0.05) => setUiScale(getUiScale() - d),
-  reset: () => setUiScale(1),
-};
 // Keyboard: Alt+= increase, Alt+- decrease, Alt+0 reset
 window.addEventListener(
   "keydown",
@@ -132,25 +119,10 @@ const splashEl = document.getElementById("splash");
     background: Colors.canvasBg() as any,
     resizeTo: window,
     antialias: true,
-    resolution: getEffectiveDpr(),
+    resolution: 1,
     // Prefer WebGL over WebGPU on Linux for stability; can be toggled later if needed
     preference: "webgl" as any,
   });
-  // React to DPR changes (monitor swaps, OS scale changes, browser zoom) and re-init resolution
-  const onDprChange = () => {
-    const eff = getEffectiveDpr();
-    console.log("DPR changed:", eff);
-    if ((app.renderer as any).resolution !== eff) {
-      (app.renderer as any).resolution = eff;
-      // Trigger a resize to apply new backbuffer size
-      app.resize();
-    }
-    // Recompute UI scale automatically only if not in manual mode
-    if (!isUiScaleManual()) applyUiScaleFromStorageOrAuto();
-  };
-  const unwatch = watchDpr(onDprChange);
-  // Also expose for manual debug
-  (window as any).__unwatchDpr = unwatch;
   // Auto-detect a conservative GPU texture budget for this device (user override via localStorage: gpuBudgetMB)
   autoConfigureTextureBudget(app.renderer);
   function parseCssHexColor(v: string): number | null {
@@ -223,7 +195,7 @@ const splashEl = document.getElementById("splash");
   // World bounds
   app.stage.hitArea = new PIXI.Rectangle(-25000, -25000, 50000, 50000);
   // Ensure world respects zIndex for proper layering (bounds marker behind cards)
-  (world as any).sortableChildren = true;
+  world.sortableChildren = true;
   // Visual marker for the maximum canvas area (world-bounded region)
   let boundsMarker: PIXI.Graphics | null = null;
   let lastBounds: { x: number; y: number; w: number; h: number } | null = null;
@@ -707,11 +679,7 @@ const splashEl = document.getElementById("splash");
     __tm.end({ count: created.length });
     return created;
   }
-  // Startup instrumentation: begin capturing phase timings early
-  let __startupTimer: ReturnType<typeof createPhaseTimer> | null = null;
-  __startupTimer = createPhaseTimer("startup");
   const loaded = loadAll();
-  __startupTimer && __startupTimer.mark("loadAll");
   const LS_KEY = "mtgcanvas_positions_v1";
   const LS_GROUPS_KEY = "mtgcanvas_groups_v1";
   // Suppress any local save side effects (used when clearing data to avoid races that re-save)
@@ -722,7 +690,6 @@ const splashEl = document.getElementById("splash");
     const raw = localStorage.getItem(LS_GROUPS_KEY);
     if (raw) memoryGroupsData = JSON.parse(raw);
   }
-  __startupTimer && __startupTimer.mark("read-groups-LS");
   // (index-based pre-parse removed; id-based restore applies in applyStoredPositionsMemory)
   function applyStoredPositionsMemory() {
     const raw = localStorage.getItem(LS_KEY);
@@ -873,13 +840,13 @@ const splashEl = document.getElementById("splash");
           const gid: number | null = entry.group_id;
           id = (InstancesRepo as any).createWithId
             ? (InstancesRepo as any).createWithId({
-              id,
-              card_id: 1,
-              x,
-              y,
-              z,
-              group_id: gid,
-            })
+                id,
+                card_id: 1,
+                x,
+                y,
+                z,
+                group_id: gid,
+              })
             : id;
           bulkItems.push({
             id,
@@ -925,10 +892,6 @@ const splashEl = document.getElementById("splash");
     app.canvas.style.visibility = "visible";
     splashEl?.parentElement?.removeChild(splashEl);
     // End startup timer on first completion
-    if (__startupTimer) {
-      __startupTimer.end({ sprites: sprites.length, groups: groups.size });
-      __startupTimer = null;
-    }
   }
 
   // Smart initial camera framing: fit view to all content once after load
@@ -1164,11 +1127,9 @@ const splashEl = document.getElementById("splash");
         const now = performance.now();
         for (const s of spritesToAdd) {
           (s as any).__groupOverlayActive = true;
-          (s as any).eventMode = "none" as any;
+          s.eventMode = "none" as any;
           s.cursor = "default";
-          s.alpha = 0;
           s.visible = false;
-          (s as any).__hiddenAt = now;
         }
       }
       ensureMembersZOrder(gv, sprites);
@@ -1186,7 +1147,6 @@ const splashEl = document.getElementById("splash");
       (s as any).__groupOverlayActive = false;
       (s as any).eventMode = "static";
       s.cursor = "pointer";
-      s.alpha = 1;
       s.visible = true;
       updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
       membershipUpdates.push({ id: s.__id, group_id: null });
@@ -1212,7 +1172,6 @@ const splashEl = document.getElementById("splash");
         (sp as any).__groupOverlayActive = false;
         (sp as any).eventMode = "static";
         sp.cursor = "pointer";
-        sp.alpha = 1;
         sp.visible = true;
         updateCardSpriteAppearance(
           sp,
@@ -1276,7 +1235,6 @@ const splashEl = document.getElementById("splash");
       localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
     }
   }
-  // (Older restoreMemoryGroups variant removed to avoid duplication; see final definition below.)
   function restoreMemoryGroups() {
     if (groupsRestored) return;
     groupsRestored = true;
@@ -1478,7 +1436,7 @@ const splashEl = document.getElementById("splash");
     // Keep other runtime defaults; do not overwrite auto-detected budget here
     allowEvict: true,
     disablePngTier: false,
-    decodeParallelLimit: 16,
+    decodeParallelLimit: 4,
   });
   // (Ticker added later to include overlay presentation updates.)
 
@@ -2344,11 +2302,11 @@ const splashEl = document.getElementById("splash");
     const ha: any = app.stage.hitArea as any;
     return ha && typeof ha.x === "number"
       ? {
-        x: ha.x as number,
-        y: ha.y as number,
-        w: ha.width as number,
-        h: ha.height as number,
-      }
+          x: ha.x as number,
+          y: ha.y as number,
+          w: ha.width as number,
+          h: ha.height as number,
+        }
       : { x: -25000, y: -25000, w: 50000, h: 50000 };
   }
   function clampGroupXY(gv: GroupVisual, x: number, y: number) {
@@ -2412,60 +2370,6 @@ const splashEl = document.getElementById("splash");
     const MIN_H = HEADER_HEIGHT + 80;
     const EDGE_PX = 16; // edge handle thickness in screen pixels
 
-    // Debug overlay to visualize interactive edge bands (screen-relative)
-    if ((window as any).__debugResizeTargets === undefined)
-      (window as any).__debugResizeTargets = false; // default OFF
-    function ensureDebugG() {
-      let dbg: PIXI.Graphics = (gv.gfx as any).__resizeDbg;
-      if (!dbg) {
-        dbg = new PIXI.Graphics();
-        (gv.gfx as any).__resizeDbg = dbg;
-        dbg.eventMode = "none";
-        dbg.zIndex = 999999;
-        gv.gfx.addChild(dbg);
-      }
-      return dbg;
-    }
-    function updateResizeDebug() {
-      const enabled = !!(window as any).__debugResizeTargets;
-      const dbg = ensureDebugG();
-      dbg.visible = enabled;
-      if (!enabled) {
-        dbg.clear();
-        return;
-      }
-      const edgeWorld = EDGE_PX / (world.scale.x || 1);
-      dbg.clear();
-      // Top (blue)
-      dbg
-        .rect(0, 0, gv.w, edgeWorld)
-        .fill({ color: Colors.debugBlue(), alpha: 0.25 });
-      // Bottom (blue)
-      dbg
-        .rect(0, gv.h - edgeWorld, gv.w, edgeWorld)
-        .fill({ color: Colors.debugBlue(), alpha: 0.25 });
-      // Left (green)
-      dbg
-        .rect(0, 0, edgeWorld, gv.h)
-        .fill({ color: Colors.debugGreen(), alpha: 0.25 });
-      // Right (green)
-      dbg
-        .rect(gv.w - edgeWorld, 0, edgeWorld, gv.h)
-        .fill({ color: Colors.debugGreen(), alpha: 0.25 });
-      // Corners (red) overdraw so they stand out
-      dbg
-        .rect(0, 0, edgeWorld, edgeWorld)
-        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // NW
-      dbg
-        .rect(gv.w - edgeWorld, 0, edgeWorld, edgeWorld)
-        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // NE
-      dbg
-        .rect(0, gv.h - edgeWorld, edgeWorld, edgeWorld)
-        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // SW
-      dbg
-        .rect(gv.w - edgeWorld, gv.h - edgeWorld, edgeWorld, edgeWorld)
-        .fill({ color: Colors.debugRed(), alpha: 0.35 }); // SE
-    }
 
     function modeFromPoint(
       localX: number,
@@ -2531,7 +2435,6 @@ const splashEl = document.getElementById("splash");
       const edgeWorld = EDGE_PX / (world.scale.x || 1);
       const mode = modeFromPoint(lx, ly, edgeWorld);
       gv.frame.cursor = cursorFor(mode);
-      updateResizeDebug();
     });
     gv.frame.on("pointerout", () => {
       if (!resizing && gv.frame.cursor !== "default")
@@ -2555,7 +2458,6 @@ const splashEl = document.getElementById("splash");
       startY = gv.gfx.y;
       anchorX = local.x;
       anchorY = local.y;
-      updateResizeDebug();
     });
 
     // Header resize support for top/left/right edges (screen-relative thickness)
@@ -2576,7 +2478,6 @@ const splashEl = document.getElementById("splash");
       else if (right) mode = "e";
       else if (top) mode = "n";
       gv.header.cursor = cursorFor(mode) || "move";
-      updateResizeDebug();
     });
     gv.header.on("pointerout", () => {
       if (!resizing) gv.header.cursor = "move";
@@ -2608,7 +2509,6 @@ const splashEl = document.getElementById("splash");
       startY = gv.gfx.y;
       anchorX = local.x;
       anchorY = local.y;
-      updateResizeDebug();
     });
 
     app.stage.on("pointermove", (e) => {
@@ -2669,7 +2569,6 @@ const splashEl = document.getElementById("splash");
       gv._expandedH = gv.h;
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
       updateGroupMetrics(gv, sprites);
-      updateResizeDebug();
     });
     const endResize = () => {
       if (resizing) {
@@ -2680,8 +2579,6 @@ const splashEl = document.getElementById("splash");
     };
     app.stage.on("pointerup", endResize);
     app.stage.on("pointerupoutside", endResize);
-    // Initial draw
-    updateResizeDebug();
   }
 
   function attachGroupInteractions(gv: GroupVisual) {
@@ -3113,7 +3010,7 @@ const splashEl = document.getElementById("splash");
       return it;
     }
     if (!openGroups.length) {
-      addItem("(No open groups)", () => { }, true);
+      addItem("(No open groups)", () => {}, true);
     } else {
       openGroups
         .sort((a, b) => a.id - b.id)
@@ -3133,7 +3030,6 @@ const splashEl = document.getElementById("splash");
               (card as any).__groupOverlayActive = false;
               (card as any).eventMode = "static";
               card.cursor = "pointer";
-              card.alpha = 1;
               card.visible = true;
               updateCardSpriteAppearance(
                 card,
@@ -3808,38 +3704,29 @@ const splashEl = document.getElementById("splash");
 
   // ---- Performance overlay ----
   ensureThemeStyles();
-  // Optional helpers to switch UI scale between manual/auto at runtime
-  (window as any).__uiScale = {
-    manual: () => setUiScaleManual(true),
-    auto: () => {
-      setUiScaleManual(false);
-      applyUiScaleFromStorageOrAuto();
-    },
-  };
   // Ensure modern day/night toggle (flat pill)
   ensureThemeToggleButton();
   // Optional Status / Performance overlay
   const perfEl: HTMLDivElement | null = HIDE_STATUS_PANE
     ? null
     : (() => {
-      const el = document.createElement("div");
-      el.id = "perf-overlay";
-      // Use shared panel theme (ensure fixed positioning & stacking above canvas)
-      el.className = "ui-panel perf-grid";
-      el.style.position = "fixed";
-      el.style.left = "10px";
-      el.style.bottom = "10px";
-      el.style.zIndex = "10002";
-      el.style.minWidth = "280px";
-      el.style.padding = "14px 16px";
-      el.style.fontSize = "15px";
-      el.style.pointerEvents = "none";
-      document.body.appendChild(el);
-      (window as any).__perfOverlay = el;
-      return el;
-    })();
+        const el = document.createElement("div");
+        el.id = "perf-overlay";
+        // Use shared panel theme (ensure fixed positioning & stacking above canvas)
+        el.className = "ui-panel perf-grid";
+        el.style.position = "fixed";
+        el.style.left = "10px";
+        el.style.bottom = "10px";
+        el.style.zIndex = "10002";
+        el.style.minWidth = "280px";
+        el.style.padding = "14px 16px";
+        el.style.fontSize = "15px";
+        el.style.pointerEvents = "none";
+        document.body.appendChild(el);
+        (window as any).__perfOverlay = el;
+        return el;
+      })();
   // Quick debug toggles surfaced to window
-  (window as any).__imgDebug = (on: boolean) => enableImageCacheDebug(!!on);
   // One-call aggregated snapshot for bug reports
   let frameCount = 0;
   let lastFpsTime = performance.now();
@@ -3998,12 +3885,6 @@ const splashEl = document.getElementById("splash");
       ` In-Flight Decodes: ${getInflightTextureCount()}\n` +
       ` Decode Queue: ${decodeQLine.replace("DecodeQ ", "")}\n` +
       ` ${decodeDiagLine}\n` +
-      (() => {
-        const m = (window as any).__frameDiag || {};
-        const line = ` Ops upg:${m.upg || 0} load:${m.load || 0} down:${m.down || 0} budget:${(m.budgetMs || 0).toFixed?.(1) || 0}ms inflight:${m.inflight || 0}`;
-        (window as any).__frameDiag = {};
-        return ` ${line}\n`;
-      })() +
       `\nCache Layers\n` +
       ` Session Hits: ${stats.sessionHits}  IDB Hits: ${stats.idbHits}  Canonical Hits: ${stats.canonicalHits}\n` +
       `\nNetwork\n` +
@@ -4415,10 +4296,6 @@ const splashEl = document.getElementById("splash");
       if (anyS.__groupOverlayActive) anyS.__groupOverlayActive = false;
       // Fully reset any hidden flags that may persist from overlay/group modes
       if (!s.visible) s.visible = true;
-      if (s.alpha !== 1) s.alpha = 1;
-      anyS.__hiddenAt = undefined;
-      anyS.__inflightLevel = 0;
-      anyS.__pendingLevel = 0;
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       if (s.cursor !== "pointer") s.cursor = "pointer";
       // Refresh placeholder appearance & selection outline
@@ -4434,7 +4311,6 @@ const splashEl = document.getElementById("splash");
       if (gv) {
         if (gv._zoomLabel) {
           gv._zoomLabel.visible = false;
-          gv._zoomLabel.alpha = 0;
         }
         if (gv._overlayDrag) {
           (gv._overlayDrag as any).eventMode = "none";
@@ -4460,11 +4336,7 @@ const splashEl = document.getElementById("splash");
       if (anyS.__groupId) anyS.__groupId = undefined;
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       s.cursor = "pointer";
-      s.alpha = 1;
       s.visible = true;
-      anyS.__hiddenAt = undefined;
-      anyS.__inflightLevel = 0;
-      anyS.__pendingLevel = 0;
       updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
     });
     const n = sprites.length || 1;
@@ -4887,11 +4759,11 @@ const splashEl = document.getElementById("splash");
         | ["left", number, number]
         | ["above", number, number]
       )[] = [
-          ["right", umaxX + margin, uminY],
-          ["below", uminX, umaxY + margin],
-          ["left", uminX - margin, uminY],
-          ["above", uminX, uminY - margin],
-        ];
+        ["right", umaxX + margin, uminY],
+        ["below", uminX, umaxY + margin],
+        ["left", uminX - margin, uminY],
+        ["above", uminX, uminY - margin],
+      ];
       for (const [side, baseX, baseY] of sides) {
         for (const s of scales) {
           let targetW = Math.max(minWNeeded, Math.round(base * s));
@@ -5778,22 +5650,6 @@ const splashEl = document.getElementById("splash");
           (importExportUI as any).hide();
         }
       }, 250);
-
-      // DevTools helpers: capture current per-frame diag and last profile buffer
-      (window as any).__mtgPerfDiag = () => {
-        try {
-          return { ...(window as any).__frameDiag };
-        } catch {
-          return {};
-        }
-      };
-      (window as any).__mtgPerfProfile = () => {
-        try {
-          return (window as any).__mtgPerfLastProfile || [];
-        } catch {
-          return [];
-        }
-      };
     }
     function wirePanelHover() {
       if (wiredPanel) return;
@@ -6092,18 +5948,14 @@ const splashEl = document.getElementById("splash");
   // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
   let last = performance.now();
   // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
+  // app.ticker.maxFPS=30;
   app.ticker.add(() => {
     const now = performance.now();
     const dt = now - last;
     last = now;
-    // reset per-frame diagnostics and mark frame start
-    (window as any).__frameDiag = {};
-    const fStart = now;
     camera.update(dt);
     // Align world transform to device pixels when camera is not actively moving or gliding
     // Use camera's internal speed to decide instead of a coarse movement heuristic.
-    const tAfterCam = performance.now();
-    const tLoad0 = 0;
     {
       // Compute viewport rect in world space
       const vw = app.renderer.width;
@@ -6115,8 +5967,6 @@ const splashEl = document.getElementById("splash");
       const bottom = top + vh * inv;
       (window as any).__mtgView = { left, top, right, bottom };
     }
-    const tLoad1 = performance.now();
-    const tUpg0 = tLoad1;
     // upgrade
     {
       const view: any = (window as any).__mtgView;
@@ -6127,33 +5977,17 @@ const splashEl = document.getElementById("splash");
         }
       }
     }
-    const tUpg1 = performance.now();
     // Build id->sprite map infrequently; sufficient for interaction lookups
     const fc: number = ((window as any).__fc || 0) + 1;
     (window as any).__fc = fc;
-    const tId0 = performance.now();
     if (fc % 12 === 0 || !(window as any).__mtgIdToSprite) {
       const idToSprite: Map<number, CardSprite> = new Map();
       for (const s of sprites) idToSprite.set(s.__id, s);
       (window as any).__mtgIdToSprite = idToSprite;
     }
-    const tId1 = performance.now();
-    const tBudget0 = performance.now();
-    // Optional: lightweight debug surface
-    (window as any).__renderInfo = {
-      dpr: getEffectiveDpr(),
-      res: (app.renderer as any).resolution,
-      size: {
-        w: (app.renderer as any).width,
-        h: (app.renderer as any).height,
-      },
-    };
-    // If we're near the GPU cliff (>97% of budget), run the coalesced budget pass to carve headroom.
-    const tBudget1 = performance.now();
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
-    const tGrp0 = performance.now();
     if (Math.abs(scale - lastScale) > 0.01) {
       (window as any).__lastZoomChangedAt = now;
       // Compute expanded viewport bounds once (world space)
@@ -6165,7 +5999,6 @@ const splashEl = document.getElementById("splash");
       const top = -world.position.y * inv - pad;
       const right = left + vw * inv + pad * 2;
       const bottom = top + vh * inv + pad * 2;
-      let groupsUpdated = 0;
       groups.forEach((gv) => {
         const gx1 = gv.gfx.x;
         const gy1 = gv.gfx.y;
@@ -6177,11 +6010,8 @@ const splashEl = document.getElementById("splash");
         if (inView && !overlayActive) updateGroupTextQuality(gv, scale);
         if (inView) updateGroupZoomPresentation(gv, scale, sprites);
         (gv as any).__lastInView = inView;
-        if (inView) groupsUpdated++;
       });
       (window as any).__lastGroupUpdateScale = scale;
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.groupsUpdated = (d.groupsUpdated || 0) + groupsUpdated;
     }
     // If scale hasn't changed, still fix up groups that just entered the viewport so their overlay state is correct.
     {
@@ -6193,7 +6023,6 @@ const splashEl = document.getElementById("splash");
       const top = -world.position.y * inv - pad;
       const right = left + vw * inv + pad * 2;
       const bottom = top + vh * inv + pad * 2;
-      let groupsChecked2 = 0;
       groups.forEach((gv) => {
         const gx1 = gv.gfx.x;
         const gy1 = gv.gfx.y;
@@ -6208,60 +6037,11 @@ const splashEl = document.getElementById("splash");
           updateGroupZoomPresentation(gv, scale, sprites);
         }
         (gv as any).__lastInView = inView;
-        groupsChecked2++;
       });
-      const d: any = ((window as any).__frameDiag ||= {});
-      d.groupsChecked = (d.groupsChecked || 0) + groupsChecked2;
-    }
-    const tGrp1 = performance.now();
-    // Aggregate timings and expose optional N-frame profiler buffer
-    const d: any = ((window as any).__frameDiag ||= {});
-    d.camMs = (d.camMs || 0) + (tAfterCam - fStart);
-    d.loadMs = (d.loadMs || 0) + (tLoad1 - tLoad0);
-    d.upgMs = (d.upgMs || 0) + (tUpg1 - tUpg0);
-    d.idMapMs = (d.idMapMs || 0) + (tId1 - tId0);
-    d.budgetMs = (d.budgetMs || 0) + (tBudget1 - tBudget0);
-    d.groupsMs = (d.groupsMs || 0) + (tGrp1 - tGrp0);
-    d.frameMs = dt;
-    const userMs =
-      tAfterCam -
-      fStart +
-      (tLoad1 - tLoad0) +
-      (tUpg1 - tUpg0) +
-      (tId1 - tId0) +
-      (tBudget1 - tBudget0) +
-      (tGrp1 - tGrp0);
-    d.userMs = userMs;
-    d.otherMs = Math.max(0, dt - userMs);
-    const left = (window as any).__mtgProfileLeft || 0;
-    if (left > 0) {
-      ((window as any).__mtgProfileData ||= []).push({
-        ...(window as any).__frameDiag,
-      });
-      (window as any).__mtgProfileLeft = left - 1;
-      if (left - 1 === 0)
-        (window as any).__mtgPerfLastProfile = (window as any).__mtgProfileData;
     }
     updatePerf();
   });
 
-  // Expose a helper to capture the next N frames of __frameDiag into window.__mtgPerfLastProfile
-  (window as any).__mtgProfile = (n = 60) => {
-    try {
-      (window as any).__mtgProfileData = [];
-      (window as any).__mtgProfileLeft = Math.max(
-        1,
-        Math.min(600, Math.floor(n)),
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  // Periodically ensure any new sprites have context listeners
-  setInterval(() => {
-    ensureCardContextListeners();
-  }, 2000);
   window.addEventListener("beforeunload", () => {
     if (!SUPPRESS_SAVES) persistLocalPositions();
     // Flush pending group save using the optimized path (O(N) id map), not per-member findIndex.
@@ -6270,26 +6050,7 @@ const splashEl = document.getElementById("splash");
         clearTimeout(lsGroupsTimer);
         lsGroupsTimer = null;
       }
-      try {
-        persistLocalGroups();
-      } catch {
-        // Minimal fallback: only persist group frames
-        const framesOnly = {
-          groups: [...groups.values()].map((gv) => ({
-            id: gv.id,
-            x: gv.gfx.x,
-            y: gv.gfx.y,
-            w: gv.w,
-            h: gv.h,
-            z: gv.gfx.zIndex || 0,
-            name: gv.name,
-            collapsed: gv.collapsed,
-          })),
-        };
-        localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
-      }
+      persistLocalGroups();
     }
   });
-
-  // Global Help hotkey removed; keep Ctrl+I import/export intact elsewhere.
 })();

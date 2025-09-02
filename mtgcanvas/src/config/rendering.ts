@@ -8,11 +8,11 @@ export interface TextureSettings {
 }
 
 // Defaults are conservative; can be tuned at runtime via configureTextureSettings()
-export const textureSettings: TextureSettings = {
+export let textureSettings: TextureSettings = {
   gpuBudgetMB: 4000, // 2 GB default budget to reduce pressure on typical GPUs
   disablePngTier: true,
   allowEvict: true,
-  decodeParallelLimit: 32,
+  decodeParallelLimit: 4,
 };
 
 export function configureTextureSettings(p: Partial<TextureSettings>) {

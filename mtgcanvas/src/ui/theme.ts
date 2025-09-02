@@ -132,65 +132,7 @@ export function isUiScaleManual(): boolean {
   if (typeof localStorage === "undefined") return false;
   return localStorage.getItem(UI_SCALE_MODE_KEY) === "1";
 }
-export function setUiScaleManual(manual: boolean) {
-  if (typeof localStorage === "undefined") return;
-  if (manual) localStorage.setItem(UI_SCALE_MODE_KEY, "1");
-  else localStorage.removeItem(UI_SCALE_MODE_KEY);
-}
 // Apply persisted or auto-detected UI scale. Keep small bias to shrink on Windows high-DPI.
-export function applyUiScaleFromStorageOrAuto() {
-  // Version gate to allow migrating prior heuristic once
-  let s: number | null = null;
-  let needRecalc = false;
-  if (typeof localStorage !== "undefined") {
-    const ver = localStorage.getItem("uiScale.v");
-    if (ver !== "2") needRecalc = true;
-    const stored = localStorage.getItem(UI_SCALE_KEY);
-    if (stored) s = Number(stored);
-  }
-  // Respect manual mode: if user explicitly set a value, keep it across DPR changes
-  if (isUiScaleManual()) {
-    if (!(s != null && isFinite(s) && s > 0)) s = 1;
-    setUiScale(s!);
-    return;
-  }
-  if (needRecalc || s == null || !isFinite(s) || s <= 0) {
-    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
-    const ua =
-      (typeof navigator !== "undefined" &&
-        (navigator.userAgent || (navigator as any).platform)) ||
-      "";
-    const isWindows = /Windows|Win64|Win32/i.test(ua);
-    const isLinux = /Linux|X11/i.test(ua);
-    const isMac = /Macintosh|Mac OS X/i.test(ua);
-    // Goal: keep CSS UI about the same visual size across platforms.
-    // Windows tends to render CSS px larger at 125–175% scale, so shrink more aggressively.
-    if (isWindows) {
-      if (dpr >= 2.5) s = 0.78;
-      else if (dpr >= 2) s = 0.82;
-      else if (dpr >= 1.75) s = 0.86;
-      else if (dpr >= 1.5) s = 0.9;
-      else if (dpr >= 1.25) s = 0.92;
-      else s = 1;
-    } else if (isLinux) {
-      if (dpr >= 2) s = 0.9;
-      else if (dpr >= 1.5) s = 0.94;
-      else if (dpr >= 1.25) s = 0.96;
-      else s = 1;
-    } else if (isMac) {
-      // macOS HiDPI already feels balanced; only subtle trim for >2x
-      if (dpr >= 3) s = 0.94;
-      else if (dpr >= 2) s = 0.97;
-      else s = 1;
-    } else {
-      s = 1;
-    }
-    if (typeof localStorage !== "undefined")
-      localStorage.setItem("uiScale.v", "2");
-  }
-  setUiScale(s!);
-}
-
 function hexToNum(hex: string): number {
   const s = (hex || "").replace("#", "").slice(0, 6);
   const n = parseInt(s, 16);
