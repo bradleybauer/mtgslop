@@ -425,7 +425,7 @@ function memberSprites(
 
 // Ensure all member sprites render above the group's own graphics (frame/header/overlay).
 // Useful after restoring membership from persistence where zIndex wasn't adjusted by layout.
-export function ensureMembersZOrder(gv: GroupVisual, sprites: CardSprite[]) {
+export function ensureMembersZOrder(gv: GroupVisual) {
   const desired = (gv.gfx.zIndex ?? 0) + 1;
   for (const s of gv.items) {
     if (s.zIndex < desired) {
@@ -655,7 +655,7 @@ export function updateGroupTextQuality(
 }
 
 // ---- Metrics (price + count) ----
-export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
+export function updateGroupMetrics(gv: GroupVisual) {
   let total = 0;
   for (const sp of gv.items) {
     const card = sp?.__card;
@@ -710,7 +710,6 @@ function positionZoomOverlay(gv: GroupVisual) {
 export function updateGroupZoomPresentation(
   gv: GroupVisual,
   worldScale: number,
-  sprites: CardSprite[],
 ) {
   // Single-threshold, stateless model: derive from current scale only.
   const overlayActive = worldScale <= ZOOM_OVERLAY_THRESH;

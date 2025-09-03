@@ -67,7 +67,6 @@ import {
   LS_POSITIONS_KEY as POSITIONS_KEY,
   createLocalPersistence,
 } from "./services/persistence";
-import { refreshIdMap, getFastIdMap } from "./services/idRegistry";
 // createSprite is not needed directly; use bulk factory which calls it internally
 import {
   GRID_SIZE,
@@ -463,7 +462,7 @@ const splashEl = document.getElementById("splash");
   registerThemeListener(() => {
     groups.forEach((gv) => {
       // Ensure overlay/header visibility & overlay text color/position reflect new theme
-      updateGroupZoomPresentation(gv, world.scale.x, sprites);
+      updateGroupZoomPresentation(gv, world.scale.x);
       // Redraw with current theme-derived palette
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
     });
@@ -471,7 +470,7 @@ const splashEl = document.getElementById("splash");
   // Build placement context for planner module (captures live references)
   function buildPlacementContext(): PlacementContext {
     return {
-      sprites,
+      sprites: sprites as CardSprite[],
       groups,
       world,
       getCanvasBounds,
@@ -514,7 +513,7 @@ const splashEl = document.getElementById("splash");
         onDragMove: (moved) =>
           moved.forEach((ms) => {
             spatial.update({
-              id: ms.__id,
+              sprite: ms,
               minX: ms.x,
               minY: ms.y,
               maxX: ms.x + CARD_W_GLOBAL,
@@ -762,7 +761,7 @@ const splashEl = document.getElementById("splash");
     // 1) Update spatial bounds for all moved sprites
     for (const ms of moved) {
       spatial.update({
-        id: ms.__id,
+        sprite: ms,
         minX: ms.x,
         minY: ms.y,
         maxX: ms.x + CARD_W_GLOBAL,
@@ -822,7 +821,7 @@ const splashEl = document.getElementById("splash");
         removeCardFromGroup(gv, s);
         (s as any).__groupId = undefined;
       }
-      updateGroupMetrics(gv, sprites);
+      updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
     });
     // 4) Apply additions to target groups
@@ -841,7 +840,7 @@ const splashEl = document.getElementById("splash");
       const MANY_THRESHOLD = 8;
       if (spritesToAdd.length >= MANY_THRESHOLD) {
         const items: {
-          id: number;
+          sprite: CardSprite;
           minX: number;
           minY: number;
           maxX: number;
@@ -849,7 +848,7 @@ const splashEl = document.getElementById("splash");
         }[] = [];
         layoutGroup(gv, sprites, (sp) => {
           items.push({
-            id: sp.__id,
+            sprite: sp,
             minX: sp.x,
             minY: sp.y,
             maxX: sp.x + CARD_W_GLOBAL,
@@ -871,7 +870,7 @@ const splashEl = document.getElementById("splash");
             sprites,
             (sp) =>
               spatial.update({
-                id: sp.__id,
+                sprite: sp,
                 minX: sp.x,
                 minY: sp.y,
                 maxX: sp.x + CARD_W_GLOBAL,
@@ -891,8 +890,8 @@ const splashEl = document.getElementById("splash");
           s.visible = false;
         }
       }
-      ensureMembersZOrder(gv, sprites);
-      updateGroupMetrics(gv, sprites);
+      ensureMembersZOrder(gv);
+      updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
       timer.mark("z+metrics+draw");
       timer.end({ added: spritesToAdd.length });
@@ -906,7 +905,7 @@ const splashEl = document.getElementById("splash");
       s.eventMode = "static";
       s.cursor = "pointer";
       s.visible = true;
-      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
+      updateCardSpriteAppearance(s, SelectionStore.state.cards.has(s));
       membershipUpdates.push({ id: s.__id, group_id: null });
     }
     // 7) Queue all positions and schedule single save
@@ -924,7 +923,7 @@ const splashEl = document.getElementById("splash");
       sp.eventMode = "static";
       sp.cursor = "pointer";
       sp.visible = true;
-      updateCardSpriteAppearance(sp, SelectionStore.state.cardIds.has(sp.__id));
+      updateCardSpriteAppearance(sp, SelectionStore.state.cards.has(sp));
       updates.push({ id: sp.__id, group_id: null });
     });
     if (updates.length) InstancesRepo.updateMany(updates);
@@ -946,7 +945,9 @@ const splashEl = document.getElementById("splash");
     if (groupsRestored) return;
     groupsRestored = true;
     const timer = createPhaseTimer("startup:restoreMemoryGroups");
-    const idMap: Map<number, CardSprite> = getFastIdMap(sprites);
+    const idMap = new Map<number, CardSprite>();
+    for (let i = 0; i < sprites.length; i++)
+      idMap.set(sprites[i].__id, sprites[i]);
     const lsGroups =
       memoryGroupsData && Array.isArray(memoryGroupsData.groups)
         ? (memoryGroupsData.groups as any[])
@@ -1032,13 +1033,12 @@ const splashEl = document.getElementById("splash");
     }
     // Finalize visuals/metrics and persist transforms
     groups.forEach((gv) => {
-      ensureMembersZOrder(gv, sprites);
+      ensureMembersZOrder(gv);
       // Normalize baseZ of members to their zIndex after restore so future drags are stable
-      const idMap3: Map<number, CardSprite> = getFastIdMap(sprites);
       gv.order.forEach((sp) => {
         if (sp) (sp as any).__baseZ = sp.zIndex || (sp as any).__baseZ || 0;
       });
-      updateGroupMetrics(gv, sprites);
+      updateGroupMetrics(gv);
       drawGroup(gv, false);
       persistGroupTransform(gv.id, {
         x: gv.gfx.x,
@@ -1236,7 +1236,7 @@ const splashEl = document.getElementById("splash");
       const gv = currentPanelGroup();
       if (!gv) return;
       const items: {
-        id: number;
+        sprite: CardSprite;
         minX: number;
         minY: number;
         maxX: number;
@@ -1244,7 +1244,7 @@ const splashEl = document.getElementById("splash");
       }[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
-          id: s.__id,
+          sprite: s,
           minX: s.x,
           minY: s.y,
           maxX: s.x + CARD_W_GLOBAL,
@@ -1257,7 +1257,7 @@ const splashEl = document.getElementById("splash");
           ? (spatial as any).bulkUpdate(items)
           : items.forEach((it) => spatial.update(it));
       timer.mark("spatial");
-      updateGroupMetrics(gv, sprites);
+      updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
       timer.mark("metrics+draw");
       scheduleGroupSave();
@@ -1337,7 +1337,7 @@ const splashEl = document.getElementById("splash");
         vEl.textContent = v;
         metrics.append(kEl, vEl);
       };
-      updateGroupMetrics(gv, sprites);
+      updateGroupMetrics(gv);
       addRow("Cards", gv.items.size.toString());
       addRow("Price", `$${gv.totalPrice.toFixed(2)}`);
     }
@@ -1386,7 +1386,7 @@ const splashEl = document.getElementById("splash");
       hideCardInfoPanel();
       return;
     }
-    const sprite = sprites.find((s) => s.__id === ids[0]);
+    const sprite = ids[0];
     if (!sprite || !sprite.__card) {
       hideCardInfoPanel();
       return;
@@ -1520,7 +1520,7 @@ const splashEl = document.getElementById("splash");
     requestAnimationFrame(() => {
       // Ensure selection still the same and panel visible
       const stillOne = SelectionStore.getCards();
-      if (stillOne.length !== 1 || stillOne[0] !== sprite.__id) return;
+      if (stillOne.length !== 1 || stillOne[0] !== sprite) return;
       const p = ensureCardInfoPanel();
       const oracleElNow = p.querySelector("#cip-oracle") as HTMLElement | null;
       const facesElNow = p.querySelector("#cip-faces") as HTMLElement | null;
@@ -1894,7 +1894,7 @@ const splashEl = document.getElementById("splash");
       for (const id of ids) {
         const g = groups.get(id);
         if (!g) continue;
-        updateGroupMetrics(g, sprites);
+        updateGroupMetrics(g);
         drawGroup(g, SelectionStore.state.groupIds.has(g.id));
       }
     });
@@ -2199,7 +2199,7 @@ const splashEl = document.getElementById("splash");
       gv.gfx.y = clampedPos.y;
 
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
-      updateGroupMetrics(gv, sprites);
+      updateGroupMetrics(gv);
     });
     const endResize = () => {
       if (resizing) {
@@ -2431,7 +2431,7 @@ const splashEl = document.getElementById("splash");
       g.x = p.x;
       g.y = p.y;
       const primarySpatial: {
-        id: number;
+        sprite: CardSprite;
         minX: number;
         minY: number;
         maxX: number;
@@ -2441,7 +2441,7 @@ const splashEl = document.getElementById("splash");
         m.sprite.x = snap(m.sprite.x);
         m.sprite.y = snap(m.sprite.y);
         primarySpatial.push({
-          id: m.sprite.__id,
+          sprite: m.sprite,
           minX: m.sprite.x,
           minY: m.sprite.y,
           maxX: m.sprite.x + CARD_W_GLOBAL,
@@ -2459,7 +2459,7 @@ const splashEl = document.getElementById("splash");
       selected.delete(gv.id);
       if (selected.size && multiOffsets) {
         const items: {
-          id: number;
+          sprite: CardSprite;
           minX: number;
           minY: number;
           maxX: number;
@@ -2473,7 +2473,7 @@ const splashEl = document.getElementById("splash");
             m.sprite.x = snap(m.sprite.x);
             m.sprite.y = snap(m.sprite.y);
             items.push({
-              id: m.sprite.__id,
+              sprite: m.sprite,
               minX: m.sprite.x,
               minY: m.sprite.y,
               maxX: m.sprite.x + CARD_W_GLOBAL,
@@ -2487,10 +2487,7 @@ const splashEl = document.getElementById("splash");
             h: og.h,
           });
         });
-        if (items.length)
-          (spatial as any).bulkUpdate
-            ? (spatial as any).bulkUpdate(items)
-            : items.forEach((it) => spatial.update(it));
+        if (items.length) spatial.bulkUpdate(items);
       }
       scheduleGroupSave();
       multiOffsets = null;
@@ -2544,7 +2541,7 @@ const splashEl = document.getElementById("splash");
     addItem("Auto-pack", () => {
       const timer = createPhaseTimer("group-auto-pack(context)");
       const items: {
-        id: number;
+        sprite: CardSprite;
         minX: number;
         minY: number;
         maxX: number;
@@ -2552,7 +2549,7 @@ const splashEl = document.getElementById("splash");
       }[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
-          id: s.__id,
+          sprite: s,
           minX: s.x,
           minY: s.y,
           maxX: s.x + CARD_W_GLOBAL,
@@ -2565,7 +2562,7 @@ const splashEl = document.getElementById("splash");
           ? (spatial as any).bulkUpdate(items)
           : items.forEach((it) => spatial.update(it));
       timer.mark("spatial");
-      updateGroupMetrics(gv, sprites);
+      updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
       timer.mark("metrics+draw");
       scheduleGroupSave();
@@ -2654,7 +2651,7 @@ const splashEl = document.getElementById("splash");
               const old = groups.get(card.__groupId);
               if (old) {
                 removeCardFromGroup(old, card);
-                updateGroupMetrics(old, sprites);
+                updateGroupMetrics(old);
                 drawGroup(old, SelectionStore.state.groupIds.has(old.id));
               }
               // Ensure sprite reappears if group overlay had hidden it
@@ -2663,7 +2660,7 @@ const splashEl = document.getElementById("splash");
               card.visible = true;
               updateCardSpriteAppearance(
                 card,
-                SelectionStore.state.cardIds.has(card.__id),
+                SelectionStore.state.cards.has(card),
               );
             }
             console.log("[cardMenu] add card", card.__id, "to group", gv.id);
@@ -2672,20 +2669,20 @@ const splashEl = document.getElementById("splash");
             InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]);
             placeCardInGroup(gv, card, sprites, (s) =>
               spatial.update({
-                id: s.__id,
+                sprite: s,
                 minX: s.x,
                 minY: s.y,
                 maxX: s.x + CARD_W_GLOBAL,
                 maxY: s.y + CARD_H_GLOBAL,
               }),
             );
-            updateGroupMetrics(gv, sprites);
+            updateGroupMetrics(gv);
             drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
             scheduleGroupSave();
             // Update appearance for membership (non-image placeholder style) & selection outline
             updateCardSpriteAppearance(
               card,
-              SelectionStore.state.cardIds.has(card.__id),
+              SelectionStore.state.cards.has(card),
             );
           });
           if (already) {
@@ -2765,7 +2762,7 @@ const splashEl = document.getElementById("splash");
   function computeSelectionBounds() {
     const ids = SelectionStore.getCards();
     if (!ids.length) return null;
-    const selectedSprites = sprites.filter((s) => ids.includes(s.__id));
+    const selectedSprites = sprites.filter((s) => ids.includes(s));
     const minX = Math.min(...selectedSprites.map((s) => s.x));
     const minY = Math.min(...selectedSprites.map((s) => s.y));
     const maxX = Math.max(...selectedSprites.map((s) => s.x + CARD_W_GLOBAL));
@@ -2805,10 +2802,8 @@ const splashEl = document.getElementById("splash");
         const ids = SelectionStore.getCards();
         const membershipBatch: { id: number; group_id: number }[] = [];
         const touchedOld = new Set<number>();
-        const idMap: Map<number, CardSprite> = getFastIdMap(sprites);
         timer.mark("created-visual");
-        ids.forEach((cid) => {
-          const s = idMap.get(cid);
+        ids.forEach((s) => {
           if (!s) return;
           // Remove from previous group if any
           if (s.__groupId && s.__groupId !== gv.id) {
@@ -2820,7 +2815,7 @@ const splashEl = document.getElementById("splash");
           }
           addCardToGroupOrdered(gv, s, gv.order.length);
           s.__groupId = gv.id;
-          membershipBatch.push({ id: cid, group_id: gv.id });
+          membershipBatch.push({ id: s.__id, group_id: gv.id });
         });
         timer.mark("membership");
         if (membershipBatch.length) {
@@ -2836,13 +2831,13 @@ const splashEl = document.getElementById("splash");
         touchedOld.forEach((gid) => {
           const og = groups.get(gid);
           if (!og) return;
-          updateGroupMetrics(og, sprites);
+          updateGroupMetrics(og);
           drawGroup(og, SelectionStore.state.groupIds.has(og.id));
         });
         timer.mark("update-old");
         {
           const items: {
-            id: number;
+            sprite: CardSprite;
             minX: number;
             minY: number;
             maxX: number;
@@ -2850,7 +2845,7 @@ const splashEl = document.getElementById("splash");
           }[] = [];
           layoutGroup(gv, sprites, (s) => {
             items.push({
-              id: s.__id,
+              sprite: s,
               minX: s.x,
               minY: s.y,
               maxX: s.x + CARD_W_GLOBAL,
@@ -2863,7 +2858,7 @@ const splashEl = document.getElementById("splash");
               : items.forEach((it) => spatial.update(it));
         }
         timer.mark("layout+spatial");
-        updateGroupMetrics(gv, sprites);
+        updateGroupMetrics(gv);
         drawGroup(gv, true);
         timer.mark("metrics+draw");
         // Persist transform for repo-backed persistence (no-op in memory mode)
@@ -2904,7 +2899,7 @@ const splashEl = document.getElementById("splash");
         timer2.mark("attach");
         {
           const items: {
-            id: number;
+            sprite: CardSprite;
             minX: number;
             minY: number;
             maxX: number;
@@ -2912,7 +2907,7 @@ const splashEl = document.getElementById("splash");
           }[] = [];
           layoutGroup(gv, sprites, (s) => {
             items.push({
-              id: s.__id,
+              sprite: s,
               minX: s.x,
               minY: s.y,
               maxX: s.x + CARD_W_GLOBAL,
@@ -2925,7 +2920,7 @@ const splashEl = document.getElementById("splash");
               : items.forEach((it) => spatial.update(it));
         }
         timer2.mark("layout+spatial");
-        updateGroupMetrics(gv, sprites);
+        updateGroupMetrics(gv);
         drawGroup(gv, true);
         timer2.mark("metrics+draw");
         scheduleGroupSave();
@@ -2939,10 +2934,7 @@ const splashEl = document.getElementById("splash");
     // Select all (Ctrl+A)
     if ((e.key === "a" || e.key === "A") && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      SelectionStore.replace({
-        cardIds: new Set(sprites.map((s) => s.__id)),
-        groupIds: new Set(),
-      });
+      SelectionStore.replace({ cards: new Set(sprites), groupIds: new Set() });
     }
     // Clear selection (Esc)
     if (e.key === "Escape") {
@@ -2977,10 +2969,9 @@ const splashEl = document.getElementById("splash");
         // Track backing repo ids and scryfall ids for cleanup
         const sfIds: string[] = [];
         const touchedGroups = new Set<number>();
-        cardIds.forEach((id) => {
-          const idx = sprites.findIndex((s) => s.__id === id);
+        cardIds.forEach((s) => {
+          const idx = sprites.findIndex((x) => x === s);
           if (idx >= 0) {
-            const s = sprites[idx];
             const anyS: any = s as any;
             const gid = s.__groupId;
             if (gid) {
@@ -2996,7 +2987,8 @@ const splashEl = document.getElementById("splash");
           }
         });
         // Delete from repository so DB/memory won't restore
-        if (cardIds.length) InstancesRepo.deleteMany(cardIds);
+        if (cardIds.length)
+          InstancesRepo.deleteMany(cardIds.map((c) => c.__id));
         if (touchedGroups.size) scheduleGroupSave();
         // If no cards and no groups remain, surface overlay
         updateEmptyStateOverlay();
@@ -3016,30 +3008,23 @@ const splashEl = document.getElementById("splash");
   world.sortableChildren = true;
 
   // Selection visualization: update only changed items instead of scanning all
-  let __prevSelectedCards = new Set<number>();
+  let __prevSelectedCards = new Set<CardSprite>();
   let __prevSelectedGroups = new Set<number>();
   SelectionStore.on(() => {
-    const curCards = new Set<number>(SelectionStore.getCards());
+    const curCards = new Set<CardSprite>(SelectionStore.getCards());
     const curGroups = new Set<number>(SelectionStore.getGroups());
     // Diff cards
-    const addedCards: number[] = [];
-    const removedCards: number[] = [];
-    __prevSelectedCards.forEach((id) => {
-      if (!curCards.has(id)) removedCards.push(id);
+    const addedCards: CardSprite[] = [];
+    const removedCards: CardSprite[] = [];
+    __prevSelectedCards.forEach((sp) => {
+      if (!curCards.has(sp)) removedCards.push(sp);
     });
-    curCards.forEach((id) => {
-      if (!__prevSelectedCards.has(id)) addedCards.push(id);
+    curCards.forEach((sp) => {
+      if (!__prevSelectedCards.has(sp)) addedCards.push(sp);
     });
     if (addedCards.length || removedCards.length) {
-      const idMap: Map<number, CardSprite> = refreshIdMap(sprites);
-      for (const id of addedCards) {
-        const sp = idMap.get(id);
-        if (sp) updateCardSpriteAppearance(sp, true);
-      }
-      for (const id of removedCards) {
-        const sp = idMap.get(id);
-        if (sp) updateCardSpriteAppearance(sp, false);
-      }
+      for (const sp of addedCards) updateCardSpriteAppearance(sp, true);
+      for (const sp of removedCards) updateCardSpriteAppearance(sp, false);
     }
     // Diff groups
     const addedGroups: number[] = [];
@@ -3095,17 +3080,15 @@ const splashEl = document.getElementById("splash");
           rect.x + rect.w,
           rect.y + rect.h,
         );
-        const idSet = new Set(found.map((f) => f.id));
-        const cardIds = sprites
-          .filter((s) => {
-            if (!idSet.has(s.__id)) return false;
-            if ((s as any).__groupId) return false;
-            const cx = s.x + CARD_W_GLOBAL * 0.5;
-            const cy = s.y + CARD_H_GLOBAL * 0.5;
-            return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
-          })
-          .map((s) => s.__id);
-        return { groupIds: activeGroups, cardIds };
+        const spriteSet = new Set(found.map((f) => f.sprite));
+        const cards = sprites.filter((s) => {
+          if (!spriteSet.has(s)) return false;
+          if (s.__groupId) return false;
+          const cx = s.x + CARD_W_GLOBAL * 0.5;
+          const cy = s.y + CARD_H_GLOBAL * 0.5;
+          return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+        });
+        return { groupIds: activeGroups, cards };
       } else {
         // Normal mode: select cards only
         const found = spatial.search(
@@ -3114,16 +3097,14 @@ const splashEl = document.getElementById("splash");
           rect.x + rect.w,
           rect.y + rect.h,
         );
-        const idSet = new Set(found.map((f) => f.id));
-        const cardIds = sprites
-          .filter((s) => {
-            if (!idSet.has(s.__id)) return false;
-            const cx = s.x + CARD_W_GLOBAL * 0.5;
-            const cy = s.y + CARD_H_GLOBAL * 0.5;
-            return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
-          })
-          .map((s) => s.__id);
-        return { cardIds, groupIds: [] };
+        const spriteSet = new Set(found.map((f) => f.sprite));
+        const cards = sprites.filter((s) => {
+          if (!spriteSet.has(s)) return false;
+          const cx = s.x + CARD_W_GLOBAL * 0.5;
+          const cy = s.y + CARD_H_GLOBAL * 0.5;
+          return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+        });
+        return { cards, groupIds: [] };
       }
     },
   );
@@ -3201,7 +3182,7 @@ const splashEl = document.getElementById("splash");
   function computeSelectionOrGroupsBounds() {
     const ids = SelectionStore.getCards();
     const gids = SelectionStore.getGroups();
-    const cardSprites = sprites.filter((s) => ids.includes(s.__id));
+    const cardSprites = sprites.filter((s) => ids.includes(s));
     const groupSprites = gids
       .map((id) => groups.get(id))
       .filter(Boolean) as GroupVisual[];
@@ -3367,7 +3348,7 @@ const splashEl = document.getElementById("splash");
   let texResLine = "Res ?";
   let hiResPendingLine = "GlobalPending ?";
   let qualLine = "Qual ?";
-  let decodeQLine = "DecodeQ ?";
+  const decodeQLine = "DecodeQ ?";
   const hiResDiagLine = "HiResDiag ?";
   const decodeDiagLine = "DecodeDiag ?";
   function sampleMemory() {
@@ -3609,7 +3590,7 @@ const splashEl = document.getElementById("splash");
       // Pack to update w/h and card positions relative to group origin
       {
         const items: {
-          id: number;
+          sprite: CardSprite;
           minX: number;
           minY: number;
           maxX: number;
@@ -3617,7 +3598,7 @@ const splashEl = document.getElementById("splash");
         }[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
-            id: s.__id,
+            sprite: s,
             minX: s.x,
             minY: s.y,
             maxX: s.x + CARD_W_GLOBAL,
@@ -3641,7 +3622,7 @@ const splashEl = document.getElementById("splash");
         gv.gfx.y = p.y;
         // Move member sprites by the same delta to preserve layout relative to world
         const moved: {
-          id: number;
+          sprite: CardSprite;
           minX: number;
           minY: number;
           maxX: number;
@@ -3651,7 +3632,7 @@ const splashEl = document.getElementById("splash");
           sp.x = snap(sp.x + dx);
           sp.y = snap(sp.y + dy);
           moved.push({
-            id: sp.__id,
+            sprite: sp,
             minX: sp.x,
             minY: sp.y,
             maxX: sp.x + CARD_W_GLOBAL,
@@ -3762,7 +3743,6 @@ const splashEl = document.getElementById("splash");
       return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
     });
     // Batch path: create all groups and assign membership with minimal side-effects
-    const idMap: Map<number, CardSprite> = getFastIdMap(sprites);
     const created: GroupVisual[] = [];
     const posUpdates: { id: number; group_id: number }[] = [];
     const prevSuppress = SUPPRESS_SAVES;
@@ -3797,7 +3777,7 @@ const splashEl = document.getElementById("splash");
       // Pack each new group (layout within group) with batched spatial updates
       created.forEach((gv) => {
         const items: {
-          id: number;
+          sprite: CardSprite;
           minX: number;
           minY: number;
           maxX: number;
@@ -3805,7 +3785,7 @@ const splashEl = document.getElementById("splash");
         }[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
-            id: s.__id,
+            sprite: s,
             minX: s.x,
             minY: s.y,
             maxX: s.x + CARD_W_GLOBAL,
@@ -3828,7 +3808,7 @@ const splashEl = document.getElementById("splash");
       const scale = world.scale.x;
       created.forEach((gv) => {
         updateGroupTextQuality(gv, scale);
-        updateGroupZoomPresentation(gv, scale, sprites);
+        updateGroupZoomPresentation(gv, scale);
       });
       // After grouping, tidy ungrouped and reposition groups (skip global re-pack to avoid redundant work)
       gridUngroupedCards();
@@ -3872,7 +3852,7 @@ const splashEl = document.getElementById("splash");
       if (anyS.eventMode !== "static") anyS.eventMode = "static";
       if (s.cursor !== "pointer") s.cursor = "pointer";
       // Refresh placeholder appearance & selection outline
-      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
+      updateCardSpriteAppearance(s, SelectionStore.state.cards.has(s));
     });
     if (updates.length) {
       InstancesRepo.updateMany(updates);
@@ -3908,7 +3888,7 @@ const splashEl = document.getElementById("splash");
       s.eventMode = "static";
       s.cursor = "pointer";
       s.visible = true;
-      updateCardSpriteAppearance(s, SelectionStore.state.cardIds.has(s.__id));
+      updateCardSpriteAppearance(s, SelectionStore.state.cards.has(s));
     });
     const n = sprites.length || 1;
     // Choose grid shape that maximizes squaredness (same as Auto-Layout)
@@ -3953,7 +3933,7 @@ const splashEl = document.getElementById("splash");
       s.x = x;
       s.y = y;
       spatial.update({
-        id: s.__id,
+        sprite: s,
         minX: x,
         minY: y,
         maxX: x + CARD_W_GLOBAL,
@@ -4039,7 +4019,7 @@ const splashEl = document.getElementById("splash");
       s.x = x;
       s.y = y;
       spatial.update({
-        id: s.__id,
+        sprite: s,
         minX: x,
         minY: y,
         maxX: x + CARD_W_GLOBAL,
@@ -4420,9 +4400,8 @@ const splashEl = document.getElementById("splash");
       desiredSeeds,
     });
     const batch: { id: number; x: number; y: number }[] = [];
-    const idMap: Map<number, CardSprite> = getFastIdMap(sprites);
     const spatialItems: {
-      id: number;
+      sprite: CardSprite;
       minX: number;
       minY: number;
       maxX: number;
@@ -4443,7 +4422,7 @@ const splashEl = document.getElementById("splash");
         sp.x = snap(sp.x + dx);
         sp.y = snap(sp.y + dy);
         spatialItems.push({
-          id: sp.__id,
+          sprite: sp,
           minX: sp.x,
           minY: sp.y,
           maxX: sp.x + CARD_W_GLOBAL,
@@ -4516,14 +4495,7 @@ const splashEl = document.getElementById("splash");
         // If any hit is not one of our member sprites, we collide
         for (let i = 0; i < hits.length; i++) {
           const it = hits[i];
-          let isMember = false;
-          for (const sp of gv.items) {
-            if (sp.__id === it.id) {
-              isMember = true;
-              break;
-            }
-          }
-          if (!isMember) return true;
+          if (!gv.items.has(it.sprite)) return true;
         }
       }
       return false;
@@ -4581,7 +4553,7 @@ const splashEl = document.getElementById("splash");
       gv.gfx.y = clamped.y;
       // Shift member cards with the group pre-layout and batch spatial updates
       const items: {
-        id: number;
+        sprite: CardSprite;
         minX: number;
         minY: number;
         maxX: number;
@@ -4591,7 +4563,7 @@ const splashEl = document.getElementById("splash");
         s.x += dx;
         s.y += dy;
         items.push({
-          id: s.__id,
+          sprite: s,
           minX: s.x,
           minY: s.y,
           maxX: s.x + CARD_W_GLOBAL,
@@ -4643,15 +4615,12 @@ const splashEl = document.getElementById("splash");
     getGroups: () => groups,
     getAllNames: () => sprites.map((s) => (s as any).__card?.name || ""),
     getSelectedNames: () =>
-      SelectionStore.getCards()
-        .map((id) => sprites.find((s) => s.__id === id))
-        .filter(Boolean)
-        .map((s) => (s as any).__card?.name || ""),
+      SelectionStore.getCards().map((s) => s.__card.name || ""),
     importGroups: async (data, opt) => {
       // Build lookup by lowercase name from currently loaded sprites; extend by fetching from Scryfall if needed.
       const byName = new Map<string, any>();
       for (const s of sprites) {
-        const c = (s as any).__card;
+        const c = s.__card;
         if (!c) continue;
         const nm = (c.name || "").toLowerCase();
         if (nm && !byName.has(nm)) byName.set(nm, c);
@@ -4733,7 +4702,7 @@ const splashEl = document.getElementById("splash");
           } catch {
             id = ++maxId;
           }
-          let z = zCounter++;
+          const z = zCounter++;
           bulkItems.push({
             id: id,
             x: x,
@@ -5134,7 +5103,7 @@ const splashEl = document.getElementById("splash");
   // Search palette setup
   const searchUI = installSearchPalette({
     getSprites: () => sprites,
-    createGroupForSprites: (ids: number[], name: string) => {
+    createGroupForSprites: (cards: CardSprite[], name: string) => {
       const timer = createPhaseTimer("create-from-search");
       let id = groups.size ? Math.max(...groups.keys()) + 1 : 1;
       id = (GroupsRepo as any).create
@@ -5148,9 +5117,7 @@ const splashEl = document.getElementById("splash");
       attachGroupInteractions(gv);
       timer.mark("attach");
       const touchedOld = new Set<number>();
-      const idMap: Map<number, CardSprite> = getFastIdMap(sprites);
-      ids.forEach((cid) => {
-        const s = idMap.get(cid);
+      cards.forEach((s) => {
         if (!s) return;
         if (s.__groupId && s.__groupId !== gv.id) {
           const old = groups.get(s.__groupId);
@@ -5164,14 +5131,14 @@ const splashEl = document.getElementById("splash");
       });
       timer.mark("membership");
       InstancesRepo.updateMany(
-        ids.map((cid) => ({ id: cid, group_id: gv.id })),
+        cards.map((s) => ({ id: s.__id, group_id: gv.id })),
       );
       timer.mark("persist-members");
       // Auto-pack to minimize height (balanced grid close to square)
       // Batch spatial updates for all moved cards
       {
         const items: {
-          id: number;
+          sprite: CardSprite;
           minX: number;
           minY: number;
           maxX: number;
@@ -5179,7 +5146,7 @@ const splashEl = document.getElementById("splash");
         }[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
-            id: s.__id,
+            sprite: s,
             minX: s.x,
             minY: s.y,
             maxX: s.x + CARD_W_GLOBAL,
@@ -5211,12 +5178,9 @@ const splashEl = document.getElementById("splash");
         w: gv.w,
         h: gv.h,
       });
-      timer.end({ cards: ids.length });
+      timer.end({ cards: cards.length });
     },
-    focusSprite: (id: number) => {
-      const idMap: Map<number, CardSprite> = getFastIdMap(sprites);
-      const s = idMap.get(id);
-      if (!s) return;
+    focusSprite: (s: CardSprite) => {
       // Center camera on sprite without changing zoom drastically.
       const target = { x: s.x, y: s.y, w: CARD_W_GLOBAL, h: CARD_H_GLOBAL };
       camera.fitBounds(target, { w: window.innerWidth, h: window.innerHeight });
@@ -5286,7 +5250,7 @@ const splashEl = document.getElementById("splash");
     // Now size and layout the group at its final position
     {
       const items: {
-        id: number;
+        sprite: CardSprite;
         minX: number;
         minY: number;
         maxX: number;
@@ -5294,7 +5258,7 @@ const splashEl = document.getElementById("splash");
       }[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
-          id: s.__id,
+          sprite: s,
           minX: s.x,
           minY: s.y,
           maxX: s.x + CARD_W_GLOBAL,
@@ -5359,13 +5323,6 @@ const splashEl = document.getElementById("splash");
         }
       }
     }
-    // Refresh central id registry occasionally; keep window map for legacy code until migrated
-    // TODO this is fucking sus!!!!
-    const fc: number = ((window as any).__fc || 0) + 1;
-    (window as any).__fc = fc;
-    if (fc % 12 === 0) {
-      refreshIdMap(sprites);
-    }
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
@@ -5389,7 +5346,7 @@ const splashEl = document.getElementById("splash");
           gx2 >= left && gx1 <= right && gy2 >= top && gy1 <= bottom;
         const overlayActive = world.scale.x <= 0.85;
         if (inView && !overlayActive) updateGroupTextQuality(gv, scale);
-        if (inView) updateGroupZoomPresentation(gv, scale, sprites);
+        if (inView) updateGroupZoomPresentation(gv, scale);
         (gv as any).__lastInView = inView;
       });
       (window as any).__lastGroupUpdateScale = scale;
@@ -5415,7 +5372,7 @@ const splashEl = document.getElementById("splash");
         if (inView && !wasInView) {
           const overlayActive = world.scale.x <= 0.85;
           if (!overlayActive) updateGroupTextQuality(gv, scale);
-          updateGroupZoomPresentation(gv, scale, sprites);
+          updateGroupZoomPresentation(gv, scale);
         }
         (gv as any).__lastInView = inView;
       });

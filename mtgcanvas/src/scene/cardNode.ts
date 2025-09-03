@@ -2,6 +2,7 @@ import * as PIXI from "pixi.js";
 import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
+import { SelectionStore } from "../state/selectionStore";
 import { KeyedMinHeap } from "./keyedMinHeap";
 
 // --- Fast in-memory texture cache & loaders ---
@@ -34,11 +35,6 @@ const pqWaiters: Array<() => void> = [];
 function notifyTaskAvailable() {
   const w = pqWaiters.shift();
   if (w) w();
-}
-
-function currentDecodeLimit() {
-  // Hard cap at 16 per user requirement; also respect configured cap
-  return Math.min(settings.decodeParallelLimit, 16);
 }
 
 async function runDecodeTask(task: PrioTask) {
@@ -280,7 +276,7 @@ function forcePlaceholder(sprite: CardSprite) {
     sprite.height = 140;
   }
   // Apply selection tint directly to avoid texture swaps during selection
-  const sel = SelectionStore.state.cardIds.has(sprite.__id);
+  const sel = SelectionStore.state.cards.has(sprite);
   sprite.tint = sel ? Colors.cardSelectedTint() : Colors.cardDefaultTint();
 }
 

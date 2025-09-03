@@ -1,7 +1,6 @@
 import * as PIXI from "pixi.js";
 import type { CardSprite } from "./cardNode";
 import { createCardSprite } from "./cardNode";
-import { getFastIdMap } from "../services/idRegistry";
 import { SelectionStore } from "../state/selectionStore";
 import { snap } from "../utils/snap";
 
@@ -79,7 +78,7 @@ export function createSpritesBulk(
   // Batch insert into spatial index
   deps.spatial.bulkLoad(
     created.map((s) => ({
-      id: s.__id,
+      sprite: s,
       minX: s.x,
       minY: s.y,
       maxX: s.x + deps.cardW,
@@ -111,24 +110,7 @@ function attachCardInteractions(
   } = null;
   function beginDrag(atLocal: { x: number; y: number }) {
     // Compute selected sprites lazily (only when we actually start dragging)
-    const ids = SelectionStore.getCards();
-    // Prefer centralized id registry
-    const idMap: Map<number, CardSprite> | undefined = getFastIdMap(
-      getAll ? getAll() : [],
-    );
-    const dragSprites: CardSprite[] = [];
-    for (const id of ids) {
-      const sp = idMap?.get(id);
-      if (sp) dragSprites.push(sp);
-    }
-    if (dragSprites.length !== ids.length) {
-      // Fallback for any missing
-      const all = getAll();
-      const missing = new Set(ids.filter((id) => !idMap?.has(id)));
-      if (missing.size) {
-        for (const s of all) if (missing.has(s.__id)) dragSprites.push(s);
-      }
-    }
+    const dragSprites: CardSprite[] = SelectionStore.getCards();
     // Raise above current content using global max z; avoid full normalization on drag start
     const w: any = window as any;
     const getMax: any = w.__mtgMaxContentZ;
@@ -160,9 +142,9 @@ function attachCardInteractions(
       startMarquee(new PIXI.Point(e.global.x, e.global.y), true);
       return; // don't initiate drag
     }
-    if (!e.shiftKey && !SelectionStore.state.cardIds.has(s.__id))
-      SelectionStore.selectOnlyCard(s.__id);
-    else if (e.shiftKey) SelectionStore.toggleCard(s.__id);
+    if (!e.shiftKey && !SelectionStore.state.cards.has(s))
+      SelectionStore.selectOnlyCard(s);
+    else if (e.shiftKey) SelectionStore.toggleCard(s);
     // Record local start; we’ll start drag only after a tiny movement threshold
     const startLocal = world.toLocal(e.global);
     pendingStartLocal = { x: startLocal.x, y: startLocal.y };

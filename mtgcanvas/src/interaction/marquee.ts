@@ -9,7 +9,7 @@ interface MarqueeState {
   additive: boolean;
   active: boolean;
 }
-type QueryResult = { cardIds?: number[]; groupIds?: number[] };
+type QueryResult = { cards?: CardSprite[]; groupIds?: number[] };
 type QueryFn = (rect: {
   x: number;
   y: number;
@@ -77,24 +77,24 @@ export class MarqueeSystem {
       res = this.query({ x: data.x, y: data.y, w: data.w, h: data.h });
     } else {
       const sprites = this.getSprites();
-      const cards = sprites
-        .filter(
-          (s) =>
-            s.x + 100 >= data.x &&
-            s.x <= data.x + data.w &&
-            s.y + 140 >= data.y &&
-            s.y <= data.y + data.h,
-        )
-        .map((s) => s.__id);
-      res = { cardIds: cards, groupIds: [] };
+      const cards = sprites.filter(
+        (s) =>
+          s.x + 100 >= data.x &&
+          s.x <= data.x + data.w &&
+          s.y + 140 >= data.y &&
+          s.y <= data.y + data.h,
+      );
+      res = { cards, groupIds: [] };
     }
-    const selCards = new Set<number>(additive ? SelectionStore.getCards() : []);
+    const selCards = new Set<CardSprite>(
+      additive ? SelectionStore.getCards() : [],
+    );
     const selGroups = new Set<number>(
       additive ? SelectionStore.getGroups() : [],
     );
-    (res?.cardIds || []).forEach((id) => selCards.add(id));
+    (res?.cards || []).forEach((c) => selCards.add(c));
     (res?.groupIds || []).forEach((id) => selGroups.add(id));
-    SelectionStore.replace({ cardIds: selCards, groupIds: selGroups });
+    SelectionStore.replace({ cards: selCards, groupIds: selGroups });
   }
   isActive() {
     return !!this.state;

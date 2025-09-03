@@ -1,9 +1,11 @@
 import { createPanel, ensureThemeStyles } from "./theme";
+import { SelectionStore } from "../state/selectionStore";
 import {
   extractBaseCardName,
   parseDecklist,
   parseGroupsText,
 } from "../services/decklist";
+import type { CardSprite } from "../scene/cardNode";
 export { extractBaseCardName, parseDecklist };
 
 export interface ImportExportOptions {
@@ -66,17 +68,16 @@ export function installImportExport(
       const groups = opts.getGroups?.() || new Map();
       const considerAll = scope === "all";
       // Selection set from store when scoping to selection
-      let selected: Set<number> | null = null;
+      let selected: Set<CardSprite> | null = null;
       if (!considerAll) {
         try {
-          // Late import to avoid hard dependency if consumers polyfill
-          const { SelectionStore } = require("../state/selectionStore");
-          selected = new Set<number>(SelectionStore.getCards());
+          selected = new Set(SelectionStore.getCards());
         } catch {
-          selected = new Set<number>();
+          selected = new Set();
         }
       }
-      const isSel = (id: number) => considerAll || (selected?.has(id) ?? true);
+      const isSel = (s: CardSprite) =>
+        considerAll || (selected?.has(s) ?? true);
       const lines: string[] = [];
       const grouped = Array.from(groups.values()).sort(
         (a: any, b: any) => a.id - b.id,
@@ -107,7 +108,7 @@ export function installImportExport(
       const ungroupedNames: string[] = [];
       for (const s of sprites) {
         if ((s as any).__groupId) continue;
-        if (!isSel(s.__id)) continue;
+        if (!isSel(s)) continue;
         const raw = ((s as any).__card?.name || "").trim();
         const i = raw.indexOf("//");
         const n = i >= 0 ? raw.slice(0, i).trim() : raw;

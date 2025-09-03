@@ -6,8 +6,8 @@ import { parseScryfallQuery } from "../search/scryfallQuery";
 
 export interface SearchPaletteOptions {
   getSprites: () => CardSprite[];
-  createGroupForSprites: (spriteIds: number[], name: string) => void;
-  focusSprite: (id: number) => void; // centers / fits viewport around a sprite
+  createGroupForSprites: (cards: CardSprite[], name: string) => void;
+  focusSprite: (s: CardSprite) => void; // centers / fits viewport around a sprite
 }
 
 interface LastQueryResult {
@@ -23,7 +23,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
   let infoEl: HTMLDivElement | null = null;
   let filtersEl: HTMLDivElement | null = null;
   let last: LastQueryResult | null = null;
-  let currentMatches: number[] = [];
+  let currentMatches: CardSprite[] = [];
   let cursor = 0; // index into currentMatches
   let navEl: HTMLDivElement | null = null;
   let counterEl: HTMLSpanElement | null = null;
@@ -139,8 +139,8 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       if (nextBtn) nextBtn.disabled = cursor >= total - 1;
     }
     function centerOnCursor() {
-      const id = currentMatches[cursor];
-      if (id != null) focusSprite(id);
+      const sprite = currentMatches[cursor];
+      if (sprite) focusSprite(sprite);
     }
     prevBtn.onclick = () => {
       if (cursor > 0) {
@@ -357,16 +357,16 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     const tk = adv ? null : tokenize(q);
     const sprites = getSprites();
     // const MAX = 800; // safety cap
-    const matched: number[] = [];
+    const matched: CardSprite[] = [];
     for (const s of sprites) {
-      const c = (s as any).__card;
+      const c = s.__card;
       if (!c) continue;
-      if (filterMode === "ungrouped" && (s as any).__groupId) continue;
-      if (filterMode === "grouped" && !(s as any).__groupId) continue;
+      if (filterMode === "ungrouped" && s.__groupId) continue;
+      if (filterMode === "grouped" && !s.__groupId) continue;
       let ok = false;
       if (adv) ok = adv(c);
       else if (tk) ok = match(c, tk);
-      if (ok) matched.push(s.__id);
+      if (ok) matched.push(s);
     }
     currentMatches = matched;
     cursor = 0;

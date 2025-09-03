@@ -156,7 +156,7 @@ export function applyStoredPositions(
     }
     sprites.forEach((s) =>
       spatial.update({
-        id: s.__id,
+        sprite: s,
         minX: s.x,
         minY: s.y,
         maxX: s.x + cardW,

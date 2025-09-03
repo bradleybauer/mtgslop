@@ -1,5 +1,7 @@
+import type { CardSprite } from "../scene/cardNode";
+
 export interface SelectionState {
-  cardIds: Set<number>;
+  cards: Set<CardSprite>;
   groupIds: Set<number>;
 }
 
@@ -7,18 +9,18 @@ export interface ISelectionStore {
   readonly state: SelectionState;
   replace(next: SelectionState): void;
   clear(): void;
-  toggleCard(id: number): void;
+  toggleCard(card: CardSprite): void;
   toggleGroup(id: number): void;
-  selectOnlyCard(id: number): void;
+  selectOnlyCard(card: CardSprite): void;
   selectOnlyGroup(id: number): void;
   readonly isEmpty: boolean;
-  getCards(): number[];
+  getCards(): CardSprite[];
   getGroups(): number[];
   on(cb: () => void): () => void;
 }
 
 class SelectionStoreImpl implements ISelectionStore {
-  state: SelectionState = { cardIds: new Set(), groupIds: new Set() };
+  state: SelectionState = { cards: new Set(), groupIds: new Set() };
   listeners: Set<() => void> = new Set();
 
   replace(next: SelectionState) {
@@ -26,13 +28,13 @@ class SelectionStoreImpl implements ISelectionStore {
     this.emit();
   }
   clear() {
-    this.state.cardIds.clear();
+    this.state.cards.clear();
     this.state.groupIds.clear();
     this.emit();
   }
-  toggleCard(id: number) {
-    if (this.state.cardIds.has(id)) this.state.cardIds.delete(id);
-    else this.state.cardIds.add(id);
+  toggleCard(card: CardSprite) {
+    if (this.state.cards.has(card)) this.state.cards.delete(card);
+    else this.state.cards.add(card);
     this.emit();
   }
   toggleGroup(id: number) {
@@ -40,23 +42,23 @@ class SelectionStoreImpl implements ISelectionStore {
     else this.state.groupIds.add(id);
     this.emit();
   }
-  selectOnlyCard(id: number) {
-    this.state.cardIds.clear();
+  selectOnlyCard(card: CardSprite) {
+    this.state.cards.clear();
     this.state.groupIds.clear();
-    this.state.cardIds.add(id);
+    this.state.cards.add(card);
     this.emit();
   }
   selectOnlyGroup(id: number) {
-    this.state.cardIds.clear();
+    this.state.cards.clear();
     this.state.groupIds.clear();
     this.state.groupIds.add(id);
     this.emit();
   }
   get isEmpty() {
-    return this.state.cardIds.size === 0 && this.state.groupIds.size === 0;
+    return this.state.cards.size === 0 && this.state.groupIds.size === 0;
   }
   getCards() {
-    return [...this.state.cardIds];
+    return [...this.state.cards];
   }
   getGroups() {
     return [...this.state.groupIds];
@@ -75,7 +77,7 @@ export function createSelectionStore(
 ): ISelectionStore {
   const s = new SelectionStoreImpl();
   if (initial) {
-    s.state.cardIds = initial.cardIds ?? s.state.cardIds;
+    s.state.cards = (initial as any).cards ?? s.state.cards;
     s.state.groupIds = initial.groupIds ?? s.state.groupIds;
   }
   return s;

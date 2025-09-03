@@ -1,7 +1,8 @@
 import RBush from "rbush";
+import type { CardSprite } from "./cardNode";
 
 export interface SpatialItem {
-  id: number;
+  sprite: CardSprite;
   minX: number;
   minY: number;
   maxX: number;
@@ -19,21 +20,21 @@ export class SpatialIndex {
     if (!items || !items.length) return;
     this.tree.load(items);
   }
-  remove(id: number) {
+  removeBySprite(sprite: CardSprite) {
     this.tree.remove(
-      { id, minX: 0, minY: 0, maxX: 0, maxY: 0 } as SpatialItem,
-      (a, b) => a.id === b.id,
+      { sprite, minX: 0, minY: 0, maxX: 0, maxY: 0 } as SpatialItem,
+      (a, b) => a.sprite === b.sprite,
     );
   }
   update(item: SpatialItem) {
-    this.remove(item.id);
+    this.removeBySprite(item.sprite);
     this.insert(item);
   }
   // Update many items efficiently in one pass
   bulkUpdate(items: SpatialItem[]) {
     if (!items || !items.length) return;
     // Remove previous entries by id (custom equals compares ids)
-    for (const it of items) this.remove(it.id);
+    for (const it of items) this.removeBySprite(it.sprite);
     // Then bulk load the new bounds
     this.bulkLoad(items);
   }
