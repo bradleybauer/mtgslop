@@ -7,6 +7,9 @@ import {
 export { extractBaseCardName, parseDecklist };
 
 export interface ImportExportOptions {
+  // Core data accessors
+  getSprites: () => any[]; // list of CardSprite-like objects
+  getGroups: () => Map<number, any>; // Map of groupId -> GroupVisual-like object
   getAllNames: () => string[]; // all sprite names (one per sprite)
   getSelectedNames: () => string[]; // names for selected sprites
   importByNames: (
@@ -17,8 +20,10 @@ export interface ImportExportOptions {
     },
   ) => Promise<{ imported: number; unknown: string[] }>; // performs import, returns stats
   // Optional: provide a preformatted text export of groups and ungrouped cards
+  // If omitted, the panel will compute exports from getSprites/getGroups and SelectionStore
   getGroupsExport?: () => string;
   // Optional: provide scoped grouped export, limited to 'all' or 'selection'
+  // If omitted, the panel will compute exports from getSprites/getGroups and SelectionStore
   getGroupsExportScoped?: (scope: "all" | "selection") => string;
   // Optional: import the simple groups text format (headings + list items)
   importGroups?: (
@@ -54,6 +59,79 @@ export function installImportExport(
   opts: ImportExportOptions,
 ): ImportExportAPI {
   ensureThemeStyles();
+  // Default export builders if none provided
+  function buildGroupsExport(scope: "all" | "selection"): string {
+    try {
+      const sprites = opts.getSprites?.() || [];
+      const groups = opts.getGroups?.() || new Map();
+      const considerAll = scope === "all";
+      // Selection set from store when scoping to selection
+      let selected: Set<number> | null = null;
+      if (!considerAll) {
+        try {
+          // Late import to avoid hard dependency if consumers polyfill
+          const { SelectionStore } = require("../state/selectionStore");
+          selected = new Set<number>(SelectionStore.getCards());
+        } catch {
+          selected = new Set<number>();
+        }
+      }
+      const isSel = (id: number) => considerAll || (selected?.has(id) ?? true);
+      const lines: string[] = [];
+      const grouped = Array.from(groups.values()).sort(
+        (a: any, b: any) => a.id - b.id,
+      );
+      let anyGroupPrinted = false;
+      for (const gv of grouped) {
+        const names: string[] = gv.order
+          .map((s: any) => {
+            const raw = ((s as any).__card?.name || "").trim();
+            const i = raw.indexOf("//");
+            return i >= 0 ? raw.slice(0, i).trim() : raw;
+          })
+          .filter((n: string) => n);
+        if (!names.length) continue;
+        const title = gv.name || `Group ${gv.id}`;
+        lines.push(`# ${title}`);
+        const order: string[] = [];
+        const counts = new Map<string, number>();
+        for (const n of names) {
+          if (!counts.has(n)) order.push(n);
+          counts.set(n, (counts.get(n) || 0) + 1);
+        }
+        for (const n of order) lines.push(`${counts.get(n) || 1} ${n}`);
+        lines.push("");
+        anyGroupPrinted = true;
+      }
+      // Ungrouped
+      const ungroupedNames: string[] = [];
+      for (const s of sprites) {
+        if ((s as any).__groupId) continue;
+        if (!isSel(s.__id)) continue;
+        const raw = ((s as any).__card?.name || "").trim();
+        const i = raw.indexOf("//");
+        const n = i >= 0 ? raw.slice(0, i).trim() : raw;
+        if (n) ungroupedNames.push(n);
+      }
+      const orderU: string[] = [];
+      const countsU = new Map<string, number>();
+      for (const n of ungroupedNames) {
+        if (!countsU.has(n)) orderU.push(n);
+        countsU.set(n, (countsU.get(n) || 0) + 1);
+      }
+      const ungroupedLines = orderU.map((n) => `${countsU.get(n) || 1} ${n}`);
+      if (anyGroupPrinted) {
+        lines.push("#ungrouped");
+        if (!ungroupedLines.length) lines.push("(none)");
+        else lines.push(...ungroupedLines);
+      } else if (ungroupedLines.length) {
+        lines.push(...ungroupedLines);
+      }
+      return lines.join("\n");
+    } catch {
+      return "";
+    }
+  }
   let panel: HTMLDivElement | null = null;
   let exportArea: HTMLTextAreaElement | null = null;
   let importArea: HTMLTextAreaElement | null = null;
@@ -215,7 +293,7 @@ export function installImportExport(
         ? opts.getGroupsExportScoped(scope)
         : opts.getGroupsExport
           ? opts.getGroupsExport()
-          : "";
+          : buildGroupsExport(scope);
       if (exportArea) exportArea.value = txt;
     };
 
@@ -464,7 +542,7 @@ export function installImportExport(
       ? opts.getGroupsExportScoped(scope)
       : opts.getGroupsExport
         ? opts.getGroupsExport()
-        : "";
+        : buildGroupsExport(scope);
     if (exportArea) exportArea.value = txt;
     // focus import area for quick paste
     setTimeout(() => importArea?.focus(), 0);

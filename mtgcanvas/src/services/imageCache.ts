@@ -344,12 +344,3 @@ export async function getCachedImage(url: string): Promise<CachedImage> {
   inFlight.set(url, p);
   return p;
 }
-
-// Utility to clear cache (not wired to UI yet)
-export async function clearImageCache() {
-  const db = await openDB();
-  const tx = db.transaction(STORE, "readwrite");
-  tx.objectStore(STORE).clear();
-  objectUrlCache.forEach((u) => URL.revokeObjectURL(u));
-  objectUrlCache.clear();
-}

@@ -24,14 +24,11 @@ export interface GroupVisual {
   name: string;
   w: number;
   h: number;
-  collapsed: boolean;
-  _expandedH: number; // remembers height when collapsed
-  items: Set<number>; // member card ids
-  order: number[]; // ordering for layout
+  items: Set<CardSprite>; // member card sprites
+  order: CardSprite[]; // ordering for layout (sprites)
   _lastTextRes?: number; // internal: last applied resolution for dynamic crispness
   totalPrice: number; // cached aggregate price
   _zoomLabel?: PIXI.Text; // large centered label when zoomed far out
-  _lastZoomPhase?: number; // memo of last applied phase (0..1)
   _overlayDrag?: PIXI.Graphics; // transparent drag surface when overlay visible
 }
 
@@ -44,7 +41,6 @@ const BODY_RADIUS = 6;
 let BORDER_COLOR = Colors.panelBorder();
 let BORDER_COLOR_SELECTED = Colors.accent();
 let BODY_BG = Colors.panelBg(); // flat body background
-let BODY_BG_COLLAPSED = Colors.panelBgAlt();
 let HEADER_TEXT_COLOR = Colors.panelFg();
 let COUNT_TEXT_COLOR = Colors.panelFgDim();
 let PRICE_TEXT_COLOR = Colors.panelFg();
@@ -59,7 +55,6 @@ export function applyGroupTheme() {
   BORDER_COLOR = Colors.panelBorder();
   BORDER_COLOR_SELECTED = Colors.accent();
   BODY_BG = Colors.panelBg();
-  BODY_BG_COLLAPSED = Colors.panelBgAlt();
   HEADER_TEXT_COLOR = Colors.panelFg();
   COUNT_TEXT_COLOR = Colors.panelFgDim();
   PRICE_TEXT_COLOR = HEADER_TEXT_COLOR;
@@ -178,8 +173,6 @@ export function createGroupVisual(
     name: `Group ${id}`,
     w,
     h,
-    collapsed: false,
-    _expandedH: h,
     items: new Set(),
     order: [],
     totalPrice: 0,
@@ -224,7 +217,7 @@ export function createGroupVisual(
 
 // Core renderer for group visuals.
 export function drawGroup(gv: GroupVisual, selected: boolean) {
-  const { frame, header, label, count, resize, w, h, collapsed } = gv;
+  const { frame, header, label, count, resize, w, h } = gv;
   frame.clear();
   header.clear();
   resize.clear();
@@ -247,8 +240,8 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   (count.style as any).fontWeight = "500";
   (count.style as any).lineHeight = commonSize;
 
-  // Body (hide card area when collapsed)
-  const bodyH = collapsed ? HEADER_HEIGHT : h;
+  // Body
+  const bodyH = h;
   // Draw outer border ring as a filled rounded rect (avoids stroke joint artifacts)
   frame.roundRect(0, 0, w, bodyH, BODY_RADIUS).fill({ color: borderColor });
   // Draw inner body fill inset by border width.
@@ -263,7 +256,7 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
     if (fillH > 0) {
       // Use simple rect for body under header; rounded corners still apply at bottom via BODY_RADIUS-bw
       frame.rect(bw, startY, innerW, fillH).fill({
-        color: collapsed ? BODY_BG_COLLAPSED : BODY_BG,
+        color: BODY_BG,
       });
     }
   }
@@ -271,7 +264,7 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   header.hitArea = new PIXI.Rectangle(0, 0, w, HEADER_HEIGHT);
 
   // Label text (truncate if needed)
-  label.text = gv.name + (collapsed ? " ▸" : "");
+  label.text = gv.name;
   // Keep header text away from thick borders
   label.x = bw + 8;
   truncateLabelIfNeeded(gv);
@@ -307,8 +300,7 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   // Keep the group container's culling bounds in sync with current size/state
   const gAny: any = gv.gfx as any;
   gAny.cullable = true;
-  // When collapsed, only the header is visible and should participate in culling.
-  const cullH = collapsed ? HEADER_HEIGHT : h;
+  const cullH = h;
   const ca = gAny.cullArea as PIXI.Rectangle | undefined;
   if (ca) {
     ca.x = 0;
@@ -327,7 +319,7 @@ function truncateLabelIfNeeded(gv: GroupVisual) {
   // Reserve space for count + price on right
   const maxLabelWidth = gv.w - 16 - (gv.count.width + 6 + gv.price.width) - 10; // padding and gap
   if (gv.label.width <= maxLabelWidth) return;
-  const original = gv.name + (gv.collapsed ? " ▸" : "");
+  const original = gv.name;
   let txt = original;
   while (txt.length > 3 && gv.label.width > maxLabelWidth) {
     txt = txt.slice(0, -1);
@@ -343,8 +335,7 @@ export function layoutGroup(
   sprites: CardSprite[],
   onMoved?: (s: CardSprite) => void,
 ) {
-  if (gv.collapsed) return;
-  const items = fastLookupSprites(gv.order, sprites);
+  const items = gv.order.slice();
   if (!items.length) return;
   const usableW = Math.max(1, gv.w - PAD_X * 2);
   const cols = Math.max(1, Math.floor((usableW + GAP_X) / (CARD_W + GAP_X)));
@@ -378,7 +369,6 @@ export function layoutGroup(
     PAD_BOTTOM_EXTRA;
   if (neededH > gv.h) {
     gv.h = snap(neededH);
-    gv._expandedH = gv.h;
   }
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
   // Maintain overlay position after layout growth when overlay is currently visible
@@ -429,7 +419,7 @@ function memberSprites(
   sprites: CardSprite[],
   excludeId?: number,
 ): CardSprite[] {
-  const list = fastLookupSprites(gv.order, sprites);
+  const list = gv.order.slice();
   return excludeId == null ? list : list.filter((s) => s.__id !== excludeId);
 }
 
@@ -437,10 +427,7 @@ function memberSprites(
 // Useful after restoring membership from persistence where zIndex wasn't adjusted by layout.
 export function ensureMembersZOrder(gv: GroupVisual, sprites: CardSprite[]) {
   const desired = (gv.gfx.zIndex ?? 0) + 1;
-  const idMap = getIdMapFast(sprites);
-  for (const id of gv.items) {
-    const s = idMap.get(id);
-    if (!s) continue;
+  for (const s of gv.items) {
     if (s.zIndex < desired) {
       s.zIndex = desired;
       (s as any).__baseZ = desired;
@@ -561,7 +548,7 @@ export function autoPackGroup(
   sprites: CardSprite[],
   onMoved?: (s: CardSprite) => void,
 ) {
-  const items = fastLookupSprites(gv.order, sprites);
+  const items = gv.order.slice();
   if (!items.length) return;
   const n = items.length;
   const idealCols = Math.max(1, Math.round(Math.sqrt(n * (CARD_H / CARD_W))));
@@ -571,7 +558,6 @@ export function autoPackGroup(
   const innerH = rows * CARD_H + (rows - 1) * GAP_Y;
   gv.w = snap(innerW + PAD_X * 2);
   gv.h = snap(HEADER_HEIGHT + PAD_Y + innerH + PAD_Y + PAD_BOTTOM_EXTRA);
-  gv._expandedH = gv.h;
   layoutGroup(gv, sprites, onMoved);
   drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
   if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
@@ -598,20 +584,20 @@ export function insertionIndexForPoint(
 
 export function addCardToGroupOrdered(
   gv: GroupVisual,
-  cardId: number,
+  sprite: CardSprite,
   insertIndex: number,
 ) {
-  if (gv.items.has(cardId)) return;
-  gv.items.add(cardId);
+  if (gv.items.has(sprite)) return;
+  gv.items.add(sprite);
   if (insertIndex >= 0 && insertIndex <= gv.order.length)
-    gv.order.splice(insertIndex, 0, cardId);
-  else gv.order.push(cardId);
+    gv.order.splice(insertIndex, 0, sprite);
+  else gv.order.push(sprite);
 }
 
-export function removeCardFromGroup(gv: GroupVisual, cardId: number) {
-  if (!gv.items.has(cardId)) return;
-  gv.items.delete(cardId);
-  const idx = gv.order.indexOf(cardId);
+export function removeCardFromGroup(gv: GroupVisual, sprite: CardSprite) {
+  if (!gv.items.has(sprite)) return;
+  gv.items.delete(sprite);
+  const idx = gv.order.indexOf(sprite);
   if (idx >= 0) gv.order.splice(idx, 1);
 }
 
@@ -671,9 +657,7 @@ export function updateGroupTextQuality(
 // ---- Metrics (price + count) ----
 export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
   let total = 0;
-  const idMap = getIdMapFast(sprites);
-  for (const id of gv.items) {
-    const sp = idMap.get(id);
+  for (const sp of gv.items) {
     const card = sp?.__card;
     if (card) {
       // Scryfall style pricing: card.prices.usd (string or null)
@@ -689,35 +673,10 @@ export function updateGroupMetrics(gv: GroupVisual, sprites: CardSprite[]) {
   if (gv._zoomLabel && gv._zoomLabel.visible) positionZoomOverlay(gv);
 }
 
-// ---- Fast lookup helpers for large group ops ----
-function getIdMapFast(sprites: CardSprite[]): Map<number, CardSprite> {
-  const m = (window as any).__mtgIdToSprite as
-    | Map<number, CardSprite>
-    | undefined;
-  if (m && typeof m.get === "function") return m;
-  // Fallback: build a local index once
-  const idx = new Map<number, CardSprite>();
-  for (let i = 0; i < sprites.length; i++) idx.set(sprites[i].__id, sprites[i]);
-  return idx;
-}
-
-function fastLookupSprites(ids: number[], sprites: CardSprite[]): CardSprite[] {
-  const map = getIdMapFast(sprites);
-  const out: CardSprite[] = [];
-  for (let i = 0; i < ids.length; i++) {
-    const s = map.get(ids[i]);
-    if (s) out.push(s);
-  }
-  return out;
-}
+// (Id registry no longer needed for group ops; groups store sprites directly.)
 
 // ---------------- Zoom-Out Presentation -----------------
-// Fade cards + normal chrome out as user zooms far out; fade in large centered group label so the
-// whole group becomes a readable info tile at macro scale.
-// Thresholds (world scale): below HIGH start fade; at/below LOW overlay fully active.
-// Hard-coded to "kick in sharply at zooms < 1" per request.
-const ZOOM_OVERLAY_HIGH = 0.85; // deactivate when zooming in past this
-const ZOOM_OVERLAY_LOW = 0.75; // activate when zooming out past this
+export const ZOOM_OVERLAY_THRESH = 0.85;
 
 function positionZoomOverlay(gv: GroupVisual) {
   if (!gv._zoomLabel) return;
@@ -753,104 +712,42 @@ export function updateGroupZoomPresentation(
   worldScale: number,
   sprites: CardSprite[],
 ) {
-  if (gv.collapsed) {
-    if (gv._zoomLabel) {
-      gv._zoomLabel.visible = false;
-    }
-    gv._lastZoomPhase = 0;
-    return;
-  }
-  // Hysteresis: activate when worldScale <= LOW, deactivate when worldScale >= HIGH; in-between keep previous.
-  const prevPhase = gv._lastZoomPhase ?? 0;
-  const prevOverlayActive = prevPhase > 0;
-  let overlayActive: boolean;
-  if (prevOverlayActive) overlayActive = worldScale <= ZOOM_OVERLAY_HIGH;
-  else overlayActive = worldScale <= ZOOM_OVERLAY_LOW;
-  // Cooldown to prevent rapid flapping on boundary due to momentum/rounding
-  const nowTs = performance.now();
-  const lastToggle: number = (gv as any).__overlayToggleAt ?? 0;
-  if (overlayActive !== prevOverlayActive && nowTs - lastToggle < 250) {
-    overlayActive = prevOverlayActive;
-  }
-  (gv as any).__lastOverlayScale = worldScale;
-  const toggled = overlayActive !== prevOverlayActive;
-  gv._lastZoomPhase = overlayActive ? 1 : 0;
+  // Single-threshold, stateless model: derive from current scale only.
+  const overlayActive = worldScale <= ZOOM_OVERLAY_THRESH;
   const overlay = gv._zoomLabel;
   if (overlay) {
-    const wasVisible = overlay.visible;
-    if (toggled) {
-      if (overlayActive && !wasVisible) {
-        overlay.visible = true;
-        positionZoomOverlay(gv);
-      } else if (!overlayActive && wasVisible) {
-        overlay.visible = false;
-      }
-    }
-    // Avoid expensive per-frame text reflow when many groups are visible.
-    // Layout routines call positionZoomOverlay(gv) on demand when dimensions/content change.
+    overlay.visible = overlayActive;
+    if (overlayActive) positionZoomOverlay(gv);
   }
-  // When overlay active state changes, toggle chrome visibility once.
-  if (toggled) {
-    if (overlayActive) {
-      gv.header.visible = false;
-      gv.header.eventMode = "none" as any;
-      gv.label.visible = false;
-      gv.count.visible = false;
-      gv.price.visible = false;
-    } else {
-      gv.header.visible = true;
-      gv.header.eventMode = "static" as any;
-      gv.label.visible = true;
-      gv.count.visible = true;
-      gv.price.visible = true;
-    }
-  }
+  // Idempotent visibility toggles
+  gv.header.visible = !overlayActive;
+  gv.header.eventMode = (overlayActive ? "none" : "static") as any;
+  gv.label.visible = !overlayActive;
+  gv.count.visible = !overlayActive;
+  gv.price.visible = !overlayActive;
   // Maintain a dedicated transparent drag surface with an inset hitArea so edges remain clickable.
   const dragSurf = gv._overlayDrag as PIXI.Graphics | undefined;
   if (dragSurf) {
     if (overlayActive) {
       const EDGE_PX = 16; // must match main.ts EDGE_PX
-      const prevScale: number = (gv as any).__lastDragScale ?? 0;
-      const prevW: number = (gv as any).__lastDragW ?? -1;
-      const prevH: number = (gv as any).__lastDragH ?? -1;
       const scale = Math.max(0.0001, worldScale);
-      const scaleDelta = Math.abs(scale - prevScale);
-      const sizeChanged = gv.w !== prevW || gv.h !== prevH;
-      if (toggled || scaleDelta > 0.05 || sizeChanged) {
-        const inset = Math.min(gv.w / 2, Math.min(gv.h / 2, EDGE_PX / scale));
-        const iw = Math.max(0, gv.w - inset * 2);
-        const ih = Math.max(0, gv.h - inset * 2);
-        (dragSurf as any).eventMode = "static";
-        (dragSurf as any).cursor = "move";
-        dragSurf.visible = true;
-        (dragSurf as any).hitArea = new PIXI.Rectangle(inset, inset, iw, ih);
-        (gv as any).__lastDragScale = scale;
-        (gv as any).__lastDragW = gv.w;
-        (gv as any).__lastDragH = gv.h;
-      }
-    } else if (toggled) {
+      const inset = Math.min(gv.w / 2, Math.min(gv.h / 2, EDGE_PX / scale));
+      const iw = Math.max(0, gv.w - inset * 2);
+      const ih = Math.max(0, gv.h - inset * 2);
+      (dragSurf as any).eventMode = "static";
+      (dragSurf as any).cursor = "move";
+      dragSurf.visible = true;
+      (dragSurf as any).hitArea = new PIXI.Rectangle(inset, inset, iw, ih);
+    } else {
       dragSurf.visible = false;
       (dragSurf as any).eventMode = "none";
       (dragSurf as any).hitArea = null as any;
     }
   }
-  // If nothing toggled and no drag update was needed, we’re done.
-  if (!toggled) return;
-  // If the overlay active state didn't change since last frame, skip per-card work entirely.
-  if (overlayActive === prevOverlayActive) return;
-  (gv as any).__overlayToggleAt = nowTs;
   (window as any).__overlayToggles = ((window as any).__overlayToggles | 0) + 1;
-  // Adjust member card sprite visibility/alpha
-  const idToSprite: Map<number, CardSprite> | undefined = (window as any)
-    .__mtgIdToSprite;
-  const now = performance.now();
-  for (const id of gv.items) {
-    const sp = idToSprite
-      ? idToSprite.get(id)
-      : sprites.find((s) => s.__id === id);
-    if (!sp) continue;
+  // Adjust member card sprite visibility/alpha (idempotent)
+  for (const sp of gv.items) {
     // Flag overlay activity for interaction layer so card drags are suppressed when overlay intended for group drag.
-    (sp as any).__groupOverlayActive = overlayActive;
     // Toggle eventMode so sibling overlay can receive pointer events (cards are siblings, not children of group)
     const desiredMode = overlayActive ? "none" : "static";
     if ((sp as any).eventMode !== desiredMode)

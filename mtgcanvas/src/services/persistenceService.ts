@@ -13,23 +13,6 @@ export interface LoadedData {
   })[];
 }
 
-export function loadAll(): LoadedData {
-  const instances = InstancesRepo.list();
-  const groups = GroupsRepo.list().map((g: GroupRow) => ({
-    ...g,
-    transform: g.transform_json ? safeParse(g.transform_json) : undefined,
-  }));
-  return { instances, groups };
-}
-
-function safeParse(t: string) {
-  try {
-    return JSON.parse(t);
-  } catch {
-    return undefined;
-  }
-}
-
 interface PendingPos {
   id: number;
   x: number;

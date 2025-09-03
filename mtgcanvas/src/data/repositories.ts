@@ -14,7 +14,7 @@ export interface GroupRow {
   id: number;
   parent_id: number | null;
   name: string | null;
-  collapsed: number;
+  // collapsed removed
   transform_json: string | null;
 }
 
@@ -170,7 +170,7 @@ export const GroupsRepo = {
       id: memGroupId++,
       parent_id,
       name,
-      collapsed: 0,
+      // collapsed removed
       transform_json: JSON.stringify({ x, y, w, h }),
     };
     mem.groups.push(row);
@@ -191,10 +191,7 @@ export const GroupsRepo = {
     const g = mem.groups.find((g) => g.id === id);
     if (g) (g as any).transform_json = json;
   },
-  setCollapsed(id: number, collapsed: boolean) {
-    const g = mem.groups.find((g) => g.id === id);
-    if (g) g.collapsed = collapsed ? 1 : 0;
-  },
+  // setCollapsed removed
   rename(id: number, name: string) {
     const g = mem.groups.find((g) => g.id === id);
     if (g) g.name = name;
