@@ -44,7 +44,6 @@ import {
   persistGroupRename,
 } from "./services/persistenceService";
 import { InstancesRepo, GroupsRepo } from "./data/repositories";
-// Dataset constants referenced in logs only in dataset service; no usage here
 import {
   ensureThemeToggleButton,
   ensureThemeStyles,
@@ -112,7 +111,7 @@ window.addEventListener(
 const splashEl = document.getElementById("splash");
 (async () => {
   await app.init({
-    background: Colors.canvasBg() as any,
+    background: (Colors.canvasBg() as unknown) as number,
     resizeTo: window,
     antialias: true,
     resolution: 1,
@@ -141,7 +140,7 @@ const splashEl = document.getElementById("splash");
     const css = getComputedStyle(document.documentElement);
     const bg = css.getPropertyValue("--canvas-bg").trim();
     const hex = parseCssHexColor(bg);
-    if (hex != null) app.renderer.background.color = hex as any;
+  if (hex != null) (app.renderer.background as any).color = hex as any;
   }
   registerThemeListener(() => applyCanvasBg());
   // Will run once theme styles ensured below; calling here just in case dark default already present.
@@ -152,7 +151,9 @@ const splashEl = document.getElementById("splash");
   // Guard against accidental CSS scaling of the WebGL canvas (which would blur)
   app.canvas.style.imageRendering = "auto"; // let WebGL handle filtering
   app.canvas.style.transform = ""; // ensure we don't have CSS transforms
-  const canvas: any = app.renderer.canvas;
+  const canvas = app.renderer.canvas as HTMLCanvasElement & {
+    addEventListener: HTMLCanvasElement["addEventListener"];
+  };
   let ctxLostBanner: HTMLDivElement | null = null;
   function showCtxLostBanner(msg: string) {
     if (!ctxLostBanner) {
@@ -169,7 +170,7 @@ const splashEl = document.getElementById("splash");
   }
   canvas.addEventListener(
     "webglcontextlost",
-    (ev: any) => {
+  (ev: Event) => {
       ev.preventDefault();
       app.ticker.stop();
       showCtxLostBanner("Graphics context lost. Attempting to recover…");
@@ -360,7 +361,7 @@ const splashEl = document.getElementById("splash");
   // Camera abstraction
   const camera = new Camera({ world });
   // Limit panning/zooming to a very large but finite canvas area
-  const ha: any = app.stage.hitArea as any;
+  const ha = app.stage.hitArea as PIXI.Rectangle | null;
   if (ha && typeof ha.x === "number")
     camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
   if (ha && typeof ha.x === "number")
@@ -371,7 +372,7 @@ const splashEl = document.getElementById("splash");
   });
   // Keep camera min zoom accommodating full bounds on viewport resize
   window.addEventListener("resize", () => {
-    const ha: any = app.stage.hitArea as any;
+  const ha = app.stage.hitArea as PIXI.Rectangle | null;
     if (ha && typeof ha.x === "number")
       camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
   });
@@ -988,48 +989,6 @@ const splashEl = document.getElementById("splash");
             .forEach((s) => addCardToGroupOrdered(gv, s, gv.order.length));
         }
       }
-    } else {
-      // Legacy fallback: compute frames from member positions grouped by sprite.__groupId
-      const byGid = new Map<number, CardSprite[]>();
-      sprites.forEach((s) => {
-        const gid = (s as any).__groupId;
-        if (gid && typeof gid === "number") {
-          const arr = byGid.get(gid) || [];
-          arr.push(s);
-          byGid.set(gid, arr);
-        }
-      });
-      byGid.forEach((members, gid) => {
-        let minX = Number.POSITIVE_INFINITY,
-          minY = Number.POSITIVE_INFINITY,
-          maxX = Number.NEGATIVE_INFINITY,
-          maxY = Number.NEGATIVE_INFINITY;
-        members.forEach((s) => {
-          const x1 = s.x,
-            y1 = s.y,
-            x2 = s.x + CARD_W_GLOBAL,
-            y2 = s.y + CARD_H_GLOBAL;
-          if (x1 < minX) minX = x1;
-          if (y1 < minY) minY = y1;
-          if (x2 > maxX) maxX = x2;
-          if (y2 > maxY) maxY = y2;
-        });
-        if (!Number.isFinite(minX)) return;
-        const pad = 20;
-        const w = Math.max(120, Math.round(maxX - minX + pad * 2));
-        const h = Math.max(120, Math.round(maxY - minY + pad * 2));
-        const x = Math.round(minX - pad);
-        const y = Math.round(minY - pad);
-        const gv = createGroupVisual(gid, x, y, w, h);
-        groups.set(gid, gv);
-        world.addChild(gv.gfx);
-        attachResizeHandle(gv);
-        attachGroupInteractions(gv);
-        members
-          .slice()
-          .sort((a, b) => a.y - b.y || a.x - b.x)
-          .forEach((s) => addCardToGroupOrdered(gv, s, gv.order.length));
-      });
     }
     // Finalize visuals/metrics and persist transforms
     groups.forEach((gv) => {
@@ -4615,7 +4574,7 @@ const splashEl = document.getElementById("splash");
     getGroups: () => groups,
     getAllNames: () => sprites.map((s) => (s as any).__card?.name || ""),
     getSelectedNames: () =>
-      SelectionStore.getCards().map((s) => s.__card.name || ""),
+      SelectionStore.getCards().map((s) => s.__card?.name || ""),
     importGroups: async (data, opt) => {
       // Build lookup by lowercase name from currently loaded sprites; extend by fetching from Scryfall if needed.
       const byName = new Map<string, any>();

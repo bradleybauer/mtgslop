@@ -86,9 +86,8 @@ const PAD_BOTTOM_EXTRA = 6; // extra bottom padding so cards don't touch frame
 // 100 + 4 = 104, 140 + 4 = 144, both divisible by 8. Visually ≈8px at common zooms.
 const GAP_X = 4;
 const GAP_Y = 4;
-function snap(v: number) {
-  return Math.round(v / GRID_SIZE) * GRID_SIZE;
-}
+import { snap as globalSnap } from "../utils/snap";
+const snap = (v: number) => globalSnap(v, GRID_SIZE);
 
 // No per-group color; colors come from theme variables for consistency.
 

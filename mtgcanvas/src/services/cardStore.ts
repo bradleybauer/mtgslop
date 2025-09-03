@@ -1,4 +1,5 @@
 // IndexedDB store for imported Scryfall cards so they persist across reloads (scales beyond localStorage limits).
+import type { Card } from "../types/card";
 
 const DB_NAME = "mtgCanvas";
 const DB_VERSION = 1;
@@ -26,7 +27,7 @@ function openDB(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-export async function addImportedCards(cards: any[]): Promise<void> {
+export async function addImportedCards(cards: Card[]): Promise<void> {
   if (!cards || !cards.length) return;
   try {
     const db = await openDB();
@@ -44,7 +45,7 @@ export async function addImportedCards(cards: any[]): Promise<void> {
   }
 }
 
-export async function getAllImportedCards(): Promise<any[]> {
+export async function getAllImportedCards(): Promise<Card[]> {
   try {
     const db = await openDB();
     return await new Promise<any[]>((resolve, reject) => {

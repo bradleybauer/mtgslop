@@ -2,6 +2,7 @@
 // Searches across in-memory loaded card sprites (name + oracle_text) with OR semantics between tokens.
 
 import type { CardSprite } from "../scene/cardNode";
+import type { Card } from "../types/card";
 import { parseScryfallQuery } from "../search/scryfallQuery";
 
 export interface SearchPaletteOptions {
@@ -317,7 +318,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     return { any, must };
   }
 
-  function match(card: any, tk: { any: string[]; must: string[] }) {
+  function match(card: Card, tk: { any: string[]; must: string[] }) {
     const hay = (
       (card.name || "") +
       "\n" +

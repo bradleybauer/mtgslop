@@ -4,6 +4,8 @@ import { textureSettings as settings } from "../config/rendering";
 import { Colors } from "../ui/theme";
 import { SelectionStore } from "../state/selectionStore";
 import { KeyedMinHeap } from "./keyedMinHeap";
+import { CARD_W, CARD_H } from "../config/dimensions";
+import type { Card } from "../types/card";
 
 // --- Fast in-memory texture cache & loaders ---
 interface TexCacheEntry {
@@ -99,7 +101,7 @@ export interface CardSprite extends PIXI.Sprite {
   __id: number;
   __baseZ: number;
   __groupId?: number;
-  __card?: any;
+  __card?: Card | null;
   __imgUrl?: string;
   __imgLoaded?: boolean;
   __imgLoading?: boolean;
@@ -117,7 +119,7 @@ export interface CardVisualOptions {
   y: number;
   z: number;
   renderer: PIXI.Renderer;
-  card?: any;
+  card?: Card | null;
 }
 
 interface CardTextures {
@@ -245,8 +247,8 @@ function adoptCachedTexture(
 ) {
   sprite.__currentTexUrl = url;
   sprite.texture = ent.tex;
-  sprite.width = 100; // TODO USE CARD_W_GLOBAL
-  sprite.height = 140; // TODO USE CARD_H_GLOBAL
+  sprite.width = CARD_W;
+  sprite.height = CARD_H;
   sprite.__imgLoaded = true;
   sprite.__imgLoading = false;
   sprite.__qualityLevel = level;
@@ -272,8 +274,8 @@ function forcePlaceholder(sprite: CardSprite) {
     sprite.texture = cachedTextures.base;
   } else {
     sprite.texture = PIXI.Texture.WHITE;
-    sprite.width = 100;
-    sprite.height = 140;
+  sprite.width = CARD_W;
+  sprite.height = CARD_H;
   }
   // Apply selection tint directly to avoid texture swaps during selection
   const sel = SelectionStore.state.cards.has(sprite);
