@@ -1,4 +1,5 @@
 import * as PIXI from "pixi.js";
+import type { Card } from "./types/card";
 import {
   planImportPositions,
   computeBestGrid,
@@ -35,7 +36,7 @@ import {
   ensureMembersZOrder,
   placeCardInGroup,
 } from "./scene/groupNode";
-import { SpatialIndex } from "./scene/SpatialIndex";
+import { SpatialIndex, type SpatialItem } from "./scene/SpatialIndex";
 import { MarqueeSystem } from "./interaction/marquee";
 import { initHelp } from "./ui/helpPanel";
 import {
@@ -493,7 +494,7 @@ const splashEl = document.getElementById("splash");
       y: number;
       z: number;
       group_id?: number | null;
-      card?: any;
+  card?: Card | null;
       scryfall_id?: string | null;
     }>,
   ): CardSprite[] {
@@ -840,13 +841,7 @@ const splashEl = document.getElementById("splash");
       // Strategy: if many being added, do a single grid layout; else, place near drop point
       const MANY_THRESHOLD = 8;
       if (spritesToAdd.length >= MANY_THRESHOLD) {
-        const items: {
-          sprite: CardSprite;
-          minX: number;
-          minY: number;
-          maxX: number;
-          maxY: number;
-        }[] = [];
+        const items: SpatialItem[] = [];
         layoutGroup(gv, sprites, (sp) => {
           items.push({
             sprite: sp,
@@ -857,10 +852,7 @@ const splashEl = document.getElementById("splash");
           });
         });
         timer.mark("layout");
-        if (items.length)
-          (spatial as any).bulkUpdate
-            ? (spatial as any).bulkUpdate(items)
-            : items.forEach((it) => spatial.update(it));
+        if (items.length) spatial.bulkUpdate(items);
         timer.mark("spatial");
       } else {
         // Light path: place each near its current position without full relayout
@@ -1194,13 +1186,7 @@ const splashEl = document.getElementById("splash");
       const timer = createPhaseTimer("group-auto-pack(panel)");
       const gv = currentPanelGroup();
       if (!gv) return;
-      const items: {
-        sprite: CardSprite;
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-      }[] = [];
+  const items: SpatialItem[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
           sprite: s,
@@ -1211,10 +1197,7 @@ const splashEl = document.getElementById("splash");
         });
       });
       timer.mark("auto-pack");
-      if (items.length)
-        (spatial as any).bulkUpdate
-          ? (spatial as any).bulkUpdate(items)
-          : items.forEach((it) => spatial.update(it));
+  if (items.length) spatial.bulkUpdate(items);
       timer.mark("spatial");
       updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
@@ -2389,13 +2372,7 @@ const splashEl = document.getElementById("splash");
       const p = clampGroupXY(gv, snap(g.x), snap(g.y));
       g.x = p.x;
       g.y = p.y;
-      const primarySpatial: {
-        sprite: CardSprite;
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-      }[] = [];
+  const primarySpatial: SpatialItem[] = [];
       memberOffsets.forEach((m) => {
         m.sprite.x = snap(m.sprite.x);
         m.sprite.y = snap(m.sprite.y);
@@ -2407,23 +2384,14 @@ const splashEl = document.getElementById("splash");
           maxY: m.sprite.y + CARD_H_GLOBAL,
         });
       });
-      if (primarySpatial.length)
-        (spatial as any).bulkUpdate
-          ? (spatial as any).bulkUpdate(primarySpatial)
-          : primarySpatial.forEach((it) => spatial.update(it));
+  if (primarySpatial.length) spatial.bulkUpdate(primarySpatial);
       persistGroupTransform(gv.id, { x: g.x, y: g.y, w: gv.w, h: gv.h });
 
       // Snap and re-clamp any other selected groups moved in lockstep
       const selected = new Set(SelectionStore.getGroups());
       selected.delete(gv.id);
       if (selected.size && multiOffsets) {
-        const items: {
-          sprite: CardSprite;
-          minX: number;
-          minY: number;
-          maxX: number;
-          maxY: number;
-        }[] = [];
+  const items: SpatialItem[] = [];
         multiOffsets.forEach(({ gv: og, members }) => {
           const p2 = clampGroupXY(og, snap(og.gfx.x), snap(og.gfx.y));
           og.gfx.x = p2.x;
@@ -2446,7 +2414,7 @@ const splashEl = document.getElementById("splash");
             h: og.h,
           });
         });
-        if (items.length) spatial.bulkUpdate(items);
+  if (items.length) spatial.bulkUpdate(items);
       }
       scheduleGroupSave();
       multiOffsets = null;
@@ -2499,13 +2467,7 @@ const splashEl = document.getElementById("splash");
     // Collapse feature removed
     addItem("Auto-pack", () => {
       const timer = createPhaseTimer("group-auto-pack(context)");
-      const items: {
-        sprite: CardSprite;
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-      }[] = [];
+  const items: SpatialItem[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
           sprite: s,
@@ -2516,10 +2478,7 @@ const splashEl = document.getElementById("splash");
         });
       });
       timer.mark("auto-pack");
-      if (items.length)
-        (spatial as any).bulkUpdate
-          ? (spatial as any).bulkUpdate(items)
-          : items.forEach((it) => spatial.update(it));
+  if (items.length) spatial.bulkUpdate(items);
       timer.mark("spatial");
       updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
@@ -2795,13 +2754,7 @@ const splashEl = document.getElementById("splash");
         });
         timer.mark("update-old");
         {
-          const items: {
-            sprite: CardSprite;
-            minX: number;
-            minY: number;
-            maxX: number;
-            maxY: number;
-          }[] = [];
+          const items: SpatialItem[] = [];
           layoutGroup(gv, sprites, (s) => {
             items.push({
               sprite: s,
@@ -2811,10 +2764,7 @@ const splashEl = document.getElementById("splash");
               maxY: s.y + CARD_H_GLOBAL,
             });
           });
-          if (items.length)
-            (spatial as any).bulkUpdate
-              ? (spatial as any).bulkUpdate(items)
-              : items.forEach((it) => spatial.update(it));
+            if (items.length) spatial.bulkUpdate(items);
         }
         timer.mark("layout+spatial");
         updateGroupMetrics(gv);
@@ -2857,13 +2807,7 @@ const splashEl = document.getElementById("splash");
         attachGroupInteractions(gv);
         timer2.mark("attach");
         {
-          const items: {
-            sprite: CardSprite;
-            minX: number;
-            minY: number;
-            maxX: number;
-            maxY: number;
-          }[] = [];
+          const items: SpatialItem[] = [];
           layoutGroup(gv, sprites, (s) => {
             items.push({
               sprite: s,
@@ -2873,10 +2817,7 @@ const splashEl = document.getElementById("splash");
               maxY: s.y + CARD_H_GLOBAL,
             });
           });
-          if (items.length)
-            (spatial as any).bulkUpdate
-              ? (spatial as any).bulkUpdate(items)
-              : items.forEach((it) => spatial.update(it));
+            if (items.length) spatial.bulkUpdate(items);
         }
         timer2.mark("layout+spatial");
         updateGroupMetrics(gv);
@@ -3548,13 +3489,7 @@ const splashEl = document.getElementById("splash");
       const centerY = oldY + oldH / 2;
       // Pack to update w/h and card positions relative to group origin
       {
-        const items: {
-          sprite: CardSprite;
-          minX: number;
-          minY: number;
-          maxX: number;
-          maxY: number;
-        }[] = [];
+  const items: SpatialItem[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
             sprite: s,
@@ -3564,10 +3499,7 @@ const splashEl = document.getElementById("splash");
             maxY: s.y + CARD_H_GLOBAL,
           });
         });
-        if (items.length)
-          (spatial as any).bulkUpdate
-            ? (spatial as any).bulkUpdate(items)
-            : items.forEach((it) => spatial.update(it));
+  if (items.length) spatial.bulkUpdate(items);
       }
       // Shift group so its center remains the same after pack
       let dx = Math.round(centerX - (gv.gfx.x + gv.w / 2));
@@ -3580,13 +3512,7 @@ const splashEl = document.getElementById("splash");
         gv.gfx.x = p.x;
         gv.gfx.y = p.y;
         // Move member sprites by the same delta to preserve layout relative to world
-        const moved: {
-          sprite: CardSprite;
-          minX: number;
-          minY: number;
-          maxX: number;
-          maxY: number;
-        }[] = [];
+  const moved: SpatialItem[] = [];
         gv.order.forEach((sp) => {
           sp.x = snap(sp.x + dx);
           sp.y = snap(sp.y + dy);
@@ -3598,10 +3524,7 @@ const splashEl = document.getElementById("splash");
             maxY: sp.y + CARD_H_GLOBAL,
           });
         });
-        if (moved.length)
-          (spatial as any).bulkUpdate
-            ? (spatial as any).bulkUpdate(moved)
-            : moved.forEach((it) => spatial.update(it));
+  if (moved.length) spatial.bulkUpdate(moved);
       }
       // Persist group dimensions/position changes if any
       persistGroupTransform(gv.id, {
@@ -3735,13 +3658,7 @@ const splashEl = document.getElementById("splash");
       }
       // Pack each new group (layout within group) with batched spatial updates
       created.forEach((gv) => {
-        const items: {
-          sprite: CardSprite;
-          minX: number;
-          minY: number;
-          maxX: number;
-          maxY: number;
-        }[] = [];
+  const items: SpatialItem[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
             sprite: s,
@@ -3751,10 +3668,7 @@ const splashEl = document.getElementById("splash");
             maxY: s.y + CARD_H_GLOBAL,
           });
         });
-        if (items.length)
-          (spatial as any).bulkUpdate
-            ? (spatial as any).bulkUpdate(items)
-            : items.forEach((it) => spatial.update(it));
+  if (items.length) spatial.bulkUpdate(items);
       });
       timer.mark("pack-new+spatial");
       // Arrange new groups compactly
@@ -4359,13 +4273,7 @@ const splashEl = document.getElementById("splash");
       desiredSeeds,
     });
     const batch: { id: number; x: number; y: number }[] = [];
-    const spatialItems: {
-      sprite: CardSprite;
-      minX: number;
-      minY: number;
-      maxX: number;
-      maxY: number;
-    }[] = [];
+  const spatialItems: SpatialItem[] = [];
     for (let i = 0; i < list.length; i++) {
       const gv = list[i];
       const p = positions[i];
@@ -4390,10 +4298,7 @@ const splashEl = document.getElementById("splash");
         batch.push({ id: sp.__id, x: sp.x, y: sp.y });
       });
     }
-    if (spatialItems.length)
-      (spatial as any).bulkUpdate
-        ? (spatial as any).bulkUpdate(spatialItems)
-        : spatialItems.forEach((it) => spatial.update(it));
+  if (spatialItems.length) spatial.bulkUpdate(spatialItems);
     if (batch.length) {
       InstancesRepo.updatePositions(batch);
     }
@@ -4510,14 +4415,8 @@ const splashEl = document.getElementById("splash");
     if (dx || dy) {
       gv.gfx.x = clamped.x;
       gv.gfx.y = clamped.y;
-      // Shift member cards with the group pre-layout and batch spatial updates
-      const items: {
-        sprite: CardSprite;
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-      }[] = [];
+  // Shift member cards with the group pre-layout and batch spatial updates
+  const items: SpatialItem[] = [];
       for (const s of gv.order) {
         s.x += dx;
         s.y += dy;
@@ -4529,10 +4428,7 @@ const splashEl = document.getElementById("splash");
           maxY: s.y + CARD_H_GLOBAL,
         });
       }
-      if (items.length)
-        (spatial as any).bulkUpdate
-          ? (spatial as any).bulkUpdate(items)
-          : items.forEach((it) => spatial.update(it));
+  if (items.length) spatial.bulkUpdate(items);
       timer.mark("shift+spatial");
     }
     timer.end({ w: gv.w, h: gv.h, members: gv.items.size });
@@ -5096,13 +4992,7 @@ const splashEl = document.getElementById("splash");
       // Auto-pack to minimize height (balanced grid close to square)
       // Batch spatial updates for all moved cards
       {
-        const items: {
-          sprite: CardSprite;
-          minX: number;
-          minY: number;
-          maxX: number;
-          maxY: number;
-        }[] = [];
+        const items: SpatialItem[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
             sprite: s,
@@ -5112,10 +5002,7 @@ const splashEl = document.getElementById("splash");
             maxY: s.y + CARD_H_GLOBAL,
           });
         });
-        if (items.length)
-          (spatial as any).bulkUpdate
-            ? (spatial as any).bulkUpdate(items)
-            : items.forEach((it) => spatial.update(it));
+        if (items.length) spatial.bulkUpdate(items);
       }
       timer.mark("auto-pack+spatial");
       // Update any old groups that lost members (deferred)
@@ -5208,13 +5095,7 @@ const splashEl = document.getElementById("splash");
     timer.mark("place");
     // Now size and layout the group at its final position
     {
-      const items: {
-        sprite: CardSprite;
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-      }[] = [];
+      const items: SpatialItem[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
           sprite: s,
@@ -5224,10 +5105,7 @@ const splashEl = document.getElementById("splash");
           maxY: s.y + CARD_H_GLOBAL,
         });
       });
-      if (items.length)
-        (spatial as any).bulkUpdate
-          ? (spatial as any).bulkUpdate(items)
-          : items.forEach((it) => spatial.update(it));
+      if (items.length) spatial.bulkUpdate(items);
     }
     timer.mark("auto-pack+spatial");
     touchedOldGroupIds.forEach((gid) => {

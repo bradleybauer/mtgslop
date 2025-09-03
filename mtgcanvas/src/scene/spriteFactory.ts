@@ -3,6 +3,8 @@ import type { CardSprite } from "./cardNode";
 import { createCardSprite } from "./cardNode";
 import { SelectionStore } from "../state/selectionStore";
 import { snap } from "../utils/snap";
+import type { Card } from "../types/card";
+import type { SpatialIndex, SpatialItem } from "./SpatialIndex";
 
 export type CreateSpriteDeps = {
   renderer: PIXI.Renderer;
@@ -24,7 +26,7 @@ export function createSprite(
     y: number;
     z: number;
     group_id?: number | null;
-    card?: any;
+  card?: Card | null;
     scryfall_id?: string | null;
   },
   deps: CreateSpriteDeps,
@@ -65,10 +67,10 @@ export function createSpritesBulk(
     y: number;
     z: number;
     group_id?: number | null;
-    card?: any;
+    card?: Card | null;
     scryfall_id?: string | null;
   }>,
-  deps: CreateSpriteDeps & { spatial: { bulkLoad: (items: any[]) => void } },
+  deps: CreateSpriteDeps & { spatial: Pick<SpatialIndex, "bulkLoad"> },
 ): CardSprite[] {
   const created: CardSprite[] = [];
   for (const it of items) {
@@ -77,7 +79,7 @@ export function createSpritesBulk(
   }
   // Batch insert into spatial index
   deps.spatial.bulkLoad(
-    created.map((s) => ({
+    created.map<SpatialItem>((s) => ({
       sprite: s,
       minX: s.x,
       minY: s.y,
