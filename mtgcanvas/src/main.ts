@@ -12,6 +12,7 @@ import {
   updateCardSpriteAppearance,
   type CardSprite,
   ensureTexture,
+  updateFlipFab,
 } from "./scene/cardNode";
 import { createSpritesBulk as factoryCreateSpritesBulk } from "./scene/spriteFactory";
 import {
@@ -5157,6 +5158,8 @@ const splashEl = document.getElementById("splash");
         for (const s of sprites) {
           if (!s.__card) continue;
           ensureTexture(s, view);
+          // Keep the Flip FAB positioned and scaled to maintain constant screen size
+          updateFlipFab(s);
         }
       }
     }

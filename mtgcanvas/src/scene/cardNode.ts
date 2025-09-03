@@ -1,7 +1,7 @@
 import * as PIXI from "pixi.js";
 import { getCachedImage } from "../services/imageCache";
 import { textureSettings as settings } from "../config/rendering";
-import { Colors } from "../ui/theme";
+import { Colors, registerThemeListener } from "../ui/theme";
 import { SelectionStore } from "../state/selectionStore";
 import { KeyedMinHeap } from "./keyedMinHeap";
 import { CARD_W, CARD_H } from "../config/dimensions";
@@ -111,6 +111,8 @@ export interface CardSprite extends PIXI.Sprite {
   // Pending texture upgrade bookkeeping (to avoid per-frame duplicate scheduling)
   __scheduledUrl?: string;
   __currentTexUrl?: string;
+  // Flip FAB (for double-faced cards)
+  __flipFab?: (PIXI.Container & { bg: PIXI.Graphics; icon: PIXI.Graphics });
 }
 
 export interface CardVisualOptions {
@@ -382,3 +384,198 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
 }
 
 // snap imported from utils
+
+// --------------------------
+// Flip FAB for double-faced cards
+// --------------------------
+
+const FLIP_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="white">
+  <path d="M884.3,357.6c116.8,117.7,151.7,277-362.2,320V496.4L243.2,763.8L522,1031.3V860.8C828.8,839.4,1244.9,604.5,884.3,357.6z"></path>
+  <path d="M557.8,288.2v138.4l230.8-213.4L557.8,0v142.8c-309.2,15.6-792.1,253.6-426.5,503.8C13.6,527.9,30,330.1,557.8,288.2z"></path>
+</svg>`;
+
+function applyFlipFabTheme(
+  fab: PIXI.Container & { bg: PIXI.Graphics; icon: PIXI.Graphics; r?: number },
+) {
+  const radius = fab.r ?? 8;
+  fab.bg.clear();
+  fab.bg
+    .circle(0, 0, radius)
+    .fill({ color: Colors.panelBg() as any, alpha: 0.92 })
+  .stroke({ color: Colors.accent() as any, width: 1 });
+  (fab.icon as any).tint = Colors.panelFg();
+}
+
+function isDoubleFaced(sprite: CardSprite): boolean {
+  const c = sprite.__card as any;
+  if (!c) return false;
+  const layout = String(c.layout || "").toLowerCase();
+  // Only physical front/back cards
+  const allowed = layout === "transform" || layout === "modal_dfc";
+  if (!allowed) return false;
+  if (!Array.isArray(c.card_faces) || c.card_faces.length !== 2) return false;
+  return true;
+}
+
+
+function createFlipFab(sprite: CardSprite) {
+  if (sprite.__flipFab) return sprite.__flipFab;
+  const parent = sprite.parent as PIXI.Container | null;
+  if (!parent) return undefined as any;
+  const container = new PIXI.Container() as PIXI.Container & {
+    bg: PIXI.Graphics;
+    icon: PIXI.Graphics;
+    r?: number;
+  };
+  container.eventMode = "static";
+  container.cursor = "pointer";
+  container.zIndex = 9999;
+  // Default to dimmed; brighten on hover
+  const DIM_ALPHA = 0.4;
+  const HOVER_ALPHA = 1.0;
+  container.alpha = DIM_ALPHA;
+  // Draw at base size in world units so 1:1 with pixels when world.scale = 1
+  const baseRadius = 8; // diameter 32px at zoom 1
+  // Background circle
+  const bg = new PIXI.Graphics();
+  bg.circle(0, 0, baseRadius)
+    .fill({ color: Colors.panelBg() as any, alpha: 0.92 })
+  .stroke({ color: Colors.accent() as any, width: 1 });
+  // Icon from SVG (scaled to fit inside the circle)
+  const icon = new PIXI.Graphics().svg(FLIP_SVG);
+  const ib = icon.getLocalBounds();
+  icon.pivot.set(ib.x + ib.width / 2, ib.y + ib.height / 2);
+  const diameter = baseRadius * 2;
+  const target = diameter * 0.7; // keep some padding inside the circle
+  const maxDim = Math.max(ib.width, ib.height) || 1;
+  const s = target / maxDim;
+  icon.scale.set(s);
+  // Tint the white icon to theme foreground
+  (icon as any).tint = Colors.panelFg();
+  container.addChild(bg);
+  container.addChild(icon);
+  // Center-origin for simple placement math
+  container.pivot.set(0, 0);
+  // Stop interactions from bubbling to the card (prevents drag/select)
+  const stop = (e: any) => {
+    if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+  };
+  container.on("pointerdown", stop);
+  container.on("pointerup", stop);
+  container.on("pointerupoutside", stop);
+  container.on("pointercancel", stop);
+  container.on("pointertap", (e: any) => {
+    stop(e);
+    flipCard(sprite);
+  });
+  // Hover feedback: increase opacity while hovered
+  container.on("pointerover", () => {
+    container.alpha = HOVER_ALPHA;
+  });
+  container.on("pointerout", () => {
+    container.alpha = DIM_ALPHA;
+  });
+  // Attach
+  container.bg = bg;
+  container.icon = icon;
+  container.r = baseRadius;
+  parent.addChild(container);
+  sprite.__flipFab = container;
+  // Apply current theme (and allow later refreshes)
+  applyFlipFabTheme(container);
+  return container;
+}
+
+function positionFlipFab(sprite: CardSprite) {
+  const fab = sprite.__flipFab;
+  if (!fab) return;
+  const inset = 4; // world units
+  const radius = 8;
+  // As a sibling, position in the same parent coordinate space as the sprite.
+  // Account for FAB's current scale so the visual circle sits inset from the card edges.
+  const sx = fab.scale?.x ?? 1;
+  const sy = fab.scale?.y ?? 1;
+  const dx = inset + radius * sx;
+  const dy = inset + radius * sy + 15*sy;
+  fab.x = sprite.x + sprite.width - dx;
+  fab.y = sprite.y + dy;
+}
+
+export function updateFlipFab(sprite: CardSprite) {
+  // Only show for double-faced cards
+  if (!isDoubleFaced(sprite)) {
+    if (sprite.__flipFab) {
+      // Keep destruction cheap; removing child ensures it hides with the sprite anyway
+      sprite.__flipFab.destroy({ children: true });
+      sprite.__flipFab = undefined;
+    }
+    return;
+  }
+  // Delay creation until sprite is attached to a parent container
+  if (!sprite.__flipFab && sprite.parent) {
+    createFlipFab(sprite);
+  }
+  const fab = sprite.__flipFab!;
+  if (!fab) return;
+  // If parent changed, reattach to current parent (sibling of sprite)
+  if (fab.parent !== sprite.parent && sprite.parent) {
+    fab.parent?.removeChild(fab);
+    (sprite.parent as PIXI.Container).addChild(fab);
+  }
+  // Keep size proportional to the card's current displayed size in parent units to avoid jumps
+  // when the sprite's texture tier swaps (sprite.width/height remain authoritative display size).
+  const scaleX = (sprite.width || CARD_W) / CARD_W;
+  const scaleY = (sprite.height || CARD_H) / CARD_H;
+  fab.scale.set(scaleX || 1, scaleY || 1);
+  // Reposition (in case the card moved)
+  positionFlipFab(sprite);
+  // Ensure FAB renders above the card
+  fab.zIndex = (sprite.zIndex || 0) + 1;
+  // Mirror card visibility so it hides with overlays/groups
+  fab.visible = !!(sprite as any).visible;
+}
+
+// Refresh FAB theming when the app theme changes
+registerThemeListener(() => {
+  try {
+    const getSprites = (window as any).__mtgGetSprites;
+    if (typeof getSprites === "function") {
+      const arr = getSprites();
+      if (Array.isArray(arr)) {
+        for (const s of arr) {
+          const fab = (s as any).__flipFab as (PIXI.Container & {
+            bg: PIXI.Graphics;
+            icon: PIXI.Graphics;
+            r?: number;
+          }) | undefined;
+          if (fab) applyFlipFabTheme(fab);
+        }
+      }
+    }
+  } catch {
+    // ignore (likely early during boot)
+  }
+});
+
+function flipCard(sprite: CardSprite) {
+  if (!isDoubleFaced(sprite)) return;
+  const faces = ((sprite.__card as any).card_faces as any[]) || [];
+  const count = faces.length;
+  const cur = sprite.__faceIndex || 0;
+  const next = (cur + 1) % count;
+  sprite.__faceIndex = next;
+  // Cancel any scheduled decode of the previous face URL
+  if (sprite.__scheduledUrl) {
+    const oldTask = tasksByUrl.get(sprite.__scheduledUrl);
+    if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+    sprite.__scheduledUrl = undefined;
+  }
+  // Clear current URL so ensureTexture will schedule new face
+  sprite.__currentTexUrl = undefined;
+  // Show placeholder immediately to avoid stale-face flash
+  forcePlaceholder(sprite);
+  // Try to schedule new texture right away if viewport is available
+  const view = (window as any).__mtgView as ViewRect | undefined;
+  if (view) ensureTexture(sprite, view);
+}
