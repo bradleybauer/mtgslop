@@ -130,7 +130,6 @@ export interface CardSprite extends PIXI.Sprite {
   __tiltTargetPitch?: number; // target pitch (rad)
   __tiltTargetRoll?: number; // target roll (rad)
   __tiltTargetAgeMs?: number; // ms since last input update
-  __tiltLastTsMs?: number; // last time we updated velocity (ms)
 }
 
 export interface CardVisualOptions {
@@ -299,7 +298,10 @@ function forcePlaceholder(sprite: CardSprite) {
   }
   // Apply selection tint directly to avoid texture swaps during selection
   const sel = SelectionStore.state.cards.has(sprite);
-  sprite.tint = sel ? Colors.cardSelectedTint() : Colors.cardDefaultTint();
+  const marqueeSelected = !!(sprite as any).__tintByMarquee;
+  sprite.tint = sel && marqueeSelected
+    ? Colors.cardSelectedTint()
+    : Colors.cardDefaultTint();
 }
 
 type ViewRect = { left: number; top: number; right: number; bottom: number };
@@ -320,7 +322,7 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   const zoom = (sprite.parent as any)?.scale?.x || 1;
   let desired: 0 | 1 | 2 = 0;
   if (inView) {
-    if (zoom > 1.4) desired = 2;
+    if (zoom > 1.7) desired = 2;
     else if (zoom > 0.8) desired = 1;
     else desired = 0;
   } else {
@@ -398,7 +400,10 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
   if (s?.destroyed) return;
   // For loaded images and placeholders alike, only adjust tint. Avoid reassigning textures
   // during selection toggles to prevent Pixi v8 internal width/anchor recalculation crashes.
-  s.tint = selected ? Colors.cardSelectedTint() : Colors.cardDefaultTint();
+  const marqueeSelected = !!(s as any).__tintByMarquee;
+  s.tint = selected && marqueeSelected
+    ? Colors.cardSelectedTint()
+    : Colors.cardDefaultTint();
 }
 
 // snap imported from utils
@@ -605,14 +610,13 @@ function flipCard(sprite: CardSprite) {
 // --------------------------
 // Drag Float + Tilt helpers
 // --------------------------
-const ELEV_SCALE = 0.015; // scale gain at full elevation (subtle lift)
+const ELEV_SCALE = 0.02; // scale gain at full elevation (subtle lift)
 const ELEV_TAU_MS = 80;
 // 3D tilt tuning
-const MAX_PITCH_RAD = Math.PI / 20; // ~18°
-const MAX_ROLL_RAD = Math.PI / 20; // ~18°
-// Velocity clamp in world units per second for full tilt
-const VEL_CLAMP_UNITS_PER_S = 1200;
-const TILT_TAU_MS = 40; // angle easing toward target
+const MAX_PITCH_RAD = .1*Math.PI;
+const MAX_ROLL_RAD = .1*Math.PI;
+const INPUT_CLAMP_PX = 40; // screen pixels for full tilt (zoom-invariant)
+const TILT_TAU_MS = 80;
 const TILT_RETURN_TAU_MS = 140; // decay target back toward 0 when input pauses
 const CAMERA_D = 320; // perspective camera distance in world units (smaller = stronger)
 
@@ -780,22 +784,18 @@ export function updateDraggedTopLeft(sprite: CardSprite, tlx: number, tly: numbe
   const elev = sprite.__elev || 0;
   const extra = 1 + elev * ELEV_SCALE;
   applyTransformFromCenter(sprite, sprite.__cx, sprite.__cy, ang, extra);
-  // Update tilt targets linearly with velocity (units per second)
-  const now = performance.now();
-  const prevTs = sprite.__tiltLastTsMs ?? now;
-  const dtMs = Math.max(1, now - prevTs);
-  const dtS = dtMs / 1000;
-  // Velocity in world units per second
-  const vx = dX / dtS;
-  const vy = dY / dtS;
-  const nx = clamp(vx, -VEL_CLAMP_UNITS_PER_S, VEL_CLAMP_UNITS_PER_S) / VEL_CLAMP_UNITS_PER_S;
-  const ny = clamp(vy, -VEL_CLAMP_UNITS_PER_S, VEL_CLAMP_UNITS_PER_S) / VEL_CLAMP_UNITS_PER_S;
+  // Update tilt targets from input delta (map direction to pitch/yaw)
+  // Convert world delta to screen-space using parent scale for zoom-invariant feel
+  const sc = ((sprite.parent as any)?.scale?.x as number) || 1;
+  const sdX = dX * sc;
+  const sdY = dY * sc;
+  const ndx = clamp(sdX, -INPUT_CLAMP_PX, INPUT_CLAMP_PX) / INPUT_CLAMP_PX;
+  const ndy = clamp(sdY, -INPUT_CLAMP_PX, INPUT_CLAMP_PX) / INPUT_CLAMP_PX;
   // Coordinate notes: +y is down on screen. To bring bottom edge closer (down drag), use negative pitch.
   // To bring right edge closer (right drag), use positive yaw.
-  sprite.__tiltTargetPitch = -ny * MAX_PITCH_RAD;
-  sprite.__tiltTargetRoll = nx * MAX_ROLL_RAD;
+  sprite.__tiltTargetPitch = -ndy * MAX_PITCH_RAD;
+  sprite.__tiltTargetRoll = ndx * MAX_ROLL_RAD;
   sprite.__tiltTargetAgeMs = 0;
-  sprite.__tiltLastTsMs = now;
 }
 
 export function endDragFloat(sprite: CardSprite) {

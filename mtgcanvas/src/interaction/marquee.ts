@@ -92,7 +92,16 @@ export class MarqueeSystem {
     const selGroups = new Set<number>(
       additive ? SelectionStore.getGroups() : [],
     );
-    (res?.cards || []).forEach((c) => selCards.add(c));
+    // If not additive, clear marquee-tint flags on all previously selected cards
+    if (!additive) {
+      SelectionStore.getCards().forEach((c) => {
+        (c as any).__tintByMarquee = false;
+      });
+    }
+    (res?.cards || []).forEach((c) => {
+      selCards.add(c);
+      (c as any).__tintByMarquee = true;
+    });
     (res?.groupIds || []).forEach((id) => selGroups.add(id));
     SelectionStore.replace({ cards: selCards, groupIds: selGroups });
   }

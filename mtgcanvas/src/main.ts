@@ -2927,8 +2927,16 @@ const splashEl = document.getElementById("splash");
       if (!__prevSelectedCards.has(sp)) addedCards.push(sp);
     });
     if (addedCards.length || removedCards.length) {
-      for (const sp of addedCards) updateCardSpriteAppearance(sp, true);
-      for (const sp of removedCards) updateCardSpriteAppearance(sp, false);
+      // For added via non-marquee actions, ensure they don't tint
+      for (const sp of addedCards) {
+        if (!(sp as any).__tintByMarquee) (sp as any).__tintByMarquee = false;
+        updateCardSpriteAppearance(sp, true);
+      }
+      for (const sp of removedCards) {
+        // Clear marquee flag upon deselect to avoid stale tint later
+        (sp as any).__tintByMarquee = false;
+        updateCardSpriteAppearance(sp, false);
+      }
     }
     // Diff groups
     const addedGroups: number[] = [];

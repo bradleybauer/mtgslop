@@ -155,16 +155,19 @@ function attachCardInteractions(
     if (e.button !== 0) return; // only left button selects / drags
     if (isPanning && isPanning()) return; // ignore clicks while panning with space
     // Suppress direct card drag if its group overlay label is active (zoomed out macro view).
-    // if ((s as any).__groupOverlayActive) return;
-    // if (!s.visible) return; // why not use s.visible instead of __groupOverlayActive
     // If Shift held, allow marquee instead of starting a card drag (when user intends multi-select)
     if (e.shiftKey && startMarquee) {
       startMarquee(new PIXI.Point(e.global.x, e.global.y), true);
       return; // don't initiate drag
     }
-    if (!e.shiftKey && !SelectionStore.state.cards.has(s))
+    if (!e.shiftKey && !SelectionStore.state.cards.has(s)) {
+      // Direct click selection should not tint
+      (s as any).__tintByMarquee = false;
       SelectionStore.selectOnlyCard(s);
-    else if (e.shiftKey) SelectionStore.toggleCard(s);
+    } else if (e.shiftKey) {
+      (s as any).__tintByMarquee = false;
+      SelectionStore.toggleCard(s);
+    }
     // Record local start; we’ll start drag only after a tiny movement threshold
     const startLocal = world.toLocal(e.global);
     pendingStartLocal = { x: startLocal.x, y: startLocal.y };
@@ -296,8 +299,6 @@ function attachCardInteractions(
       if (dY < lowDY) dY = lowDY;
       if (dY > highDY) dY = highDY;
     }
-
-  // tilt removed: no velocity-based tilt target
 
     for (const st of dragState.starts) {
       const nx = st.x0 + dX;
