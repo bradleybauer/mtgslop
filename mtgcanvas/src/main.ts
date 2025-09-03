@@ -13,6 +13,7 @@ import {
   type CardSprite,
   ensureTexture,
   updateFlipFab,
+  updateFloatAndTilt,
 } from "./scene/cardNode";
 import { createSpritesBulk as factoryCreateSpritesBulk } from "./scene/spriteFactory";
 import {
@@ -515,12 +516,14 @@ const splashEl = document.getElementById("splash");
         onDrop: (moved) => handleDroppedSprites(moved),
         onDragMove: (moved) =>
           moved.forEach((ms) => {
+            const x = (ms as any).__tiltActive ? (ms as any).__tlx ?? ms.x : ms.x;
+            const y = (ms as any).__tiltActive ? (ms as any).__tly ?? ms.y : ms.y;
             spatial.update({
               sprite: ms,
-              minX: ms.x,
-              minY: ms.y,
-              maxX: ms.x + CARD_W_GLOBAL,
-              maxY: ms.y + CARD_H_GLOBAL,
+              minX: x,
+              minY: y,
+              maxX: x + CARD_W_GLOBAL,
+              maxY: y + CARD_H_GLOBAL,
             });
           }),
         spatial,
@@ -5163,6 +5166,8 @@ const splashEl = document.getElementById("splash");
         }
       }
     }
+  // Update any active drag float/tilt transforms
+  updateFloatAndTilt(sprites, dt);
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;

@@ -1,6 +1,11 @@
 import * as PIXI from "pixi.js";
 import type { CardSprite } from "./cardNode";
-import { createCardSprite } from "./cardNode";
+import {
+  createCardSprite,
+  beginDragFloat,
+  endDragFloat,
+  updateDraggedTopLeft,
+} from "./cardNode";
 import { SelectionStore } from "../state/selectionStore";
 import { snap } from "../utils/snap";
 import type { Card } from "../types/card";
@@ -103,12 +108,16 @@ function attachCardInteractions(
   // Small movement threshold before we consider a drag (screen-space, conservative)
   const LEFT_DRAG_THRESHOLD_PX = 4;
   let pendingStartLocal: { x: number; y: number } | null = null;
+  // Sprites elevated on pointerdown before the drag threshold is crossed
+  let preFloatSprites: CardSprite[] | null = null;
   let dragState: null | {
     sprites: CardSprite[];
     // Original positions at drag start (for rigid-body delta application)
     starts: { sprite: CardSprite; x0: number; y0: number }[];
     // Local position where drag started (to compute intended delta)
     startLocal: { x: number; y: number };
+    lastGlobalX: number;
+    lastTs: number;
   } = null;
   function beginDrag(atLocal: { x: number; y: number }) {
     // Compute selected sprites lazily (only when we actually start dragging)
@@ -126,11 +135,20 @@ function attachCardInteractions(
       (cs as any).__baseZ = base;
       base += 1;
     }
+    const now = performance.now();
     dragState = {
       sprites: dragSprites,
-      starts: dragSprites.map((cs) => ({ sprite: cs, x0: cs.x, y0: cs.y })),
+      starts: dragSprites.map((cs) => {
+        const tlx = (cs as any).__tlx ?? cs.x;
+        const tly = (cs as any).__tly ?? cs.y;
+        return { sprite: cs, x0: tlx, y0: tly };
+      }),
       startLocal: { x: atLocal.x, y: atLocal.y },
+      lastGlobalX: 0,
+      lastTs: now,
     };
+    // Engage float/tilt mode for visual feedback
+    for (const cs of dragSprites) beginDragFloat(cs);
     // Visual elevation applied above; nothing else to do
   }
   s.on("pointerdown", (e: any) => {
@@ -150,6 +168,9 @@ function attachCardInteractions(
     // Record local start; we’ll start drag only after a tiny movement threshold
     const startLocal = world.toLocal(e.global);
     pendingStartLocal = { x: startLocal.x, y: startLocal.y };
+  // Immediately elevate currently selected sprites for visual feedback on click-and-hold
+  preFloatSprites = SelectionStore.getCards().slice();
+  for (const cs of preFloatSprites) beginDragFloat(cs);
   });
   const endDrag = (commit: boolean) => {
     if (!dragState) return;
@@ -178,7 +199,7 @@ function attachCardInteractions(
       // Fallback: restore baseZ if computation fails
       dragState.sprites.forEach((cs) => (cs.zIndex = cs.__baseZ));
     }
-    if (commit) {
+  if (commit) {
       // Snap/clamp moved sprites to grid and within canvas bounds; persistence is handled
       // by the onDrop callback (main schedules a centralized save).
       const ha: any = (stage as any).hitArea as any;
@@ -188,6 +209,8 @@ function attachCardInteractions(
       const maxX = hasBounds ? ha.x + ha.width - 100 : Infinity;
       const maxY = hasBounds ? ha.y + ha.height - 140 : Infinity;
       dragState.sprites.forEach((cs) => {
+        // Exit float mode and restore TL-based transform before snapping
+        endDragFloat(cs);
         let nx = snap(cs.x);
         let ny = snap(cs.y);
         if (hasBounds) {
@@ -199,17 +222,28 @@ function attachCardInteractions(
         cs.x = nx;
         cs.y = ny;
       });
-      onDrop && onDrop(dragState.sprites);
+  onDrop && onDrop(dragState.sprites);
     }
     dragState = null;
   };
   stage.on("pointerup", () => {
+    const hadDrag = !!dragState;
     pendingStartLocal = null;
-    endDrag(true);
+    endDrag(!!dragState);
+    if (!hadDrag && preFloatSprites) {
+      // No drag occurred; end pre-float elevation cleanly
+      for (const cs of preFloatSprites) endDragFloat(cs);
+    }
+    preFloatSprites = null;
   });
   stage.on("pointerupoutside", () => {
+    const hadDrag = !!dragState;
     pendingStartLocal = null;
-    endDrag(true);
+    endDrag(!!dragState);
+    if (!hadDrag && preFloatSprites) {
+      for (const cs of preFloatSprites) endDragFloat(cs);
+    }
+    preFloatSprites = null;
   });
   stage.on("pointermove", (e: any) => {
     // If we have a pending click and no drag yet, check if movement exceeds threshold to begin drag
@@ -220,14 +254,16 @@ function attachCardInteractions(
       const dx = (localNow.x - pendingStartLocal.x) * sc;
       const dy = (localNow.y - pendingStartLocal.y) * sc;
       if (Math.hypot(dx, dy) >= LEFT_DRAG_THRESHOLD_PX) {
-        beginDrag(localNow);
+  beginDrag(localNow);
+        // Now that a real drag has begun, clear pre-float tracker
+        preFloatSprites = null;
         // fall-through to apply first move below in same tick
       } else {
         return;
       }
     }
     if (!dragState) return;
-    const local = world.toLocal(e.global);
+  const local = world.toLocal(e.global);
     let moved = false;
     const ha: any = (stage as any).hitArea as any;
     const hasBounds = ha && typeof ha.x === "number";
@@ -236,7 +272,7 @@ function attachCardInteractions(
     const maxX = hasBounds ? ha.x + ha.width - 100 : Infinity;
     const maxY = hasBounds ? ha.y + ha.height - 140 : Infinity;
 
-    // Intended deltas from drag start
+  // Intended deltas from drag start
     let dX = local.x - dragState.startLocal.x;
     let dY = local.y - dragState.startLocal.y;
 
@@ -261,10 +297,16 @@ function attachCardInteractions(
       if (dY > highDY) dY = highDY;
     }
 
+  // tilt removed: no velocity-based tilt target
+
     for (const st of dragState.starts) {
       const nx = st.x0 + dX;
       const ny = st.y0 + dY;
-      if (st.sprite.x !== nx || st.sprite.y !== ny) {
+      // Always drive by top-left during drag to keep continuity with float's TL snapshot
+      if (st.sprite.__tiltActive) {
+        updateDraggedTopLeft(st.sprite, nx, ny);
+        moved = true;
+      } else if (st.sprite.x !== nx || st.sprite.y !== ny) {
         st.sprite.x = nx;
         st.sprite.y = ny;
         moved = true;

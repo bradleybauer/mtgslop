@@ -113,6 +113,24 @@ export interface CardSprite extends PIXI.Sprite {
   __currentTexUrl?: string;
   // Flip FAB (for double-faced cards)
   __flipFab?: (PIXI.Container & { bg: PIXI.Graphics; icon: PIXI.Graphics });
+  // --- Transient drag float/tilt state ---
+  __tiltActive?: boolean; // true while in special drag transform mode
+  __elev?: number; // 0..1 lift amount (scales sprite slightly)
+  __tlx?: number; // intended top-left X during drag (world units)
+  __tly?: number; // intended top-left Y during drag (world units)
+  __lastExtraScale?: number; // track last applied extra scale to derive base scale
+  // Center-anchor state for preserving visual center during float/drag
+  __cx?: number; // intended center X while floating
+  __cy?: number; // intended center Y while floating
+  __useCenterAnchor?: boolean; // when true, transforms preserve center rather than TL
+  // 3D tilt state (mesh-based projection)
+  __tiltMesh?: PIXI.PerspectiveMesh; // textured quad for 3D projection (perspective-correct)
+  __tiltPitch?: number; // current pitch (rad)
+  __tiltRoll?: number; // current roll (rad)
+  __tiltTargetPitch?: number; // target pitch (rad)
+  __tiltTargetRoll?: number; // target roll (rad)
+  __tiltTargetAgeMs?: number; // ms since last input update
+  __tiltLastTsMs?: number; // last time we updated velocity (ms)
 }
 
 export interface CardVisualOptions {
@@ -302,7 +320,7 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   const zoom = (sprite.parent as any)?.scale?.x || 1;
   let desired: 0 | 1 | 2 = 0;
   if (inView) {
-    if (zoom > 1.7) desired = 2;
+    if (zoom > 1.4) desired = 2;
     else if (zoom > 0.8) desired = 1;
     else desired = 0;
   } else {
@@ -498,8 +516,12 @@ function positionFlipFab(sprite: CardSprite) {
   const sy = fab.scale?.y ?? 1;
   const dx = inset + radius * sx;
   const dy = inset + radius * sy + 15*sy;
-  fab.x = sprite.x + sprite.width - dx;
-  fab.y = sprite.y + dy;
+  // While tilting, the sprite's position may represent a center-based transform.
+  // Use the intended top-left anchor during drag if available.
+  const baseX = sprite.__tiltActive ? sprite.__tlx ?? sprite.x : sprite.x;
+  const baseY = sprite.__tiltActive ? sprite.__tly ?? sprite.y : sprite.y;
+  fab.x = baseX + CARD_W - dx;
+  fab.y = baseY + dy;
 }
 
 export function updateFlipFab(sprite: CardSprite) {
@@ -578,4 +600,284 @@ function flipCard(sprite: CardSprite) {
   // Try to schedule new texture right away if viewport is available
   const view = (window as any).__mtgView as ViewRect | undefined;
   if (view) ensureTexture(sprite, view);
+}
+
+// --------------------------
+// Drag Float + Tilt helpers
+// --------------------------
+const ELEV_SCALE = 0.015; // scale gain at full elevation (subtle lift)
+const ELEV_TAU_MS = 80;
+// 3D tilt tuning
+const MAX_PITCH_RAD = Math.PI / 20; // ~18°
+const MAX_ROLL_RAD = Math.PI / 20; // ~18°
+// Velocity clamp in world units per second for full tilt
+const VEL_CLAMP_UNITS_PER_S = 1200;
+const TILT_TAU_MS = 40; // angle easing toward target
+const TILT_RETURN_TAU_MS = 140; // decay target back toward 0 when input pauses
+const CAMERA_D = 320; // perspective camera distance in world units (smaller = stronger)
+
+function clamp(v: number, lo: number, hi: number) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+function ensureTiltMesh(sprite: CardSprite): PIXI.PerspectiveMesh | undefined {
+  if ((sprite as any)?.destroyed) return undefined;
+  if (sprite.__tiltMesh && !(sprite.__tiltMesh as any).destroyed) return sprite.__tiltMesh;
+  // Build a simple textured quad mesh; vertices are local to mesh.position (we use center-origin)
+  const tex = sprite.texture || PIXI.Texture.WHITE;
+  // Use a denser grid for smoother perspective (aspect ~ 100x140)
+  const vx = 12, vy = 18;
+  const mesh = new PIXI.PerspectiveMesh({ texture: tex, verticesX: vx, verticesY: vy });
+  mesh.eventMode = "none"; // don't intercept pointer events
+  mesh.zIndex = (sprite.zIndex || 0) + 1;
+  mesh.position.set(sprite.__cx ?? (sprite.x + (sprite.width || CARD_W) / 2), sprite.__cy ?? (sprite.y + (sprite.height || CARD_H) / 2));
+  // Match current selection tint
+  (mesh as any).tint = sprite.tint;
+  // Attach next to the sprite for correct stacking
+  const parent = sprite.parent as PIXI.Container | null;
+  if (parent) parent.addChild(mesh);
+  sprite.__tiltMesh = mesh;
+  return mesh;
+}
+
+function updateMeshTextureFromSprite(sprite: CardSprite) {
+  const mesh = sprite.__tiltMesh;
+  if (!mesh) return;
+  if (mesh.texture !== sprite.texture) mesh.texture = sprite.texture;
+  (mesh as any).tint = sprite.tint;
+}
+
+function projectCardQuad(
+  w: number,
+  h: number,
+  pitch: number,
+  yaw: number,
+  out: Float32Array,
+) {
+  // Centered quad corners (local, before rotation)
+  const hw = w / 2;
+  const hh = h / 2;
+  const corners: Array<[number, number, number]> = [
+    [-hw, -hh, 0], // TL
+    [hw, -hh, 0], // TR
+    [hw, hh, 0], // BR
+    [-hw, hh, 0], // BL
+  ];
+  const cxp = Math.cos(pitch);
+  const sxp = Math.sin(pitch);
+  const cyr = Math.cos(yaw);
+  const syr = Math.sin(yaw);
+  let idx = 0;
+  for (let i = 0; i < 4; i++) {
+    const x0 = corners[i][0];
+    const y0 = corners[i][1];
+    const z0 = corners[i][2];
+    // Rotate around X (pitch)
+    const y1 = y0 * cxp - z0 * sxp;
+    const z1 = y0 * sxp + z0 * cxp;
+    const x1 = x0;
+  // Rotate around Y (yaw)
+  const xr = x1 * cyr + z1 * syr;
+  const yr = y1;
+  const zr = z1 * cyr - x1 * syr;
+  // Perspective scale: closer (larger positive zr) => larger scale.
+  // Use (D - z) in denominator so positive z increases size.
+  const denom = Math.max(1e-3, CAMERA_D - zr);
+  const s = CAMERA_D / denom;
+    out[idx++] = xr * s; // local x relative to center
+    out[idx++] = yr * s; // local y relative to center
+  }
+}
+
+function applyTransformFromCenter(
+  sprite: CardSprite,
+  cx: number,
+  cy: number,
+  angle: number,
+  extraScale: number,
+) {
+  // Use center pivot computed from local size and keep the center stable
+  const curScaleX = sprite.scale?.x || 1;
+  const curScaleY = sprite.scale?.y || 1;
+  const localW = (sprite.width || CARD_W) / curScaleX;
+  const localH = (sprite.height || CARD_H) / curScaleY;
+  const pivotX = localW / 2;
+  const pivotY = localH / 2;
+  sprite.pivot.set(pivotX, pivotY);
+  const prevExtra = sprite.__lastExtraScale || 1;
+  const baseScaleX = curScaleX / prevExtra;
+  const baseScaleY = curScaleY / prevExtra;
+  const totalScaleX = baseScaleX * extraScale;
+  const totalScaleY = baseScaleY * extraScale;
+  sprite.scale.set(totalScaleX, totalScaleY);
+  sprite.__lastExtraScale = extraScale;
+  sprite.rotation = angle;
+  // With center pivot, x/y correspond to visual center
+  sprite.x = cx;
+  sprite.y = cy;
+}
+
+
+export function beginDragFloat(sprite: CardSprite) {
+  if ((sprite as any)?.destroyed) return;
+  if (sprite.__tiltActive) return;
+  sprite.__tiltActive = true;
+  // no tilt state
+  sprite.__elev = 0;
+  sprite.__tlx = sprite.x;
+  sprite.__tly = sprite.y;
+  sprite.__lastExtraScale = 1;
+  // Initialize center so scale originates from the card center without visual jump
+  // Use displayed size (accounts for current base scale) to get accurate center
+  const dispW = sprite.width || CARD_W;
+  const dispH = sprite.height || CARD_H;
+  sprite.__cx = sprite.x + dispW / 2;
+  sprite.__cy = sprite.y + dispH / 2;
+  sprite.__useCenterAnchor = true;
+  applyTransformFromCenter(sprite, sprite.__cx, sprite.__cy, 0, 1);
+  // Prepare 3D mesh and hide the 2D sprite while dragging
+  const mesh = ensureTiltMesh(sprite);
+  if (mesh) {
+    mesh.visible = true;
+    mesh.zIndex = (sprite.zIndex || 0) + 1;
+    mesh.position.set(sprite.__cx!, sprite.__cy!);
+  }
+  sprite.renderable = false;
+  sprite.__tiltPitch = 0;
+  sprite.__tiltRoll = 0;
+  sprite.__tiltTargetPitch = 0;
+  sprite.__tiltTargetRoll = 0;
+  sprite.__tiltTargetAgeMs = 0;
+}
+
+// tilt removed
+
+export function updateDraggedTopLeft(sprite: CardSprite, tlx: number, tly: number) {
+  if (!sprite.__tiltActive) {
+    sprite.x = tlx;
+    sprite.y = tly;
+    return;
+  }
+  // Preserve center during drag: convert TL motion to center motion
+  const prevTlx = sprite.__tlx ?? tlx;
+  const prevTly = sprite.__tly ?? tly;
+  const dX = tlx - prevTlx;
+  const dY = tly - prevTly;
+  sprite.__tlx = tlx;
+  sprite.__tly = tly;
+  // Update intended center by the same world delta
+  if (sprite.__cx == null || sprite.__cy == null) {
+    const dispW = sprite.width || CARD_W;
+    const dispH = sprite.height || CARD_H;
+    sprite.__cx = tlx + dispW / 2;
+    sprite.__cy = tly + dispH / 2;
+  } else {
+    sprite.__cx += dX;
+    sprite.__cy += dY;
+  }
+  sprite.__useCenterAnchor = true;
+  const ang = 0;
+  const elev = sprite.__elev || 0;
+  const extra = 1 + elev * ELEV_SCALE;
+  applyTransformFromCenter(sprite, sprite.__cx, sprite.__cy, ang, extra);
+  // Update tilt targets linearly with velocity (units per second)
+  const now = performance.now();
+  const prevTs = sprite.__tiltLastTsMs ?? now;
+  const dtMs = Math.max(1, now - prevTs);
+  const dtS = dtMs / 1000;
+  // Velocity in world units per second
+  const vx = dX / dtS;
+  const vy = dY / dtS;
+  const nx = clamp(vx, -VEL_CLAMP_UNITS_PER_S, VEL_CLAMP_UNITS_PER_S) / VEL_CLAMP_UNITS_PER_S;
+  const ny = clamp(vy, -VEL_CLAMP_UNITS_PER_S, VEL_CLAMP_UNITS_PER_S) / VEL_CLAMP_UNITS_PER_S;
+  // Coordinate notes: +y is down on screen. To bring bottom edge closer (down drag), use negative pitch.
+  // To bring right edge closer (right drag), use positive yaw.
+  sprite.__tiltTargetPitch = -ny * MAX_PITCH_RAD;
+  sprite.__tiltTargetRoll = nx * MAX_ROLL_RAD;
+  sprite.__tiltTargetAgeMs = 0;
+  sprite.__tiltLastTsMs = now;
+}
+
+export function endDragFloat(sprite: CardSprite) {
+  if (!sprite.__tiltActive) return;
+  // Reset visual transform to identity and restore top-left positioning
+  const tlx = sprite.__tlx ?? sprite.x;
+  const tly = sprite.__tly ?? sprite.y;
+  sprite.pivot.set(0, 0);
+  // Restore base scale by removing last extra scale
+  const prevExtra = sprite.__lastExtraScale || 1;
+  const baseScaleX = (sprite.scale?.x || 1) / prevExtra;
+  const baseScaleY = (sprite.scale?.y || 1) / prevExtra;
+  sprite.scale.set(baseScaleX, baseScaleY);
+  sprite.rotation = 0;
+  sprite.x = tlx;
+  sprite.y = tly;
+  sprite.__tiltActive = false;
+  // no tilt state
+  sprite.__elev = 0;
+  sprite.__lastExtraScale = 1;
+  sprite.__useCenterAnchor = false;
+  sprite.__cx = undefined;
+  sprite.__cy = undefined;
+  // Remove 3D mesh and re-enable sprite rendering
+  if (sprite.__tiltMesh) {
+    try {
+      sprite.__tiltMesh.parent?.removeChild(sprite.__tiltMesh);
+      sprite.__tiltMesh.destroy({ texture: false });
+    } catch {}
+    sprite.__tiltMesh = undefined;
+  }
+  sprite.renderable = true;
+  sprite.__tiltPitch = 0;
+  sprite.__tiltRoll = 0;
+  sprite.__tiltTargetPitch = 0;
+  sprite.__tiltTargetRoll = 0;
+  sprite.__tiltTargetAgeMs = 0;
+}
+
+export function updateFloatAndTilt(all: CardSprite[], dtMs: number) {
+  // Smoothly approach elevation for active sprites (tilt removed)
+  const kElev = 1 - Math.exp(-dtMs / ELEV_TAU_MS);
+  for (const s of all) {
+    if (!s.__tiltActive) continue;
+    // Raise elevation toward 1 during drag
+    const e = s.__elev ?? 0;
+    s.__elev = e + (1 - e) * kElev;
+    // Re-apply transform at updated values (2D sprite kept hidden but scale is tracked)
+    const extra = 1 + (s.__elev || 0) * ELEV_SCALE;
+    if (s.__useCenterAnchor && s.__cx != null && s.__cy != null) {
+      applyTransformFromCenter(s, s.__cx, s.__cy, 0, extra);
+    }
+    // Update tilt targets decay if input pauses
+    s.__tiltTargetAgeMs = (s.__tiltTargetAgeMs ?? 0) + dtMs;
+    const kAngle = 1 - Math.exp(-dtMs / TILT_TAU_MS);
+    if ((s.__tiltTargetAgeMs ?? 0) > 48) {
+      const kRet = Math.exp(-dtMs / TILT_RETURN_TAU_MS);
+      s.__tiltTargetPitch = (s.__tiltTargetPitch || 0) * kRet;
+      s.__tiltTargetRoll = (s.__tiltTargetRoll || 0) * kRet;
+    }
+    // Ease angles toward targets
+    s.__tiltPitch = (s.__tiltPitch ?? 0) + ((s.__tiltTargetPitch || 0) - (s.__tiltPitch ?? 0)) * kAngle;
+    s.__tiltRoll = (s.__tiltRoll ?? 0) + ((s.__tiltTargetRoll || 0) - (s.__tiltRoll ?? 0)) * kAngle;
+    // Build/update mesh geometry
+    const mesh = ensureTiltMesh(s);
+    if (!mesh) continue;
+    updateMeshTextureFromSprite(s);
+    mesh.visible = true;
+    mesh.zIndex = (s.zIndex || 0) + 1;
+    // Keep mesh centered at the intended center
+    if (s.__cx != null && s.__cy != null) mesh.position.set(s.__cx, s.__cy);
+    // Use displayed size (already includes elevation extra via sprite scale tracking)
+    const w = s.width || CARD_W;
+    const h = s.height || CARD_H;
+    const verts = new Float32Array(8);
+    projectCardQuad(w, h, s.__tiltPitch || 0, s.__tiltRoll || 0, verts);
+    // Apply corners in clockwise order from top-left
+    mesh.setCorners(
+      verts[0], verts[1], // TL
+      verts[2], verts[3], // TR
+      verts[4], verts[5], // BR
+      verts[6], verts[7], // BL
+    );
+  }
 }
