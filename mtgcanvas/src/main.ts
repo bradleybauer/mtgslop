@@ -244,7 +244,7 @@ const splashEl = document.getElementById("splash");
     if (htmlBanner) return htmlBanner;
     const el = document.createElement("div");
     el.id = "title-banner";
-    el.className = "title-banner"; // styled via theme.css vars
+    el.className = "title-banner ui-panel"; // reuse panel look/vars for consistency
     el.textContent = "MTG Slop";
     // Do not intercept mouse/touch so canvas interactions work underneath
     el.style.pointerEvents = "none";
@@ -999,7 +999,9 @@ const splashEl = document.getElementById("splash");
       const anyS: any = s as any;
       const card: any = anyS.__card || null;
       if (!card) continue;
-      const faces: any[] = Array.isArray(card.card_faces) ? card.card_faces : [card];
+      const faces: any[] = Array.isArray(card.card_faces)
+        ? card.card_faces
+        : [card];
       const tiers = ["small", "normal", "large", "png"] as const;
       for (const f of faces) {
         const iu = f?.image_uris || card?.image_uris || {};
@@ -1036,9 +1038,10 @@ const splashEl = document.getElementById("splash");
 
     // Restore sorting and do one sort pass if needed
     world.sortableChildren = prevSortable;
-    if (prevSortable) try {
-      world.sortChildren();
-    } catch {}
+    if (prevSortable)
+      try {
+        world.sortChildren();
+      } catch {}
 
     // 7) Redraw touched groups once
     touchedGroups.forEach((gid) => {
@@ -2141,7 +2144,7 @@ const splashEl = document.getElementById("splash");
     }
 
     // Existing bottom-right triangle -> always se resize
-  r.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
+    r.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       // collapse removed
 
       e.stopPropagation();
@@ -2157,7 +2160,7 @@ const splashEl = document.getElementById("splash");
     });
 
     // Edge / corner resize via frame body
-  gv.frame.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
+    gv.frame.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (resizing) return;
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2170,7 +2173,7 @@ const splashEl = document.getElementById("splash");
       if (!resizing && gv.frame.cursor !== "default")
         gv.frame.cursor = "default";
     });
-  gv.frame.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
+    gv.frame.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       if (e.button !== 0) return; // only left button
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2190,7 +2193,7 @@ const splashEl = document.getElementById("splash");
     });
 
     // Header resize support for top/left/right edges (screen-relative thickness)
-  gv.header.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
+    gv.header.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (resizing) return;
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2211,7 +2214,7 @@ const splashEl = document.getElementById("splash");
     gv.header.on("pointerout", () => {
       if (!resizing) gv.header.cursor = "move";
     });
-  gv.header.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
+    gv.header.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       if (e.button !== 0) return; // left only
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2239,7 +2242,7 @@ const splashEl = document.getElementById("splash");
       anchorY = local.y;
     });
 
-  app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
+    app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (!resizing) return;
       const local = world.toLocal(e.global);
       const dx = local.x - anchorX;
@@ -2341,7 +2344,7 @@ const splashEl = document.getElementById("splash");
     }
     gv.header.eventMode = "static";
     gv.header.cursor = "move";
-  gv.header.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
+    gv.header.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       e.stopPropagation();
       if (e.button === 2) return; // right-click handled separately
       // If near resize edges, do not start drag (resize handler will take over)
@@ -2367,13 +2370,13 @@ const splashEl = document.getElementById("splash");
       dy = local.y - g.y;
       maybeDrag = true;
     });
-  gv.header.on("pointertap", (e: PIXI.FederatedPointerEvent) => {
+    gv.header.on("pointertap", (e: PIXI.FederatedPointerEvent) => {
       if (e.detail === 2 && e.button !== 2) startGroupRename(gv);
     });
     // Overlay drag surface (when zoomed out). Acts like header.
     if ((gv as any)._overlayDrag) {
       const ds: any = (gv as any)._overlayDrag;
-  ds.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
+      ds.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
         if (e.button !== 0) return;
         if (!ds.visible) return;
         e.stopPropagation();
@@ -2390,7 +2393,7 @@ const splashEl = document.getElementById("splash");
     // Reuse same drag logic; only when overlay mode is active.
     gv.frame.cursor = "default";
     gv.frame.eventMode = "static";
-  gv.frame.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
+    gv.frame.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       if (e.button !== 0) return;
       // Only consider using the frame as a drag surface if overlay is active AND there's no dedicated drag surface.
       if (world.scale.x > 0.85) return; // overlay not active
@@ -2422,7 +2425,7 @@ const splashEl = document.getElementById("splash");
       maybeDrag = true;
     });
     // Click body (non-overlay zoom): select group without starting a drag
-  gv.frame.on("pointertap", (e: PIXI.FederatedPointerEvent) => {
+    gv.frame.on("pointertap", (e: PIXI.FederatedPointerEvent) => {
       if (e.button === 2) return; // ignore right-click here
       // If overlay active, drag handler above already selected the group
       if (world.scale.x <= 0.85) return;
@@ -2436,13 +2439,13 @@ const splashEl = document.getElementById("splash");
     });
     // Context menu (right-click)
     // Show context menu only if no significant right-drag (panning) occurred.
-  gv.header.on("rightclick", (e: PIXI.FederatedPointerEvent) => {
+    gv.header.on("rightclick", (e: PIXI.FederatedPointerEvent) => {
       e.stopPropagation();
       if (rightPanning) return; // if we dragged, skip menu
       showGroupContextMenu(gv, e.global);
     });
     // Group body interactions handled globally like canvas now.
-  app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
+    app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (!drag && maybeDrag && startLocal) {
         const local = world.toLocal(e.global);
         const dpx = Math.abs(local.x - startLocal.x);
@@ -3030,8 +3033,8 @@ const splashEl = document.getElementById("splash");
         groupIds.forEach((id) => deleteGroupById(id));
         scheduleGroupSave();
       }
-  // Clear any stale selection references
-  SelectionStore.clear();
+      // Clear any stale selection references
+      SelectionStore.clear();
       // After group deletions, if empty, drop caches
       if (sprites.length === 0 && groups.size === 0) {
         try {

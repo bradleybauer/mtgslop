@@ -355,23 +355,31 @@ export function ensureThemeStyles() {
   .cip-set-icon{ filter: var(--set-icon-filter); }
   /* App title banner (HTML/CSS replacement for Pixi banner) */
   .title-banner{
-    position:fixed;
-    top:calc(12px * var(--ui-scale));
-    left:calc(16px * var(--ui-scale));
-    z-index:10050;
-    padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));
-    border-radius:calc(12px * var(--ui-scale));
-    background:var(--panel-bg-alt);
-    color:var(--panel-accent);
-    border:1px solid var(--panel-border);
-    font-family:'Inter', system-ui, ui-sans-serif, Segoe UI, Roboto, Helvetica, Arial;
-    font-weight:900;
-    letter-spacing:1.2px;
-    font-size:calc(28px * var(--ui-scale));
-    line-height:1.1;
-    box-shadow:var(--panel-shadow);
-    filter: drop-shadow(1px 2px 1px rgba(0,0,0,0.45));
-    user-select:none;
+  position:fixed;
+  top:calc(12px * var(--ui-scale));
+  left:calc(16px * var(--ui-scale));
+  z-index:10050;
+  /* Match panel surface */
+  background:var(--panel-bg-alt);
+  border:1px solid var(--panel-border);
+  border-radius:var(--panel-radius);
+  box-shadow:var(--panel-shadow);
+  backdrop-filter:blur(6px) saturate(1.2);
+  -webkit-backdrop-filter:blur(6px) saturate(1.2);
+  /* Spacing/typography closer to other panels */
+  padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));
+  color:var(--panel-fg);
+  font-family: var(--panel-font);
+  font-weight:600;
+  letter-spacing:.6px;
+  text-transform:uppercase;
+  font-size:calc(16px * var(--ui-scale));
+  line-height:1.2;
+  /* Subtle accent tie-in */
+  box-sizing:border-box;
+  border-left:calc(4px * var(--ui-scale)) solid var(--panel-accent);
+  /* UX */
+  user-select:none;
   }
   `;
   document.head.appendChild(style);
