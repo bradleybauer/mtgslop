@@ -45,15 +45,11 @@ async function runDecodeTask(task: PrioTask) {
   const ci = await getCachedImage(task.url);
   const source = await (window as any).createImageBitmap(ci.blob);
   const tex = PIXI.Texture.from(source as any);
-  const ts: any = tex.source;
+  const ts = tex.source;
   if (ts) {
     // Improve minification quality when zoomed out
     ts.autoGenerateMipmaps = true;
-    ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
-    if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
-    if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
-    if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
-    if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+    ts.autoGarbageCollect = true;
   }
   // Populate cache
   const bytes = estimateTextureBytes(tex);
@@ -101,6 +97,9 @@ function ensureDecodeWorkers() {
 export function getDecodeQueueSize() {
   return decodePQ.size() + activeDecodes;
 }
+
+// Basic world-space viewport rectangle used for culling/prefetch
+export type ViewRect = { left: number; top: number; right: number; bottom: number };
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
 export interface CardSprite extends PIXI.Sprite {
@@ -162,14 +161,10 @@ function buildTexture(
     .fill({ color: opts.fill })
     .stroke({ color: opts.stroke, width: opts.strokeW });
   const tex = renderer.generateTexture(g);
-  const ts: any = tex.source;
+  const ts = tex.source;
   if (ts) {
     ts.autoGenerateMipmaps = true;
-    ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
-    if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
-    if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
-    if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
-    if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+    ts.autoGarbageCollect = true;
   }
   g.destroy();
   return tex;
@@ -292,14 +287,10 @@ function adoptCachedTexture(
   sprite.texture = ent.tex;
   // Ensure texture filtering settings are kept when adopting from cache
   try {
-    const ts: any = sprite.texture?.source;
+    const ts = sprite.texture?.source;
     if (ts) {
       ts.autoGenerateMipmaps = true;
-      ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
-      if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
-      if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
-      if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
-      if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+      ts.autoGarbageCollect = true;
     }
   } catch {}
   sprite.width = CARD_W;
@@ -340,7 +331,6 @@ function forcePlaceholder(sprite: CardSprite) {
     : Colors.cardDefaultTint();
 }
 
-type ViewRect = { left: number; top: number; right: number; bottom: number };
 export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   const x1 = sprite.x;
   const y1 = sprite.y;
@@ -454,9 +444,6 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
     ? Colors.cardSelectedTint()
     : Colors.cardDefaultTint();
 }
-
-// snap imported from utils
-
 // --------------------------
 // Flip FAB for double-faced cards
 // --------------------------
@@ -709,14 +696,10 @@ function updateMeshTextureFromSprite(sprite: CardSprite) {
   if (mesh.texture !== sprite.texture) mesh.texture = sprite.texture;
   (mesh as any).tint = sprite.tint;
   try {
-    const ts: any = mesh.texture?.source;
+    const ts = mesh.texture?.source;
     if (ts) {
       ts.autoGenerateMipmaps = true;
-      ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
-      if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
-      if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
-      if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
-      if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+      ts.autoGarbageCollect = true;
     }
   } catch {}
 }

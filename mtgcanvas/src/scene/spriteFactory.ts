@@ -229,7 +229,7 @@ function attachCardInteractions(
     }
     dragState = null;
   };
-  stage.on("pointerup", () => {
+  const onStageUp = () => {
     const hadDrag = !!dragState;
     pendingStartLocal = null;
     endDrag(!!dragState);
@@ -238,8 +238,8 @@ function attachCardInteractions(
       for (const cs of preFloatSprites) endDragFloat(cs);
     }
     preFloatSprites = null;
-  });
-  stage.on("pointerupoutside", () => {
+  };
+  const onStageUpOutside = () => {
     const hadDrag = !!dragState;
     pendingStartLocal = null;
     endDrag(!!dragState);
@@ -247,8 +247,8 @@ function attachCardInteractions(
       for (const cs of preFloatSprites) endDragFloat(cs);
     }
     preFloatSprites = null;
-  });
-  stage.on("pointermove", (e: any) => {
+  };
+  const onStageMove = (e: any) => {
     // If we have a pending click and no drag yet, check if movement exceeds threshold to begin drag
     if (!dragState && pendingStartLocal) {
       const localNow = world.toLocal(e.global);
@@ -314,5 +314,23 @@ function attachCardInteractions(
       }
     }
     if (moved && onDragMove) onDragMove(dragState.sprites);
-  });
+  };
+  stage.on("pointerup", onStageUp);
+  stage.on("pointerupoutside", onStageUpOutside);
+  stage.on("pointermove", onStageMove);
+
+  // Clean up handlers when the sprite is removed or destroyed
+  const cleanup = () => {
+    try {
+      stage.off("pointerup", onStageUp);
+      stage.off("pointerupoutside", onStageUpOutside);
+      stage.off("pointermove", onStageMove);
+    } catch {}
+  };
+  s.on("removed", cleanup);
+  const __origDestroy = s.destroy.bind(s);
+  s.destroy = (...args: any[]) => {
+    cleanup();
+    return __origDestroy(...(args as any));
+  };
 }

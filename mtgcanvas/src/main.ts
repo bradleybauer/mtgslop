@@ -2888,6 +2888,8 @@ const splashEl = document.getElementById("splash");
             // Collect Scryfall id for removal from imported store (memory mode)
             const sid = anyS.__scryfallId || anyS.__card?.id;
             if (sid) sfIds.push(String(sid));
+            // Remove from spatial index to drop strong references
+            spatial.removeBySprite(s);
             s.destroy();
             sprites.splice(idx, 1);
           }
