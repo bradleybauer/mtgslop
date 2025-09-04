@@ -1,22 +1,5 @@
-export interface CardInstance {
-  id: number;
-  card_id: number;
-  group_id: number | null;
-  x: number;
-  y: number;
-  z: number;
-  rotation: number;
-  scale: number;
-  tags: string | null;
-}
-
-export interface GroupRow {
-  id: number;
-  parent_id: number | null;
-  name: string | null;
-  // collapsed removed
-  transform_json: string | null;
-}
+import type { CardInstance, GroupRow } from "../types/repositories";
+import type { Rect } from "../types/geometry";
 
 const mem = { instances: [] as CardInstance[], groups: [] as GroupRow[] };
 // Fast id lookup for instances to avoid O(N) scans in hot update paths
@@ -183,10 +166,7 @@ export const GroupsRepo = {
     if (!ids.length) return;
     mem.groups = mem.groups.filter((g) => !ids.includes(g.id));
   },
-  updateTransform(
-    id: number,
-    t: { x: number; y: number; w: number; h: number },
-  ) {
+  updateTransform(id: number, t: Rect) {
     const json = JSON.stringify(t);
     const g = mem.groups.find((g) => g.id === id);
     if (g) (g as any).transform_json = json;

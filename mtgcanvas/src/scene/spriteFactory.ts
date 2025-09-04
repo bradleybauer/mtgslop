@@ -31,7 +31,7 @@ export function createSprite(
     y: number;
     z: number;
     group_id?: number | null;
-  card?: Card | null;
+    card?: Card | null;
     scryfall_id?: string | null;
   },
   deps: CreateSpriteDeps,
@@ -44,13 +44,13 @@ export function createSprite(
     renderer: deps.renderer,
     card: inst.card,
   });
-  if (inst.group_id) (s as any).__groupId = inst.group_id;
-  if (inst.scryfall_id) (s as any).__scryfallId = String(inst.scryfall_id);
+  if (inst.group_id) s.__groupId = inst.group_id;
+  if (inst.scryfall_id) s.__scryfallId = String(inst.scryfall_id);
   else if (inst.card) {
     const sid = (inst.card as any).id || (inst.card as any)?.data?.id;
-    if (sid) (s as any).__scryfallId = String(sid);
+    if (sid) s.__scryfallId = String(sid);
   }
-  (s as any).__cardSprite = true;
+  s.__cardSprite = true;
   deps.world.addChild(s);
   attachCardInteractions(
     s,
@@ -100,7 +100,7 @@ function attachCardInteractions(
   getAll: () => CardSprite[],
   world: PIXI.Container,
   stage: PIXI.Container,
-  onDrop?: (moved: CardSprite[]) => void,
+  onDrop: (moved: CardSprite[]) => void,
   isPanning?: () => boolean,
   startMarquee?: (global: PIXI.Point, additive: boolean) => void,
   onDragMove?: (moved: CardSprite[]) => void,
@@ -151,7 +151,7 @@ function attachCardInteractions(
     for (const cs of dragSprites) beginDragFloat(cs);
     // Visual elevation applied above; nothing else to do
   }
-  s.on("pointerdown", (e: any) => {
+  s.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
     if (e.button !== 0) return; // only left button selects / drags
     if (isPanning && isPanning()) return; // ignore clicks while panning with space
     // Suppress direct card drag if its group overlay label is active (zoomed out macro view).
@@ -171,9 +171,9 @@ function attachCardInteractions(
     // Record local start; we’ll start drag only after a tiny movement threshold
     const startLocal = world.toLocal(e.global);
     pendingStartLocal = { x: startLocal.x, y: startLocal.y };
-  // Immediately elevate currently selected sprites for visual feedback on click-and-hold
-  preFloatSprites = SelectionStore.getCards().slice();
-  for (const cs of preFloatSprites) beginDragFloat(cs);
+    // Immediately elevate currently selected sprites for visual feedback on click-and-hold
+    preFloatSprites = SelectionStore.getCards().slice();
+    for (const cs of preFloatSprites) beginDragFloat(cs);
   });
   const endDrag = (commit: boolean) => {
     if (!dragState) return;
@@ -202,7 +202,7 @@ function attachCardInteractions(
       // Fallback: restore baseZ if computation fails
       dragState.sprites.forEach((cs) => (cs.zIndex = cs.__baseZ));
     }
-  if (commit) {
+    if (commit) {
       // Snap/clamp moved sprites to grid and within canvas bounds; persistence is handled
       // by the onDrop callback (main schedules a centralized save).
       const ha: any = (stage as any).hitArea as any;
@@ -225,7 +225,7 @@ function attachCardInteractions(
         cs.x = nx;
         cs.y = ny;
       });
-  onDrop && onDrop(dragState.sprites);
+      onDrop && onDrop(dragState.sprites);
     }
     dragState = null;
   };
@@ -248,7 +248,7 @@ function attachCardInteractions(
     }
     preFloatSprites = null;
   };
-  const onStageMove = (e: any) => {
+  const onStageMove = (e: PIXI.FederatedPointerEvent) => {
     // If we have a pending click and no drag yet, check if movement exceeds threshold to begin drag
     if (!dragState && pendingStartLocal) {
       const localNow = world.toLocal(e.global);
@@ -257,7 +257,7 @@ function attachCardInteractions(
       const dx = (localNow.x - pendingStartLocal.x) * sc;
       const dy = (localNow.y - pendingStartLocal.y) * sc;
       if (Math.hypot(dx, dy) >= LEFT_DRAG_THRESHOLD_PX) {
-  beginDrag(localNow);
+        beginDrag(localNow);
         // Now that a real drag has begun, clear pre-float tracker
         preFloatSprites = null;
         // fall-through to apply first move below in same tick
@@ -266,7 +266,7 @@ function attachCardInteractions(
       }
     }
     if (!dragState) return;
-  const local = world.toLocal(e.global);
+    const local = world.toLocal(e.global);
     let moved = false;
     const ha: any = (stage as any).hitArea as any;
     const hasBounds = ha && typeof ha.x === "number";
@@ -275,7 +275,7 @@ function attachCardInteractions(
     const maxX = hasBounds ? ha.x + ha.width - 100 : Infinity;
     const maxY = hasBounds ? ha.y + ha.height - 140 : Infinity;
 
-  // Intended deltas from drag start
+    // Intended deltas from drag start
     let dX = local.x - dragState.startLocal.x;
     let dY = local.y - dragState.startLocal.y;
 

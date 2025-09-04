@@ -14,6 +14,9 @@ import {
   ensureTexture,
   updateFlipFab,
   updateFloatAndTilt,
+  clearTextureCaches,
+  purgeTextureUrls,
+  getDecodeQueueSize,
 } from "./scene/cardNode";
 import { createSpritesBulk as factoryCreateSpritesBulk } from "./scene/spriteFactory";
 import {
@@ -22,7 +25,12 @@ import {
 } from "./config/rendering";
 import { HIDE_STATUS_PANE } from "./config/flags";
 import { autoConfigureTextureBudget } from "./config/gpuBudget";
-import { getImageCacheStats, getCacheUsage } from "./services/imageCache";
+import {
+  getImageCacheStats,
+  getCacheUsage,
+  clearSessionCaches,
+  purgeCacheForUrls,
+} from "./services/imageCache";
 import {
   createGroupVisual,
   drawGroup,
@@ -32,6 +40,7 @@ import {
   autoPackGroup,
   addCardToGroupOrdered,
   removeCardFromGroup,
+  clearGroupMembers,
   updateGroupTextQuality,
   updateGroupMetrics,
   updateGroupZoomPresentation,
@@ -80,6 +89,7 @@ import {
   SPACING_Y,
 } from "./config/dimensions";
 import { snap } from "./utils/snap";
+import { installNetworkActivitySpinner } from "./ui/networkSpinner";
 
 // Global hard cap on number of card sprites in the scene
 const MAX_CARD_SPRITES = 40000;
@@ -88,6 +98,8 @@ const MAX_CARD_SPRITES = 40000;
 // buildPlacementContext is defined later inside the app bootstrap where world/sprites/groups are available
 
 const app = new PIXI.Application();
+// Install network spinner ASAP so it wraps fetch before first requests
+installNetworkActivitySpinner({ showDelayMs: 150, hideDelayMs: 200 });
 // Disable grammar/spellcheck in all text entry surfaces
 disableSpellAndGrammarGlobally({ includeContentEditable: true });
 // Normalize UI scale early (Windows high-DPI heuristic + persisted value)
@@ -114,7 +126,7 @@ window.addEventListener(
 const splashEl = document.getElementById("splash");
 (async () => {
   await app.init({
-    background: (Colors.canvasBg() as unknown) as number,
+    background: Colors.canvasBg() as unknown as number,
     resizeTo: window,
     antialias: true,
     resolution: 1,
@@ -143,7 +155,7 @@ const splashEl = document.getElementById("splash");
     const css = getComputedStyle(document.documentElement);
     const bg = css.getPropertyValue("--canvas-bg").trim();
     const hex = parseCssHexColor(bg);
-  if (hex != null) (app.renderer.background as any).color = hex as any;
+    if (hex != null) (app.renderer.background as any).color = hex as any;
   }
   registerThemeListener(() => applyCanvasBg());
   // Will run once theme styles ensured below; calling here just in case dark default already present.
@@ -173,7 +185,7 @@ const splashEl = document.getElementById("splash");
   }
   canvas.addEventListener(
     "webglcontextlost",
-  (ev: Event) => {
+    (ev: Event) => {
       ev.preventDefault();
       app.ticker.stop();
       showCtxLostBanner("Graphics context lost. Attempting to recover…");
@@ -375,7 +387,7 @@ const splashEl = document.getElementById("splash");
   });
   // Keep camera min zoom accommodating full bounds on viewport resize
   window.addEventListener("resize", () => {
-  const ha = app.stage.hitArea as PIXI.Rectangle | null;
+    const ha = app.stage.hitArea as PIXI.Rectangle | null;
     if (ha && typeof ha.x === "number")
       camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
   });
@@ -496,7 +508,7 @@ const splashEl = document.getElementById("splash");
       y: number;
       z: number;
       group_id?: number | null;
-  card?: Card | null;
+      card?: Card | null;
       scryfall_id?: string | null;
     }>,
   ): CardSprite[] {
@@ -516,8 +528,12 @@ const splashEl = document.getElementById("splash");
         onDrop: (moved) => handleDroppedSprites(moved),
         onDragMove: (moved) =>
           moved.forEach((ms) => {
-            const x = (ms as any).__tiltActive ? (ms as any).__tlx ?? ms.x : ms.x;
-            const y = (ms as any).__tiltActive ? (ms as any).__tly ?? ms.y : ms.y;
+            const x = (ms as any).__tiltActive
+              ? ((ms as any).__tlx ?? ms.x)
+              : ms.x;
+            const y = (ms as any).__tiltActive
+              ? ((ms as any).__tly ?? ms.y)
+              : ms.y;
             spatial.update({
               sprite: ms,
               minX: x,
@@ -924,9 +940,18 @@ const splashEl = document.getElementById("splash");
       updates.push({ id: sp.__id, group_id: null });
     });
     if (updates.length) InstancesRepo.updateMany(updates);
+    // Drop strong references to member sprites from the group
+    clearGroupMembers(gv);
     gv.gfx.destroy();
     groups.delete(id);
     updateEmptyStateOverlay();
+    // If scene is now empty, drop session/image/texture caches to release memory
+    if (sprites.length === 0 && groups.size === 0) {
+      try {
+        clearTextureCaches();
+        clearSessionCaches();
+      } catch {}
+    }
   }
   // Memory mode group persistence helpers
   let lsGroupsTimer: any = null;
@@ -1024,7 +1049,7 @@ const splashEl = document.getElementById("splash");
     // Keep other runtime defaults; do not overwrite auto-detected budget here
     allowEvict: true,
     disablePngTier: false,
-    decodeParallelLimit: 4,
+    decodeParallelLimit: 8,
   });
   // (Ticker added later to include overlay presentation updates.)
 
@@ -1190,7 +1215,7 @@ const splashEl = document.getElementById("splash");
       const timer = createPhaseTimer("group-auto-pack(panel)");
       const gv = currentPanelGroup();
       if (!gv) return;
-  const items: SpatialItem[] = [];
+      const items: SpatialItem[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
           sprite: s,
@@ -1201,7 +1226,7 @@ const splashEl = document.getElementById("splash");
         });
       });
       timer.mark("auto-pack");
-  if (items.length) spatial.bulkUpdate(items);
+      if (items.length) spatial.bulkUpdate(items);
       timer.mark("spatial");
       updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
@@ -1990,7 +2015,7 @@ const splashEl = document.getElementById("splash");
     }
 
     // Existing bottom-right triangle -> always se resize
-    r.on("pointerdown", (e) => {
+  r.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       // collapse removed
 
       e.stopPropagation();
@@ -2006,7 +2031,7 @@ const splashEl = document.getElementById("splash");
     });
 
     // Edge / corner resize via frame body
-    gv.frame.on("pointermove", (e: any) => {
+  gv.frame.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (resizing) return;
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2019,7 +2044,7 @@ const splashEl = document.getElementById("splash");
       if (!resizing && gv.frame.cursor !== "default")
         gv.frame.cursor = "default";
     });
-    gv.frame.on("pointerdown", (e: any) => {
+  gv.frame.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       if (e.button !== 0) return; // only left button
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2039,7 +2064,7 @@ const splashEl = document.getElementById("splash");
     });
 
     // Header resize support for top/left/right edges (screen-relative thickness)
-    gv.header.on("pointermove", (e: any) => {
+  gv.header.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (resizing) return;
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2060,7 +2085,7 @@ const splashEl = document.getElementById("splash");
     gv.header.on("pointerout", () => {
       if (!resizing) gv.header.cursor = "move";
     });
-    gv.header.on("pointerdown", (e: any) => {
+  gv.header.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       if (e.button !== 0) return; // left only
       const local = world.toLocal(e.global);
       const lx = local.x - gv.gfx.x;
@@ -2088,7 +2113,7 @@ const splashEl = document.getElementById("splash");
       anchorY = local.y;
     });
 
-    app.stage.on("pointermove", (e) => {
+  app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (!resizing) return;
       const local = world.toLocal(e.global);
       const dx = local.x - anchorX;
@@ -2190,7 +2215,7 @@ const splashEl = document.getElementById("splash");
     }
     gv.header.eventMode = "static";
     gv.header.cursor = "move";
-    gv.header.on("pointerdown", (e: any) => {
+  gv.header.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       e.stopPropagation();
       if (e.button === 2) return; // right-click handled separately
       // If near resize edges, do not start drag (resize handler will take over)
@@ -2216,13 +2241,13 @@ const splashEl = document.getElementById("splash");
       dy = local.y - g.y;
       maybeDrag = true;
     });
-    gv.header.on("pointertap", (e: any) => {
+  gv.header.on("pointertap", (e: PIXI.FederatedPointerEvent) => {
       if (e.detail === 2 && e.button !== 2) startGroupRename(gv);
     });
     // Overlay drag surface (when zoomed out). Acts like header.
     if ((gv as any)._overlayDrag) {
       const ds: any = (gv as any)._overlayDrag;
-      ds.on("pointerdown", (e: any) => {
+  ds.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
         if (e.button !== 0) return;
         if (!ds.visible) return;
         e.stopPropagation();
@@ -2239,7 +2264,7 @@ const splashEl = document.getElementById("splash");
     // Reuse same drag logic; only when overlay mode is active.
     gv.frame.cursor = "default";
     gv.frame.eventMode = "static";
-    gv.frame.on("pointerdown", (e: any) => {
+  gv.frame.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       if (e.button !== 0) return;
       // Only consider using the frame as a drag surface if overlay is active AND there's no dedicated drag surface.
       if (world.scale.x > 0.85) return; // overlay not active
@@ -2271,7 +2296,7 @@ const splashEl = document.getElementById("splash");
       maybeDrag = true;
     });
     // Click body (non-overlay zoom): select group without starting a drag
-    gv.frame.on("pointertap", (e: any) => {
+  gv.frame.on("pointertap", (e: PIXI.FederatedPointerEvent) => {
       if (e.button === 2) return; // ignore right-click here
       // If overlay active, drag handler above already selected the group
       if (world.scale.x <= 0.85) return;
@@ -2285,13 +2310,13 @@ const splashEl = document.getElementById("splash");
     });
     // Context menu (right-click)
     // Show context menu only if no significant right-drag (panning) occurred.
-    gv.header.on("rightclick", (e: any) => {
+  gv.header.on("rightclick", (e: PIXI.FederatedPointerEvent) => {
       e.stopPropagation();
       if (rightPanning) return; // if we dragged, skip menu
       showGroupContextMenu(gv, e.global);
     });
     // Group body interactions handled globally like canvas now.
-    app.stage.on("pointermove", (e) => {
+  app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (!drag && maybeDrag && startLocal) {
         const local = world.toLocal(e.global);
         const dpx = Math.abs(local.x - startLocal.x);
@@ -2376,7 +2401,7 @@ const splashEl = document.getElementById("splash");
       const p = clampGroupXY(gv, snap(g.x), snap(g.y));
       g.x = p.x;
       g.y = p.y;
-  const primarySpatial: SpatialItem[] = [];
+      const primarySpatial: SpatialItem[] = [];
       memberOffsets.forEach((m) => {
         m.sprite.x = snap(m.sprite.x);
         m.sprite.y = snap(m.sprite.y);
@@ -2388,14 +2413,14 @@ const splashEl = document.getElementById("splash");
           maxY: m.sprite.y + CARD_H_GLOBAL,
         });
       });
-  if (primarySpatial.length) spatial.bulkUpdate(primarySpatial);
+      if (primarySpatial.length) spatial.bulkUpdate(primarySpatial);
       persistGroupTransform(gv.id, { x: g.x, y: g.y, w: gv.w, h: gv.h });
 
       // Snap and re-clamp any other selected groups moved in lockstep
       const selected = new Set(SelectionStore.getGroups());
       selected.delete(gv.id);
       if (selected.size && multiOffsets) {
-  const items: SpatialItem[] = [];
+        const items: SpatialItem[] = [];
         multiOffsets.forEach(({ gv: og, members }) => {
           const p2 = clampGroupXY(og, snap(og.gfx.x), snap(og.gfx.y));
           og.gfx.x = p2.x;
@@ -2418,7 +2443,7 @@ const splashEl = document.getElementById("splash");
             h: og.h,
           });
         });
-  if (items.length) spatial.bulkUpdate(items);
+        if (items.length) spatial.bulkUpdate(items);
       }
       scheduleGroupSave();
       multiOffsets = null;
@@ -2471,7 +2496,7 @@ const splashEl = document.getElementById("splash");
     // Collapse feature removed
     addItem("Auto-pack", () => {
       const timer = createPhaseTimer("group-auto-pack(context)");
-  const items: SpatialItem[] = [];
+      const items: SpatialItem[] = [];
       autoPackGroup(gv, sprites, (s) => {
         items.push({
           sprite: s,
@@ -2482,7 +2507,7 @@ const splashEl = document.getElementById("splash");
         });
       });
       timer.mark("auto-pack");
-  if (items.length) spatial.bulkUpdate(items);
+      if (items.length) spatial.bulkUpdate(items);
       timer.mark("spatial");
       updateGroupMetrics(gv);
       drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
@@ -2768,7 +2793,7 @@ const splashEl = document.getElementById("splash");
               maxY: s.y + CARD_H_GLOBAL,
             });
           });
-            if (items.length) spatial.bulkUpdate(items);
+          if (items.length) spatial.bulkUpdate(items);
         }
         timer.mark("layout+spatial");
         updateGroupMetrics(gv);
@@ -2821,7 +2846,7 @@ const splashEl = document.getElementById("splash");
               maxY: s.y + CARD_H_GLOBAL,
             });
           });
-            if (items.length) spatial.bulkUpdate(items);
+          if (items.length) spatial.bulkUpdate(items);
         }
         timer2.mark("layout+spatial");
         updateGroupMetrics(gv);
@@ -2838,9 +2863,9 @@ const splashEl = document.getElementById("splash");
     // Select all (Ctrl+A)
     if ((e.key === "a" || e.key === "A") && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-  // Select-all should tint like marquee: mark all cards accordingly before selection update
-  for (const s of sprites) (s as any).__tintByMarquee = true;
-  SelectionStore.replace({ cards: new Set(sprites), groupIds: new Set() });
+      // Select-all should tint like marquee: mark all cards accordingly before selection update
+      for (const s of sprites) (s as any).__tintByMarquee = true;
+      SelectionStore.replace({ cards: new Set(sprites), groupIds: new Set() });
     }
     // Clear selection (Esc)
     if (e.key === "Escape") {
@@ -2882,12 +2907,41 @@ const splashEl = document.getElementById("splash");
             const gid = s.__groupId;
             if (gid) {
               const gv = groups.get(gid);
-              gv && gv.items.delete(s);
+              if (gv) {
+                gv.items.delete(s);
+                const oi = gv.order.indexOf(s);
+                if (oi >= 0) gv.order.splice(oi, 1);
+              }
               touchedGroups.add(gid);
             }
             // Collect Scryfall id for removal from imported store (memory mode)
             const sid = anyS.__scryfallId || anyS.__card?.id;
             if (sid) sfIds.push(String(sid));
+            // Build all potential image URLs for this card (all faces, tiers)
+            try {
+              const urls: string[] = [];
+              const card: any = anyS.__card || null;
+              const faces: any[] = Array.isArray(card?.card_faces)
+                ? card.card_faces
+                : [card];
+              const tiers = ["small", "normal", "large", "png"] as const;
+              for (const f of faces) {
+                const iu = f?.image_uris || card?.image_uris || {};
+                for (const t of tiers) {
+                  const u = iu?.[t];
+                  if (typeof u === "string") urls.push(u);
+                }
+              }
+              // Purge per-URL caches: textures + image session (keep IDB intact by default)
+              if (urls.length) {
+                try {
+                  purgeTextureUrls(urls);
+                } catch {}
+                try {
+                  purgeCacheForUrls(urls, { includePersistent: false });
+                } catch {}
+              }
+            } catch {}
             // Remove from spatial index to drop strong references
             spatial.removeBySprite(s);
             s.destroy();
@@ -2898,8 +2952,14 @@ const splashEl = document.getElementById("splash");
         if (cardIds.length)
           InstancesRepo.deleteMany(cardIds.map((c) => c.__id));
         if (touchedGroups.size) scheduleGroupSave();
-        // If no cards and no groups remain, surface overlay
+        // If no cards and no groups remain, surface overlay and clear session caches for immediate memory drop
         updateEmptyStateOverlay();
+        if (sprites.length === 0 && groups.size === 0) {
+          try {
+            clearTextureCaches();
+            clearSessionCaches();
+          } catch {}
+        }
         // Persist updated positions to reflect removals
         if (!SUPPRESS_SAVES) {
           persistence.flushPositions();
@@ -2910,6 +2970,13 @@ const splashEl = document.getElementById("splash");
         scheduleGroupSave();
       }
       SelectionStore.clear();
+      // After group deletions, if empty, drop caches
+      if (sprites.length === 0 && groups.size === 0) {
+        try {
+          clearTextureCaches();
+          clearSessionCaches();
+        } catch {}
+      }
     }
   });
 
@@ -3264,7 +3331,7 @@ const splashEl = document.getElementById("splash");
   let texResLine = "Res ?";
   let hiResPendingLine = "GlobalPending ?";
   let qualLine = "Qual ?";
-  const decodeQLine = "DecodeQ ?";
+  const decodeQLine = "DecodeQ " + getDecodeQueueSize();
   const hiResDiagLine = "HiResDiag ?";
   const decodeDiagLine = "DecodeDiag ?";
   function sampleMemory() {
@@ -3505,7 +3572,7 @@ const splashEl = document.getElementById("splash");
       const centerY = oldY + oldH / 2;
       // Pack to update w/h and card positions relative to group origin
       {
-  const items: SpatialItem[] = [];
+        const items: SpatialItem[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
             sprite: s,
@@ -3515,7 +3582,7 @@ const splashEl = document.getElementById("splash");
             maxY: s.y + CARD_H_GLOBAL,
           });
         });
-  if (items.length) spatial.bulkUpdate(items);
+        if (items.length) spatial.bulkUpdate(items);
       }
       // Shift group so its center remains the same after pack
       let dx = Math.round(centerX - (gv.gfx.x + gv.w / 2));
@@ -3528,7 +3595,7 @@ const splashEl = document.getElementById("splash");
         gv.gfx.x = p.x;
         gv.gfx.y = p.y;
         // Move member sprites by the same delta to preserve layout relative to world
-  const moved: SpatialItem[] = [];
+        const moved: SpatialItem[] = [];
         gv.order.forEach((sp) => {
           sp.x = snap(sp.x + dx);
           sp.y = snap(sp.y + dy);
@@ -3540,7 +3607,7 @@ const splashEl = document.getElementById("splash");
             maxY: sp.y + CARD_H_GLOBAL,
           });
         });
-  if (moved.length) spatial.bulkUpdate(moved);
+        if (moved.length) spatial.bulkUpdate(moved);
       }
       // Persist group dimensions/position changes if any
       persistGroupTransform(gv.id, {
@@ -3674,7 +3741,7 @@ const splashEl = document.getElementById("splash");
       }
       // Pack each new group (layout within group) with batched spatial updates
       created.forEach((gv) => {
-  const items: SpatialItem[] = [];
+        const items: SpatialItem[] = [];
         autoPackGroup(gv, sprites, (s) => {
           items.push({
             sprite: s,
@@ -3684,7 +3751,7 @@ const splashEl = document.getElementById("splash");
             maxY: s.y + CARD_H_GLOBAL,
           });
         });
-  if (items.length) spatial.bulkUpdate(items);
+        if (items.length) spatial.bulkUpdate(items);
       });
       timer.mark("pack-new+spatial");
       // Arrange new groups compactly
@@ -4289,7 +4356,7 @@ const splashEl = document.getElementById("splash");
       desiredSeeds,
     });
     const batch: { id: number; x: number; y: number }[] = [];
-  const spatialItems: SpatialItem[] = [];
+    const spatialItems: SpatialItem[] = [];
     for (let i = 0; i < list.length; i++) {
       const gv = list[i];
       const p = positions[i];
@@ -4314,7 +4381,7 @@ const splashEl = document.getElementById("splash");
         batch.push({ id: sp.__id, x: sp.x, y: sp.y });
       });
     }
-  if (spatialItems.length) spatial.bulkUpdate(spatialItems);
+    if (spatialItems.length) spatial.bulkUpdate(spatialItems);
     if (batch.length) {
       InstancesRepo.updatePositions(batch);
     }
@@ -4431,8 +4498,8 @@ const splashEl = document.getElementById("splash");
     if (dx || dy) {
       gv.gfx.x = clamped.x;
       gv.gfx.y = clamped.y;
-  // Shift member cards with the group pre-layout and batch spatial updates
-  const items: SpatialItem[] = [];
+      // Shift member cards with the group pre-layout and batch spatial updates
+      const items: SpatialItem[] = [];
       for (const s of gv.order) {
         s.x += dx;
         s.y += dy;
@@ -4444,7 +4511,7 @@ const splashEl = document.getElementById("splash");
           maxY: s.y + CARD_H_GLOBAL,
         });
       }
-  if (items.length) spatial.bulkUpdate(items);
+      if (items.length) spatial.bulkUpdate(items);
       timer.mark("shift+spatial");
     }
     timer.end({ w: gv.w, h: gv.h, members: gv.items.size });
@@ -4478,6 +4545,10 @@ const splashEl = document.getElementById("splash");
       .filter((n: any) => typeof n === "number");
     if (grpIds.length) GroupsRepo.deleteMany(grpIds);
     sessionStorage.setItem("mtgcanvas_start_empty_once", "1");
+    try {
+      clearTextureCaches();
+      clearSessionCaches();
+    } catch {}
   }
 
   // Import/Export decklists (basic)
@@ -4630,7 +4701,7 @@ const splashEl = document.getElementById("splash");
       if (!SUPPRESS_SAVES) {
         persistence.flushPositions();
       }
-      return { imported, unknown, limited } as any;
+      return { imported, unknown, limited };
     },
     importByNames: async (items, opt) => {
       // Build lookup from currently loaded sprites by lowercase name -> card object
@@ -5148,11 +5219,20 @@ const splashEl = document.getElementById("splash");
   let last = performance.now();
   // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
   // app.ticker.maxFPS=30;
+  let lastWorldPosX = world.position.x;
+  let lastWorldPosY = world.position.y;
   app.ticker.add(() => {
     const now = performance.now();
     const dt = now - last;
     last = now;
     camera.update(dt);
+    // Estimate pan speed in screen pixels per second
+    const dx = world.position.x - lastWorldPosX;
+    const dy = world.position.y - lastWorldPosY;
+    const panSpeed = (Math.hypot(dx, dy) / Math.max(1, dt)) * 1000;
+    (window as any).__lastPanSpeed = panSpeed;
+    lastWorldPosX = world.position.x;
+    lastWorldPosY = world.position.y;
     // Align world transform to device pixels when camera is not actively moving or gliding
     // Use camera's internal speed to decide instead of a coarse movement heuristic.
     {
@@ -5166,20 +5246,24 @@ const splashEl = document.getElementById("splash");
       const bottom = top + vh * inv;
       (window as any).__mtgView = { left, top, right, bottom };
     }
-    // upgrade
+    // upgrade: throttle texture checks during steady state by skipping alternate frames
     {
       const view: any = (window as any).__mtgView;
+      const frame = ((window as any).__mtgFrameId =
+        ((window as any).__mtgFrameId || 0) + 1);
+      const skip = (window as any).__lastPanSpeed < 0.01 && (frame & 1) === 1;
       if (view) {
-        for (const s of sprites) {
+        for (let i = 0; i < sprites.length; i++) {
+          const s = sprites[i];
           if (!s.__card) continue;
-          ensureTexture(s, view);
+          if (!skip || (i & 1) === (frame & 1)) ensureTexture(s, view);
           // Keep the Flip FAB positioned and scaled to maintain constant screen size
           updateFlipFab(s);
         }
       }
     }
-  // Update any active drag float/tilt transforms
-  updateFloatAndTilt(sprites, dt);
+    // Update any active drag float/tilt transforms
+    updateFloatAndTilt(sprites, dt);
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
@@ -5189,7 +5273,7 @@ const splashEl = document.getElementById("splash");
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const inv = 1 / scale;
-      const pad = 600; // generous margin to avoid popping when near edges
+      const pad = 800; // slightly larger to reduce frequent tier churn near edges
       const left = -world.position.x * inv - pad;
       const top = -world.position.y * inv - pad;
       const right = left + vw * inv + pad * 2;
@@ -5213,7 +5297,7 @@ const splashEl = document.getElementById("splash");
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const inv = 1 / scale;
-      const pad = 400; // smaller margin for steady-state checks
+      const pad = 500; // balance between popping and work
       const left = -world.position.x * inv - pad;
       const top = -world.position.y * inv - pad;
       const right = left + vw * inv + pad * 2;

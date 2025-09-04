@@ -6,12 +6,13 @@ import {
   parseGroupsText,
 } from "../services/decklist";
 import type { CardSprite } from "../scene/cardNode";
+import type { GroupVisual } from "../scene/groupNode";
 export { extractBaseCardName, parseDecklist };
 
 export interface ImportExportOptions {
   // Core data accessors
-  getSprites: () => any[]; // list of CardSprite-like objects
-  getGroups: () => Map<number, any>; // Map of groupId -> GroupVisual-like object
+  getSprites: () => CardSprite[]; // list of CardSprite objects
+  getGroups: () => Map<number, GroupVisual>; // Map of groupId -> GroupVisual
   getAllNames: () => string[]; // all sprite names (one per sprite)
   getSelectedNames: () => string[]; // names for selected sprites
   importByNames: (
@@ -20,7 +21,7 @@ export interface ImportExportOptions {
       onProgress?: (done: number, total?: number) => void;
       signal?: AbortSignal;
     },
-  ) => Promise<{ imported: number; unknown: string[] }>; // performs import, returns stats
+  ) => Promise<{ imported: number; unknown: string[]; limited?: number }>; // performs import, returns stats
   // Optional: provide a preformatted text export of groups and ungrouped cards
   // If omitted, the panel will compute exports from getSprites/getGroups and SelectionStore
   getGroupsExport?: () => string;
@@ -37,7 +38,7 @@ export interface ImportExportOptions {
       onProgress?: (done: number, total?: number) => void;
       signal?: AbortSignal;
     },
-  ) => Promise<{ imported: number; unknown: string[] }>;
+  ) => Promise<{ imported: number; unknown: string[]; limited?: number }>;
   // Optional: Scryfall search integration – when provided, panel shows a Search tab
   scryfallSearchAndPlace?: (
     query: string,
@@ -47,7 +48,7 @@ export interface ImportExportOptions {
       onProgress?: (fetched: number, total?: number) => void;
       signal?: AbortSignal;
     },
-  ) => Promise<{ imported: number; error?: string }>;
+  ) => Promise<{ imported: number; error?: string; limited?: number }>;
   // Optional: Debug helper to clear persisted data (positions, groups, imported cards)
   clearPersistedData?: () => Promise<void>;
 }
@@ -64,8 +65,8 @@ export function installImportExport(
   // Default export builders if none provided
   function buildGroupsExport(scope: "all" | "selection"): string {
     try {
-      const sprites = opts.getSprites?.() || [];
-      const groups = opts.getGroups?.() || new Map();
+      const sprites: CardSprite[] = opts.getSprites?.() || [];
+      const groups: Map<number, GroupVisual> = opts.getGroups?.() || new Map();
       const considerAll = scope === "all";
       // Selection set from store when scoping to selection
       let selected: Set<CardSprite> | null = null;
@@ -80,13 +81,13 @@ export function installImportExport(
         considerAll || (selected?.has(s) ?? true);
       const lines: string[] = [];
       const grouped = Array.from(groups.values()).sort(
-        (a: any, b: any) => a.id - b.id,
+        (a: GroupVisual, b: GroupVisual) => a.id - b.id,
       );
       let anyGroupPrinted = false;
       for (const gv of grouped) {
         const names: string[] = gv.order
-          .map((s: any) => {
-            const raw = ((s as any).__card?.name || "").trim();
+          .map((s: CardSprite) => {
+            const raw = (s.__card?.name || "").trim();
             const i = raw.indexOf("//");
             return i >= 0 ? raw.slice(0, i).trim() : raw;
           })
@@ -107,9 +108,9 @@ export function installImportExport(
       // Ungrouped
       const ungroupedNames: string[] = [];
       for (const s of sprites) {
-        if ((s as any).__groupId) continue;
+        if (s.__groupId) continue;
         if (!isSel(s)) continue;
-        const raw = ((s as any).__card?.name || "").trim();
+        const raw = (s.__card?.name || "").trim();
         const i = raw.indexOf("//");
         const n = i >= 0 ? raw.slice(0, i).trim() : raw;
         if (n) ungroupedNames.push(n);
@@ -311,7 +312,7 @@ export function installImportExport(
     copyBtn.onclick = async () => {
       if (!exportArea) return;
       await navigator.clipboard.writeText(exportArea.value);
-      (copyBtn as any).textContent = "Copied";
+      copyBtn.textContent = "Copied";
       setTimeout(() => (copyBtn.textContent = "Copy"), 1200);
     };
     dlBtn.onclick = () => {
@@ -370,7 +371,7 @@ export function installImportExport(
             signal: textAbort.signal,
           });
           if (statusEl)
-            statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
+            statusEl.textContent = `Imported ${res.imported}${res.limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
         } catch (e: any) {
           if (
             e &&
@@ -409,7 +410,7 @@ export function installImportExport(
           signal: textAbort.signal,
         });
         if (statusEl)
-          statusEl.textContent = `Imported ${res.imported}${(res as any).limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
+          statusEl.textContent = `Imported ${res.imported}${res.limited ? ` (limited by cap)` : ""}. ${summarizeUnknown(res.unknown)}`;
       } catch (e: any) {
         if (
           e &&
@@ -482,7 +483,7 @@ export function installImportExport(
           scryStatusEl &&
             (scryStatusEl.textContent = res.error
               ? res.error
-              : `Imported ${res.imported} cards${(res as any).limited ? " (limited by cap)" : ""}.`);
+              : `Imported ${res.imported} cards${res.limited ? " (limited by cap)" : ""}.`);
         } catch (e: any) {
           if (
             e &&

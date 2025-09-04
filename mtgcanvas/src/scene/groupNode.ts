@@ -600,6 +600,19 @@ export function removeCardFromGroup(gv: GroupVisual, sprite: CardSprite) {
   if (idx >= 0) gv.order.splice(idx, 1);
 }
 
+// Helper to fully clear group membership references (used on group destroy)
+export function clearGroupMembers(gv: GroupVisual) {
+  try {
+    gv.items.clear();
+  } catch {}
+  try {
+    gv.order.length = 0 as any;
+  } catch {
+    // fallback
+    (gv.order as any) = [];
+  }
+}
+
 // ---- Dynamic Text Resolution (crisp zoom) ----
 // Call this each frame (cheap; early exit unless threshold crossed)
 export function updateGroupTextQuality(

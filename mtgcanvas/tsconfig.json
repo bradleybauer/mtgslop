@@ -6,6 +6,12 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
+    // exactOptionalPropertyTypes is very invasive; consider enabling after incremental fixes
+    // "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "useUnknownInCatchVariables": true,
+    // Consider enabling later as part of incremental migration:
+    // "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "types": ["node"]

@@ -1,10 +1,6 @@
 import type { CardSprite } from "../scene/cardNode";
-import {
-  InstancesRepo,
-  GroupsRepo,
-  type CardInstance,
-  type GroupRow,
-} from "../data/repositories";
+import { InstancesRepo, GroupsRepo } from "../data/repositories";
+import type { CardInstance, GroupRow } from "../types/repositories";
 
 export interface LoadedData {
   instances: CardInstance[];

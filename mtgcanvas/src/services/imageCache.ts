@@ -224,6 +224,71 @@ export async function hasCachedURL(url: string): Promise<boolean> {
   return !!e;
 }
 
+// Drop in-memory session caches (object URLs and Blob references). Does not touch IndexedDB.
+// Useful when the scene is empty to let the tab memory drop quickly without losing on-disk cache.
+export function clearSessionCaches() {
+  try {
+    // Revoke all object URLs to release associated memory immediately
+    for (const [, objUrl] of objectUrlCache) {
+      try {
+        URL.revokeObjectURL(objUrl);
+      } catch {}
+    }
+  } catch {}
+  objectUrlCache.clear();
+  blobCache.clear();
+  // Best-effort: drop bookkeeping for in-flight tasks; running fetches will complete but we won't keep references
+  inFlight.clear();
+}
+
+// Remove specific URLs from in-memory caches and optionally from IndexedDB.
+export async function purgeCacheForUrls(
+  urls: string[],
+  opts?: { includePersistent?: boolean },
+): Promise<void> {
+  const includePersistent = !!opts?.includePersistent;
+  const keys = new Set<string>();
+  for (const u of urls) {
+    if (!u) continue;
+    keys.add(u);
+    try {
+      const c = canonicalize(u);
+      if (c) keys.add(c);
+    } catch {}
+  }
+  // Session caches
+  for (const k of keys) {
+    const obj = objectUrlCache.get(k);
+    if (obj) {
+      try {
+        URL.revokeObjectURL(obj);
+      } catch {}
+      objectUrlCache.delete(k);
+    }
+    blobCache.delete(k);
+    inFlight.delete(k);
+  }
+  // Optional: persistent IndexedDB
+  if (includePersistent) {
+    try {
+      const db = await openDB();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        const store = tx.objectStore(STORE);
+        keys.forEach((k) => {
+          try {
+            store.delete(k);
+          } catch {}
+        });
+        tx.oncomplete = () => resolve();
+        tx.onabort = tx.onerror = () => reject(tx.error!);
+      });
+    } catch {
+      // ignore
+    }
+  }
+}
+
 interface CachedImage {
   objectURL: string;
   blob?: Blob;

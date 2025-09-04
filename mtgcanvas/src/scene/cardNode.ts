@@ -8,13 +8,11 @@ import { CARD_W, CARD_H } from "../config/dimensions";
 import type { Card } from "../types/card";
 
 // --- Fast in-memory texture cache & loaders ---
-interface TexCacheEntry {
-  tex: PIXI.Texture;
-  bytes: number;
-  url: string;
-}
-const textureCache = new Map<string, TexCacheEntry>(); // url -> texture entry
-let totalTextureBytes = 0;
+// Track currently alive decoded textures by URL for safe ref-counted destruction
+const liveTexturesByUrl = new Map<
+  string,
+  { tex: PIXI.Texture; refCount: number }
+>();
 
 // Central decode queue (single priority queue). Only tasks popped by the scheduler start work.
 let activeDecodes = 0;
@@ -51,14 +49,31 @@ async function runDecodeTask(task: PrioTask) {
     ts.autoGenerateMipmaps = true;
     ts.autoGarbageCollect = true;
   }
-  // Populate cache
-  const bytes = estimateTextureBytes(tex);
-  textureCache.set(task.url, {
-    tex,
-    bytes,
-    url: task.url,
-  });
-  totalTextureBytes += bytes;
+  // Do not close the ImageBitmap yet; Pixi may upload lazily on first render.
+  // Apply this texture to all sprites that are currently waiting for this URL
+  try {
+    const getSprites = (window as any).__mtgGetSprites as
+      | (() => any[])
+      | undefined;
+    if (typeof getSprites === "function") {
+      const arr = getSprites() || [];
+      let appliedCount = 0;
+      for (const s of arr) {
+        const sp = s as CardSprite;
+        if (!sp || (sp as any).destroyed) continue;
+        if (sp.__scheduledUrl === task.url) {
+          const lvl = (sp as any).__scheduledLevel as 0 | 1 | 2 | undefined;
+          applyTexture(sp, tex, (lvl ?? 1) as 0 | 1 | 2);
+          appliedCount++;
+        }
+      }
+      if (appliedCount === 0) {
+        try {
+          (tex as any)?.destroy?.(true);
+        } catch {}
+      }
+    }
+  } catch {}
   activeDecodes--;
   tasksByUrl.delete(task.url);
 }
@@ -77,7 +92,7 @@ async function workerLoop() {
       continue;
     }
     task.state = "running";
-    // if (activeDecodes > 10) { // optional
+    // if (activeDecodes > 8) { // optional
     //   await runDecodeTask(task);
     // }
     // else
@@ -99,13 +114,21 @@ export function getDecodeQueueSize() {
 }
 
 // Basic world-space viewport rectangle used for culling/prefetch
-export type ViewRect = { left: number; top: number; right: number; bottom: number };
+export type ViewRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
 
 // --- Card Sprite Implementation (Sprite + cached textures) ---
 export interface CardSprite extends PIXI.Sprite {
   __id: number;
   __baseZ: number;
   __groupId?: number;
+  __scryfallId?: string;
+  __tintByMarquee?: boolean;
+  __cardSprite?: true;
   __card?: Card | null;
   __imgUrl?: string;
   __imgLoaded?: boolean;
@@ -117,7 +140,7 @@ export interface CardSprite extends PIXI.Sprite {
   __scheduledUrl?: string;
   __currentTexUrl?: string;
   // Flip FAB (for double-faced cards)
-  __flipFab?: (PIXI.Container & { bg: PIXI.Graphics; icon: PIXI.Graphics });
+  __flipFab?: PIXI.Container & { bg: PIXI.Graphics; icon: PIXI.Graphics };
   // --- Transient drag float/tilt state ---
   __tiltActive?: boolean; // true while in special drag transform mode
   __elev?: number; // 0..1 lift amount (scales sprite slightly)
@@ -193,6 +216,39 @@ function ensureCardBaseTextures(renderer: PIXI.Renderer) {
   return cachedTextures;
 }
 
+function retainTextureForUrl(url: string, tex: PIXI.Texture) {
+  if (!url) return;
+  const entry = liveTexturesByUrl.get(url);
+  if (entry) {
+    if (entry.tex !== tex) {
+      entry.tex = tex;
+    }
+    entry.refCount += 1;
+  } else {
+    liveTexturesByUrl.set(url, { tex, refCount: 1 });
+  }
+}
+
+function releaseTextureForUrl(url: string) {
+  if (!url) return;
+  const entry = liveTexturesByUrl.get(url);
+  if (!entry) return;
+  entry.refCount = Math.max(0, entry.refCount - 1);
+  if (entry.refCount === 0) {
+    try {
+      (entry.tex as any)?.destroy?.(true);
+    } catch {}
+    liveTexturesByUrl.delete(url);
+  }
+}
+
+function releaseSpriteTextureByUrl(sprite: CardSprite, url?: string) {
+  const prevUrl = url || sprite.__currentTexUrl;
+  if (!prevUrl) return;
+  releaseTextureForUrl(prevUrl);
+  if (!url) sprite.__currentTexUrl = undefined;
+}
+
 export function createCardSprite(opts: CardVisualOptions) {
   const textures = ensureCardBaseTextures(opts.renderer);
   const sp = new PIXI.Sprite(textures.base) as CardSprite;
@@ -204,40 +260,70 @@ export function createCardSprite(opts: CardVisualOptions) {
   sp.zIndex = sp.__baseZ;
   sp.eventMode = "static";
   sp.cursor = "pointer";
-  // sp.cullable = true;
-  // sp.cullArea = new PIXI.Rectangle(0, 0, 100, 140);
+  // Enable Pixi culling to skip rendering when fully offscreen
+  sp.cullable = true as any;
+  sp.cullArea = new PIXI.Rectangle(0, 0, CARD_W, CARD_H);
   // Ensure FAB is cleaned up when this sprite is removed or destroyed
   sp.on("removed", () => {
     cleanupFlipFab(sp);
+    // If a decode for this sprite's scheduled URL exists, decrement desire
+    if (sp.__scheduledUrl) {
+      const oldTask = tasksByUrl.get(sp.__scheduledUrl);
+      if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+      sp.__scheduledUrl = undefined;
+    }
   });
   const __origDestroy = sp.destroy.bind(sp);
   sp.destroy = (...args: any[]) => {
     cleanupFlipFab(sp);
+    // Cancel any pending decode desire
+    if (sp.__scheduledUrl) {
+      const oldTask = tasksByUrl.get(sp.__scheduledUrl);
+      if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
+      sp.__scheduledUrl = undefined;
+    }
+    // Release any current decoded texture reference
+    releaseSpriteTextureByUrl(sp);
     return __origDestroy(...(args as any));
   };
   return sp;
 }
-
-function estimateTextureBytes(tex: PIXI.Texture): number {
-  const bt: any = tex.source;
-  const w = bt?.width || tex.width;
-  const h = bt?.height || tex.height;
-  if (w && h) return w * h * 4;
-  return 0;
-}
-
 // Exported: snapshot of texture budget/queue/debug counters for perf reports
 export function getTextureBudgetStats() {
-  const over = Math.max(
-    0,
-    totalTextureBytes - settings.gpuBudgetMB * 1024 * 1024,
-  );
+  // Cache removed; report zeros and configured budget
   return {
-    totalTextureMB: totalTextureBytes / 1048576,
+    totalTextureMB: 0,
     budgetMB: settings.gpuBudgetMB,
-    overBudgetMB: over / 1048576,
-    cacheEntries: textureCache.size,
-  };
+    overBudgetMB: 0,
+    cacheEntries: 0,
+  } as any;
+}
+
+// Clear all in-memory texture caches and free GPU resources. Safe to call when no sprites need textures.
+export function clearTextureCaches() {
+  // Also drop any queued decode tasks (best-effort); workers will skip tasks with refCount<=0
+  try {
+    tasksByUrl.forEach((t) => (t.refCount = 0));
+    // Drain the heap
+    while (decodePQ.size() > 0) decodePQ.popMin();
+    // Destroy any tracked live textures
+    liveTexturesByUrl.forEach((entry, url) => {
+      try {
+        (entry.tex as any)?.destroy?.(true);
+      } catch {}
+      liveTexturesByUrl.delete(url);
+    });
+  } catch {}
+}
+
+// Remove cached textures and queued decodes for given urls (all tiers/faces should be passed by caller)
+export function purgeTextureUrls(urls: string[]) {
+  for (const u of urls) {
+    if (!u) continue;
+    const t = tasksByUrl.get(u);
+    if (t) t.refCount = 0;
+    // No direct heap removal API; setting refCount=0 ensures worker skip
+  }
 }
 
 // --- Tiered texture helpers for simple, robust policy up/downgrading ---
@@ -277,15 +363,11 @@ export function resolveTierUrl(
   return res;
 }
 
-function adoptCachedTexture(
-  sprite: CardSprite,
-  url: string,
-  ent: TexCacheEntry,
-  level: 0 | 1 | 2,
-) {
-  sprite.__currentTexUrl = url;
-  sprite.texture = ent.tex;
-  // Ensure texture filtering settings are kept when adopting from cache
+function applyTexture(sprite: CardSprite, tex: PIXI.Texture, level: 0 | 1 | 2) {
+  if ((sprite as any)?.destroyed) return;
+  // Release previously held URL-bound texture so GPU memory drops when demoting/replacing
+  const prevUrlBeforeSwap = sprite.__currentTexUrl;
+  sprite.texture = tex;
   try {
     const ts = sprite.texture?.source;
     if (ts) {
@@ -298,18 +380,25 @@ function adoptCachedTexture(
   sprite.__imgLoaded = true;
   sprite.__imgLoading = false;
   sprite.__qualityLevel = level;
+  // Mark current URL if we have a scheduled one
   if (sprite.__scheduledUrl) {
+    sprite.__currentTexUrl = sprite.__scheduledUrl;
+    // Retain decoded texture for this URL until it is replaced
+    retainTextureForUrl(sprite.__currentTexUrl, tex);
     const oldTask = tasksByUrl.get(sprite.__scheduledUrl);
     if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
     sprite.__scheduledUrl = undefined;
+    (sprite as any).__scheduledLevel = undefined;
+  }
+  // Release previous after swap
+  if (prevUrlBeforeSwap && prevUrlBeforeSwap !== sprite.__currentTexUrl) {
+    releaseTextureForUrl(prevUrlBeforeSwap);
   }
 }
 
 function forcePlaceholder(sprite: CardSprite) {
-  const prevUrl: string | undefined = sprite.__currentTexUrl;
-  if (prevUrl) {
-    sprite.__currentTexUrl = undefined;
-  }
+  // Swap to shared placeholder then release previous texture
+  const prevUrl = sprite.__currentTexUrl;
   sprite.__imgLoaded = false;
   sprite.__imgLoading = false;
   sprite.__qualityLevel = 0;
@@ -320,15 +409,19 @@ function forcePlaceholder(sprite: CardSprite) {
     sprite.texture = cachedTextures.base;
   } else {
     sprite.texture = PIXI.Texture.WHITE;
-  sprite.width = CARD_W;
-  sprite.height = CARD_H;
+    sprite.width = CARD_W;
+    sprite.height = CARD_H;
+  }
+  if (prevUrl) {
+    releaseSpriteTextureByUrl(sprite, prevUrl);
   }
   // Apply selection tint directly to avoid texture swaps during selection
   const sel = SelectionStore.state.cards.has(sprite);
   const marqueeSelected = !!(sprite as any).__tintByMarquee;
-  sprite.tint = sel && marqueeSelected
-    ? Colors.cardSelectedTint()
-    : Colors.cardDefaultTint();
+  sprite.tint =
+    sel && marqueeSelected
+      ? Colors.cardSelectedTint()
+      : Colors.cardDefaultTint();
 }
 
 export function ensureTexture(sprite: CardSprite, view: ViewRect) {
@@ -368,7 +461,13 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
     desired = 0;
   }
   if (settings.disablePngTier && desired === 2) desired = 1;
-  const wantUrl = resolveTierUrl(sprite, desired);
+  // During aggressive panning, avoid churn; stick to current tier until pan slows
+  const panSpeed: number = (window as any).__lastPanSpeed || 0;
+  const stickDuringPan = panSpeed > 600; // px/s
+  const wantUrl = resolveTierUrl(
+    sprite,
+    stickDuringPan ? ((sprite.__qualityLevel as any) ?? desired) : desired,
+  );
   if (!wantUrl) {
     // if no URL, ensure placeholder
     forcePlaceholder(sprite);
@@ -388,11 +487,7 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
     }
     return;
   }
-  const cached = textureCache.get(wantUrl);
-  if (cached) {
-    adoptCachedTexture(sprite, wantUrl, cached, desired);
-    return;
-  }
+  // No global cache: always rely on decode pipeline; decoded texture will be applied to waiting sprites
   if (sprite.__scheduledUrl && sprite.__scheduledUrl === wantUrl) {
     // Update priority of existing queued task
     const t = tasksByUrl.get(sprite.__scheduledUrl);
@@ -411,6 +506,7 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   sprite.__scheduledUrl = wantUrl;
   sprite.__imgLoading = true;
   sprite.__imgLoaded = false;
+  (sprite as any).__scheduledLevel = desired;
   const existing = tasksByUrl.get(wantUrl);
   if (existing) {
     // New schedule for an existing task
@@ -440,9 +536,10 @@ export function updateCardSpriteAppearance(s: CardSprite, selected: boolean) {
   // For loaded images and placeholders alike, only adjust tint. Avoid reassigning textures
   // during selection toggles to prevent Pixi v8 internal width/anchor recalculation crashes.
   const marqueeSelected = !!(s as any).__tintByMarquee;
-  s.tint = selected && marqueeSelected
-    ? Colors.cardSelectedTint()
-    : Colors.cardDefaultTint();
+  s.tint =
+    selected && marqueeSelected
+      ? Colors.cardSelectedTint()
+      : Colors.cardDefaultTint();
 }
 // --------------------------
 // Flip FAB for double-faced cards
@@ -462,7 +559,7 @@ function applyFlipFabTheme(
   fab.bg
     .circle(0, 0, radius)
     .fill({ color: Colors.panelBg() as any, alpha: 0.92 })
-  .stroke({ color: Colors.accent() as any, width: 1 });
+    .stroke({ color: Colors.accent() as any, width: 1 });
   (fab.icon as any).tint = Colors.panelFg();
 }
 
@@ -476,7 +573,6 @@ function isDoubleFaced(sprite: CardSprite): boolean {
   if (!Array.isArray(c.card_faces) || c.card_faces.length !== 2) return false;
   return true;
 }
-
 
 function createFlipFab(sprite: CardSprite) {
   if (sprite.__flipFab) return sprite.__flipFab;
@@ -500,7 +596,7 @@ function createFlipFab(sprite: CardSprite) {
   const bg = new PIXI.Graphics();
   bg.circle(0, 0, baseRadius)
     .fill({ color: Colors.panelBg() as any, alpha: 0.92 })
-  .stroke({ color: Colors.accent() as any, width: 1 });
+    .stroke({ color: Colors.accent() as any, width: 1 });
   // Icon from SVG (scaled to fit inside the circle)
   const icon = new PIXI.Graphics().svg(FLIP_SVG);
   const ib = icon.getLocalBounds();
@@ -556,11 +652,11 @@ function positionFlipFab(sprite: CardSprite) {
   const sx = fab.scale?.x ?? 1;
   const sy = fab.scale?.y ?? 1;
   const dx = inset + radius * sx;
-  const dy = inset + radius * sy + 15*sy;
+  const dy = inset + radius * sy + 15 * sy;
   // While tilting, the sprite's position may represent a center-based transform.
   // Use the intended top-left anchor during drag if available.
-  const baseX = sprite.__tiltActive ? sprite.__tlx ?? sprite.x : sprite.x;
-  const baseY = sprite.__tiltActive ? sprite.__tly ?? sprite.y : sprite.y;
+  const baseX = sprite.__tiltActive ? (sprite.__tlx ?? sprite.x) : sprite.x;
+  const baseY = sprite.__tiltActive ? (sprite.__tly ?? sprite.y) : sprite.y;
   fab.x = baseX + CARD_W - dx;
   fab.y = baseY + dy;
 }
@@ -619,11 +715,13 @@ registerThemeListener(() => {
       const arr = getSprites();
       if (Array.isArray(arr)) {
         for (const s of arr) {
-          const fab = (s as any).__flipFab as (PIXI.Container & {
-            bg: PIXI.Graphics;
-            icon: PIXI.Graphics;
-            r?: number;
-          }) | undefined;
+          const fab = (s as any).__flipFab as
+            | (PIXI.Container & {
+                bg: PIXI.Graphics;
+                icon: PIXI.Graphics;
+                r?: number;
+              })
+            | undefined;
           if (fab) applyFlipFabTheme(fab);
         }
       }
@@ -639,6 +737,49 @@ function flipCard(sprite: CardSprite) {
   const count = faces.length;
   const cur = sprite.__faceIndex || 0;
   const next = (cur + 1) % count;
+  // Schedule decode for the next face first (without changing the current face)
+  const view = (window as any).__mtgView as ViewRect | undefined;
+  if (view) {
+    // Temporarily request a texture for the target face by computing its desired URL
+    const prevFace = sprite.__faceIndex;
+    sprite.__faceIndex = next;
+    const desiredLevel: 0 | 1 | 2 =
+      ((sprite.parent as any)?.scale?.x || 1) > 1.5
+        ? settings.disablePngTier
+          ? 1
+          : 2
+        : ((sprite.parent as any)?.scale?.x || 1) > 0.8
+          ? 1
+          : 0;
+    const targetUrl = resolveTierUrl(sprite, desiredLevel);
+    // Restore current face before we actually swap visuals
+    sprite.__faceIndex = prevFace;
+    if (targetUrl) {
+      // Enqueue decode for the new face URL with high priority
+      const existing = tasksByUrl.get(targetUrl);
+      if (existing) {
+        existing.refCount += 1;
+        if (existing.state === "queued") {
+          existing.priority = 0;
+          decodePQ.updatePriority(targetUrl, 0);
+        }
+      } else {
+        const task: PrioTask = {
+          url: targetUrl,
+          priority: 0,
+          enqAt: performance.now(),
+          state: "queued",
+          refCount: 1,
+          heapIndex: -1,
+        };
+        tasksByUrl.set(targetUrl, task);
+        decodePQ.push(task);
+        ensureDecodeWorkers();
+        notifyTaskAvailable();
+      }
+    }
+  }
+  // Now switch the face index; applyTexture will release the old texture when new arrives
   sprite.__faceIndex = next;
   // Cancel any scheduled decode of the previous face URL
   if (sprite.__scheduledUrl) {
@@ -646,10 +787,7 @@ function flipCard(sprite: CardSprite) {
     if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
     sprite.__scheduledUrl = undefined;
   }
-  // Clear current URL so ensureTexture will schedule new face
-  sprite.__currentTexUrl = undefined;
-  // Try to schedule new texture right away if viewport is available
-  const view = (window as any).__mtgView as ViewRect | undefined;
+  // Trigger normal ensureTexture to bind when decode completes
   if (view) ensureTexture(sprite, view);
 }
 
@@ -659,8 +797,8 @@ function flipCard(sprite: CardSprite) {
 const ELEV_SCALE = 0.02; // scale gain at full elevation (subtle lift)
 const ELEV_TAU_MS = 80;
 // 3D tilt tuning
-const MAX_PITCH_RAD = .1*Math.PI;
-const MAX_ROLL_RAD = .1*Math.PI;
+const MAX_PITCH_RAD = 0.1 * Math.PI;
+const MAX_ROLL_RAD = 0.1 * Math.PI;
 const INPUT_CLAMP_PX = 40; // screen pixels for full tilt (zoom-invariant)
 const TILT_TAU_MS = 80;
 const TILT_RETURN_TAU_MS = 140; // decay target back toward 0 when input pauses
@@ -672,15 +810,24 @@ function clamp(v: number, lo: number, hi: number) {
 
 function ensureTiltMesh(sprite: CardSprite): PIXI.PerspectiveMesh | undefined {
   if ((sprite as any)?.destroyed) return undefined;
-  if (sprite.__tiltMesh && !(sprite.__tiltMesh as any).destroyed) return sprite.__tiltMesh;
+  if (sprite.__tiltMesh && !(sprite.__tiltMesh as any).destroyed)
+    return sprite.__tiltMesh;
   // Build a simple textured quad mesh; vertices are local to mesh.position (we use center-origin)
   const tex = sprite.texture || PIXI.Texture.WHITE;
   // Use a denser grid for smoother perspective (aspect ~ 100x140)
-  const vx = 12, vy = 18;
-  const mesh = new PIXI.PerspectiveMesh({ texture: tex, verticesX: vx, verticesY: vy });
+  const vx = 12,
+    vy = 18;
+  const mesh = new PIXI.PerspectiveMesh({
+    texture: tex,
+    verticesX: vx,
+    verticesY: vy,
+  });
   mesh.eventMode = "none"; // don't intercept pointer events
   mesh.zIndex = (sprite.zIndex || 0) + 1;
-  mesh.position.set(sprite.__cx ?? (sprite.x + (sprite.width || CARD_W) / 2), sprite.__cy ?? (sprite.y + (sprite.height || CARD_H) / 2));
+  mesh.position.set(
+    sprite.__cx ?? sprite.x + (sprite.width || CARD_W) / 2,
+    sprite.__cy ?? sprite.y + (sprite.height || CARD_H) / 2,
+  );
   // Match current selection tint
   (mesh as any).tint = sprite.tint;
   // Attach next to the sprite for correct stacking
@@ -733,14 +880,14 @@ function projectCardQuad(
     const y1 = y0 * cxp - z0 * sxp;
     const z1 = y0 * sxp + z0 * cxp;
     const x1 = x0;
-  // Rotate around Y (yaw)
-  const xr = x1 * cyr + z1 * syr;
-  const yr = y1;
-  const zr = z1 * cyr - x1 * syr;
-  // Perspective scale: closer (larger positive zr) => larger scale.
-  // Use (D - z) in denominator so positive z increases size.
-  const denom = Math.max(1e-3, CAMERA_D - zr);
-  const s = CAMERA_D / denom;
+    // Rotate around Y (yaw)
+    const xr = x1 * cyr + z1 * syr;
+    const yr = y1;
+    const zr = z1 * cyr - x1 * syr;
+    // Perspective scale: closer (larger positive zr) => larger scale.
+    // Use (D - z) in denominator so positive z increases size.
+    const denom = Math.max(1e-3, CAMERA_D - zr);
+    const s = CAMERA_D / denom;
     out[idx++] = xr * s; // local x relative to center
     out[idx++] = yr * s; // local y relative to center
   }
@@ -773,7 +920,6 @@ function applyTransformFromCenter(
   sprite.x = cx;
   sprite.y = cy;
 }
-
 
 export function beginDragFloat(sprite: CardSprite) {
   if ((sprite as any)?.destroyed) return;
@@ -809,7 +955,11 @@ export function beginDragFloat(sprite: CardSprite) {
 
 // tilt removed
 
-export function updateDraggedTopLeft(sprite: CardSprite, tlx: number, tly: number) {
+export function updateDraggedTopLeft(
+  sprite: CardSprite,
+  tlx: number,
+  tly: number,
+) {
   if (!sprite.__tiltActive) {
     sprite.x = tlx;
     sprite.y = tly;
@@ -910,8 +1060,12 @@ export function updateFloatAndTilt(all: CardSprite[], dtMs: number) {
       s.__tiltTargetRoll = (s.__tiltTargetRoll || 0) * kRet;
     }
     // Ease angles toward targets
-    s.__tiltPitch = (s.__tiltPitch ?? 0) + ((s.__tiltTargetPitch || 0) - (s.__tiltPitch ?? 0)) * kAngle;
-    s.__tiltRoll = (s.__tiltRoll ?? 0) + ((s.__tiltTargetRoll || 0) - (s.__tiltRoll ?? 0)) * kAngle;
+    s.__tiltPitch =
+      (s.__tiltPitch ?? 0) +
+      ((s.__tiltTargetPitch || 0) - (s.__tiltPitch ?? 0)) * kAngle;
+    s.__tiltRoll =
+      (s.__tiltRoll ?? 0) +
+      ((s.__tiltTargetRoll || 0) - (s.__tiltRoll ?? 0)) * kAngle;
     // Build/update mesh geometry
     const mesh = ensureTiltMesh(s);
     if (!mesh) continue;
@@ -927,10 +1081,14 @@ export function updateFloatAndTilt(all: CardSprite[], dtMs: number) {
     projectCardQuad(w, h, s.__tiltPitch || 0, s.__tiltRoll || 0, verts);
     // Apply corners in clockwise order from top-left
     mesh.setCorners(
-      verts[0], verts[1], // TL
-      verts[2], verts[3], // TR
-      verts[4], verts[5], // BR
-      verts[6], verts[7], // BL
+      verts[0],
+      verts[1], // TL
+      verts[2],
+      verts[3], // TR
+      verts[4],
+      verts[5], // BR
+      verts[6],
+      verts[7], // BL
     );
   }
 }

@@ -1,4 +1,5 @@
 import type * as PIXI from "pixi.js";
+import type { Rect } from "../types/geometry";
 
 export interface CameraOptions {
   world: PIXI.Container;
@@ -8,7 +9,6 @@ export interface CameraOptions {
   frictionTauMs?: number; // time constant for exponential velocity decay
   frictionTauActiveMs?: number; // stronger decay while mouse is down (dragging)
   velocitySmoothing?: number; // 0..1 blend factor for velocity averaging while dragging
-  minSpeedToGlide?: number; // px/sec threshold to start/continue glide
   maxSpeedClamp?: number; // px/sec clamp for extreme flicks
 }
 
@@ -34,9 +34,8 @@ export class Camera {
   private velocitySmoothing = 0.22; // 0..1, how much to trust latest sample when dragging
   // External glide threshold now defaults to 0 to avoid abrupt halts; we still use a tiny
   // internal epsilon to eventually settle to exact zero to avoid infinite subpixel drift.
-  private minSpeedToGlide = 0; // px/sec, allow gliding at any speed
   private maxSpeedClamp = 4800; // px/sec, clamp extreme flicks
-  private worldBounds?: { x: number; y: number; w: number; h: number };
+  private worldBounds?: Rect;
   private clampFrac = 0.75; // fraction of viewport kept within bounds (centered)
   constructor(opts: CameraOptions) {
     this.world = opts.world;
@@ -51,8 +50,6 @@ export class Camera {
         0.9,
         Math.max(0.05, opts.velocitySmoothing),
       );
-    if (typeof opts.minSpeedToGlide === "number")
-      this.minSpeedToGlide = Math.max(0, opts.minSpeedToGlide);
     if (typeof opts.maxSpeedClamp === "number")
       this.maxSpeedClamp = Math.max(100, opts.maxSpeedClamp);
   }
@@ -61,7 +58,7 @@ export class Camera {
     this.clampFrac = f;
     this.clampToBounds();
   }
-  setWorldBounds(b: { x: number; y: number; w: number; h: number } | null) {
+  setWorldBounds(b: Rect | null) {
     this.worldBounds = b || undefined;
     // Dynamically allow zooming out enough to see the full bounds and a bit more (~10%)
     if (this.worldBounds) {
@@ -134,11 +131,7 @@ export class Camera {
     this.world.position.y += (after.y - before.y) * this.world.scale.y;
     this.clampToBounds();
   }
-  fitBounds(
-    b: { x: number; y: number; w: number; h: number } | null,
-    viewport: { w: number; h: number },
-    margin = 40,
-  ) {
+  fitBounds(b: Rect | null, viewport: { w: number; h: number }, margin = 40) {
     if (!b) return;
     const vw = viewport.w - margin * 2;
     const vh = viewport.h - margin * 2;
@@ -160,7 +153,7 @@ export class Camera {
     target:
       | { x: number; y: number; scale?: number }
       | {
-          bounds: { x: number; y: number; w: number; h: number };
+          bounds: Rect;
           viewport: { w: number; h: number };
           margin?: number;
         },
