@@ -45,9 +45,15 @@ async function runDecodeTask(task: PrioTask) {
   const ci = await getCachedImage(task.url);
   const source = await (window as any).createImageBitmap(ci.blob);
   const tex = PIXI.Texture.from(source as any);
-  const bt = tex.source;
-  if (bt.style) {
-    bt.style.scaleMode = "linear";
+  const ts: any = tex.source;
+  if (ts) {
+    // Improve minification quality when zoomed out
+    ts.autoGenerateMipmaps = true;
+    ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
+    if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
+    if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
+    if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
   }
   // Populate cache
   const bytes = estimateTextureBytes(tex);
@@ -156,6 +162,15 @@ function buildTexture(
     .fill({ color: opts.fill })
     .stroke({ color: opts.stroke, width: opts.strokeW });
   const tex = renderer.generateTexture(g);
+  const ts: any = tex.source;
+  if (ts) {
+    ts.autoGenerateMipmaps = true;
+    ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
+    if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
+    if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
+    if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+  }
   g.destroy();
   return tex;
 }
@@ -196,6 +211,15 @@ export function createCardSprite(opts: CardVisualOptions) {
   sp.cursor = "pointer";
   // sp.cullable = true;
   // sp.cullArea = new PIXI.Rectangle(0, 0, 100, 140);
+  // Ensure FAB is cleaned up when this sprite is removed or destroyed
+  sp.on("removed", () => {
+    cleanupFlipFab(sp);
+  });
+  const __origDestroy = sp.destroy.bind(sp);
+  sp.destroy = (...args: any[]) => {
+    cleanupFlipFab(sp);
+    return __origDestroy(...(args as any));
+  };
   return sp;
 }
 
@@ -266,6 +290,18 @@ function adoptCachedTexture(
 ) {
   sprite.__currentTexUrl = url;
   sprite.texture = ent.tex;
+  // Ensure texture filtering settings are kept when adopting from cache
+  try {
+    const ts: any = sprite.texture?.source;
+    if (ts) {
+      ts.autoGenerateMipmaps = true;
+      ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
+      if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
+      if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
+      if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
+      if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+    }
+  } catch {}
   sprite.width = CARD_W;
   sprite.height = CARD_H;
   sprite.__imgLoaded = true;
@@ -310,11 +346,24 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   const y1 = sprite.y;
   const x2 = x1 + sprite.width;
   const y2 = y1 + sprite.height;
+  // Expand the view rect by 2x in both width and height around its center for prefetching
+  const vLeft = view.left;
+  const vTop = view.top;
+  const vRight = view.right;
+  const vBottom = view.bottom;
+  const vCx = (vLeft + vRight) * 0.5;
+  const vCy = (vTop + vBottom) * 0.5;
+  const halfW = (vRight - vLeft) * 0.5;
+  const halfH = (vBottom - vTop) * 0.5;
+  const expLeft = vCx - halfW * 1;
+  const expRight = vCx + halfW * 1;
+  const expTop = vCy - halfH * 1;
+  const expBottom = vCy + halfH * 1;
   const inView = !(
-    x2 < view.left ||
-    x1 > view.right ||
-    y2 < view.top ||
-    y1 > view.bottom
+    x2 < expLeft ||
+    x1 > expRight ||
+    y2 < expTop ||
+    y1 > expBottom
   );
   // Priority: inView highest (0), else lowest (100)
   const prio = inView ? 0 : 100;
@@ -322,7 +371,7 @@ export function ensureTexture(sprite: CardSprite, view: ViewRect) {
   const zoom = (sprite.parent as any)?.scale?.x || 1;
   let desired: 0 | 1 | 2 = 0;
   if (inView) {
-    if (zoom > 1.7) desired = 2;
+    if (zoom > 1.5) desired = 2;
     else if (zoom > 0.8) desired = 1;
     else desired = 0;
   } else {
@@ -563,6 +612,18 @@ export function updateFlipFab(sprite: CardSprite) {
   fab.visible = !!(sprite as any).visible;
 }
 
+function cleanupFlipFab(sprite: CardSprite) {
+  const fab = sprite.__flipFab;
+  if (!fab) return;
+  try {
+    fab.parent?.removeChild(fab);
+  } catch {}
+  try {
+    fab.destroy({ children: true });
+  } catch {}
+  sprite.__flipFab = undefined;
+}
+
 // Refresh FAB theming when the app theme changes
 registerThemeListener(() => {
   try {
@@ -600,8 +661,6 @@ function flipCard(sprite: CardSprite) {
   }
   // Clear current URL so ensureTexture will schedule new face
   sprite.__currentTexUrl = undefined;
-  // Show placeholder immediately to avoid stale-face flash
-  forcePlaceholder(sprite);
   // Try to schedule new texture right away if viewport is available
   const view = (window as any).__mtgView as ViewRect | undefined;
   if (view) ensureTexture(sprite, view);
@@ -649,6 +708,17 @@ function updateMeshTextureFromSprite(sprite: CardSprite) {
   if (!mesh) return;
   if (mesh.texture !== sprite.texture) mesh.texture = sprite.texture;
   (mesh as any).tint = sprite.tint;
+  try {
+    const ts: any = mesh.texture?.source;
+    if (ts) {
+      ts.autoGenerateMipmaps = true;
+      ts.scaleMode = PIXI.SCALE_MODES.LINEAR;
+      if ("mipmapFilter" in ts) ts.mipmapFilter = PIXI.SCALE_MODES.LINEAR;
+      if ("minFilter" in ts) ts.minFilter = PIXI.SCALE_MODES.LINEAR;
+      if ("magFilter" in ts) ts.magFilter = PIXI.SCALE_MODES.LINEAR;
+      if ("maxAnisotropy" in ts) ts.maxAnisotropy = 4;
+    }
+  } catch {}
 }
 
 function projectCardQuad(

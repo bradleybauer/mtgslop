@@ -2838,7 +2838,9 @@ const splashEl = document.getElementById("splash");
     // Select all (Ctrl+A)
     if ((e.key === "a" || e.key === "A") && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      SelectionStore.replace({ cards: new Set(sprites), groupIds: new Set() });
+  // Select-all should tint like marquee: mark all cards accordingly before selection update
+  for (const s of sprites) (s as any).__tintByMarquee = true;
+  SelectionStore.replace({ cards: new Set(sprites), groupIds: new Set() });
     }
     // Clear selection (Esc)
     if (e.key === "Escape") {
