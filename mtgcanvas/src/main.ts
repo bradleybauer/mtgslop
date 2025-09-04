@@ -953,6 +953,132 @@ const splashEl = document.getElementById("splash");
       } catch {}
     }
   }
+
+  // Bulk deletion helper to avoid O(n^2) work and per-item cache churn
+  async function deleteSelectedCardsFast(list: CardSprite[]) {
+    if (!list || !list.length) return;
+    // Dedupe and create a lookup set
+    const toDelete = Array.from(new Set(list));
+    const delSet = new Set<CardSprite>(toDelete);
+
+    // 1) Partition deletions by group id for efficient membership removal
+    const byGroup = new Map<number, CardSprite[]>();
+    for (const s of toDelete) {
+      const gid = (s as any).__groupId as number | undefined;
+      if (gid && groups.has(gid)) {
+        const arr = byGroup.get(gid) || [];
+        arr.push(s);
+        byGroup.set(gid, arr);
+      }
+    }
+
+    // 2) Remove from groups in bulk (filter order once)
+    const touchedGroups = new Set<number>();
+    byGroup.forEach((members, gid) => {
+      const gv = groups.get(gid);
+      if (!gv) return;
+      let changed = false;
+      for (const s of members) {
+        if (gv.items.delete(s)) changed = true;
+      }
+      if (gv.order && gv.order.length) {
+        const memSet = new Set(members);
+        const newOrder = gv.order.filter((sp) => !memSet.has(sp));
+        if (newOrder.length !== gv.order.length) {
+          gv.order.length = 0;
+          gv.order.push(...newOrder);
+          changed = true;
+        }
+      }
+      if (changed) touchedGroups.add(gid);
+    });
+
+    // 3) Collect image URLs once (dedup) for cache/texture purge after detach
+    const urlSet = new Set<string>();
+    for (const s of toDelete) {
+      const anyS: any = s as any;
+      const card: any = anyS.__card || null;
+      if (!card) continue;
+      const faces: any[] = Array.isArray(card.card_faces) ? card.card_faces : [card];
+      const tiers = ["small", "normal", "large", "png"] as const;
+      for (const f of faces) {
+        const iu = f?.image_uris || card?.image_uris || {};
+        for (const t of tiers) {
+          const u = iu?.[t];
+          if (typeof u === "string") urlSet.add(u);
+        }
+      }
+    }
+
+    // 4) Temporarily disable sort churn while removing/destroying
+    const prevSortable = world.sortableChildren;
+    world.sortableChildren = false;
+
+    // 5) Remove from spatial index and destroy display objects
+    for (const s of toDelete) {
+      try {
+        spatial.removeBySprite(s);
+      } catch {}
+      try {
+        s.destroy();
+      } catch {}
+    }
+
+    // 6) Compact the sprites array in one pass
+    if (sprites.length) {
+      let write = 0;
+      for (let read = 0; read < sprites.length; read++) {
+        const sp = sprites[read];
+        if (!delSet.has(sp)) sprites[write++] = sp;
+      }
+      sprites.length = write;
+    }
+
+    // Restore sorting and do one sort pass if needed
+    world.sortableChildren = prevSortable;
+    if (prevSortable) try {
+      world.sortChildren();
+    } catch {}
+
+    // 7) Redraw touched groups once
+    touchedGroups.forEach((gid) => {
+      const gv = groups.get(gid);
+      if (gv) {
+        updateGroupMetrics(gv);
+        drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
+      }
+    });
+
+    // 8) Purge textures/caches once (deduped)
+    if (urlSet.size) {
+      const urls = Array.from(urlSet);
+      try {
+        purgeTextureUrls(urls);
+      } catch {}
+      try {
+        await purgeCacheForUrls(urls, { includePersistent: false } as any);
+      } catch {}
+    }
+
+    // 9) Repo + persistence (batched)
+    try {
+      InstancesRepo.deleteMany(toDelete.map((c) => c.__id));
+    } catch {}
+    if (touchedGroups.size) scheduleGroupSave();
+    updateEmptyStateOverlay();
+    if (sprites.length === 0 && groups.size === 0) {
+      try {
+        clearTextureCaches();
+        clearSessionCaches();
+      } catch {}
+    }
+    if (!SUPPRESS_SAVES) {
+      try {
+        persistence.flushPositions();
+      } catch {}
+    }
+    SelectionStore.clear();
+  }
   // Memory mode group persistence helpers
   let lsGroupsTimer: any = null;
   function scheduleGroupSave() {
@@ -2897,79 +3023,15 @@ const splashEl = document.getElementById("splash");
       const cardIds = SelectionStore.getCards();
       const groupIds = SelectionStore.getGroups();
       if (cardIds.length) {
-        // Track backing repo ids and scryfall ids for cleanup
-        const sfIds: string[] = [];
-        const touchedGroups = new Set<number>();
-        cardIds.forEach((s) => {
-          const idx = sprites.findIndex((x) => x === s);
-          if (idx >= 0) {
-            const anyS: any = s as any;
-            const gid = s.__groupId;
-            if (gid) {
-              const gv = groups.get(gid);
-              if (gv) {
-                gv.items.delete(s);
-                const oi = gv.order.indexOf(s);
-                if (oi >= 0) gv.order.splice(oi, 1);
-              }
-              touchedGroups.add(gid);
-            }
-            // Collect Scryfall id for removal from imported store (memory mode)
-            const sid = anyS.__scryfallId || anyS.__card?.id;
-            if (sid) sfIds.push(String(sid));
-            // Build all potential image URLs for this card (all faces, tiers)
-            try {
-              const urls: string[] = [];
-              const card: any = anyS.__card || null;
-              const faces: any[] = Array.isArray(card?.card_faces)
-                ? card.card_faces
-                : [card];
-              const tiers = ["small", "normal", "large", "png"] as const;
-              for (const f of faces) {
-                const iu = f?.image_uris || card?.image_uris || {};
-                for (const t of tiers) {
-                  const u = iu?.[t];
-                  if (typeof u === "string") urls.push(u);
-                }
-              }
-              // Purge per-URL caches: textures + image session (keep IDB intact by default)
-              if (urls.length) {
-                try {
-                  purgeTextureUrls(urls);
-                } catch {}
-                try {
-                  purgeCacheForUrls(urls, { includePersistent: false });
-                } catch {}
-              }
-            } catch {}
-            // Remove from spatial index to drop strong references
-            spatial.removeBySprite(s);
-            s.destroy();
-            sprites.splice(idx, 1);
-          }
-        });
-        // Delete from repository so DB/memory won't restore
-        if (cardIds.length)
-          InstancesRepo.deleteMany(cardIds.map((c) => c.__id));
-        if (touchedGroups.size) scheduleGroupSave();
-        // If no cards and no groups remain, surface overlay and clear session caches for immediate memory drop
-        updateEmptyStateOverlay();
-        if (sprites.length === 0 && groups.size === 0) {
-          try {
-            clearTextureCaches();
-            clearSessionCaches();
-          } catch {}
-        }
-        // Persist updated positions to reflect removals
-        if (!SUPPRESS_SAVES) {
-          persistence.flushPositions();
-        }
+        // Fast bulk deletion path
+        deleteSelectedCardsFast(cardIds);
       }
       if (groupIds.length) {
         groupIds.forEach((id) => deleteGroupById(id));
         scheduleGroupSave();
       }
-      SelectionStore.clear();
+  // Clear any stale selection references
+  SelectionStore.clear();
       // After group deletions, if empty, drop caches
       if (sprites.length === 0 && groups.size === 0) {
         try {
