@@ -396,10 +396,34 @@ const splashEl = document.getElementById("splash");
     if (isEmpty) showCtrlsOverlayIfNeeded();
     else hideCtrlsOverlay();
   }
-  window.addEventListener("resize", layoutCtrlsOverlay);
+  // Debounced window resize handling: coalesce rapid events to avoid thrash
+  let __resizeTimer: number | null = null;
+  let __isResizing = false;
+  (window as any).__isResizing = false;
+  function scheduleResizeUpdate() {
+    __isResizing = true;
+    (window as any).__isResizing = true;
+    if (__resizeTimer) clearTimeout(__resizeTimer);
+    __resizeTimer = window.setTimeout(() => {
+      // Layout overlays that track viewport
+      layoutCtrlsOverlay();
+      // Update camera world bounds to reflect new viewport
+      const ha = app.stage.hitArea as PIXI.Rectangle | null;
+      const cam: any = (window as any).__mtgCamera;
+      if (cam && ha && typeof ha.x === "number")
+        cam.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
+    __isResizing = false;
+    (window as any).__isResizing = false;
+      __resizeTimer = null;
+    }, 120);
+  }
+  window.addEventListener("resize", scheduleResizeUpdate);
+  // Ensure initial layout computed once (in case first render happens pre-resize)
+  scheduleResizeUpdate();
 
   // Camera abstraction
   const camera = new Camera({ world });
+  (window as any).__mtgCamera = camera;
   // Limit panning/zooming to a very large but finite canvas area
   const ha = app.stage.hitArea as PIXI.Rectangle | null;
   if (ha && typeof ha.x === "number")
@@ -410,12 +434,7 @@ const splashEl = document.getElementById("splash");
   registerThemeListener(() => {
     if (lastBounds) ensureBoundsMarker(lastBounds);
   });
-  // Keep camera min zoom accommodating full bounds on viewport resize
-  window.addEventListener("resize", () => {
-    const ha = app.stage.hitArea as PIXI.Rectangle | null;
-    if (ha && typeof ha.x === "number")
-      camera.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
-  });
+  // Keep camera min zoom accommodating full bounds on viewport resize (debounced above)
   const spatial = new SpatialIndex();
   // Global z-order helper: monotonic counter shared across modules via window
   function nextZ(): number {
@@ -5336,12 +5355,14 @@ const splashEl = document.getElementById("splash");
       const bottom = top + vh * inv;
       (window as any).__mtgView = { left, top, right, bottom };
     }
-    // upgrade: throttle texture checks during steady state by skipping alternate frames
+    // Throttle texture checks; during steady state skip alternate frames, and during window resize skip most work
     {
       const view: any = (window as any).__mtgView;
       const frame = ((window as any).__mtgFrameId =
         ((window as any).__mtgFrameId || 0) + 1);
-      const skip = (window as any).__lastPanSpeed < 0.01 && (frame & 1) === 1;
+      const skip =
+        (!!(window as any).__isResizing && (frame % 4) !== 0) ||
+        ((window as any).__lastPanSpeed < 0.01 && (frame & 1) === 1);
       if (view) {
         for (let i = 0; i < sprites.length; i++) {
           const s = sprites[i];
@@ -5357,7 +5378,7 @@ const splashEl = document.getElementById("splash");
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
-    if (Math.abs(scale - lastScale) > 0.01) {
+  if (!((window as any).__isResizing) && Math.abs(scale - lastScale) > 0.01) {
       (window as any).__lastZoomChangedAt = now;
       // Compute expanded viewport bounds once (world space)
       const vw = window.innerWidth;
@@ -5383,7 +5404,7 @@ const splashEl = document.getElementById("splash");
       (window as any).__lastGroupUpdateScale = scale;
     }
     // If scale hasn't changed, still fix up groups that just entered the viewport so their overlay state is correct.
-    {
+  if (!((window as any).__isResizing)) {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const inv = 1 / scale;
