@@ -48,7 +48,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     inputEl = document.createElement("input");
     inputEl.type = "text";
     inputEl.placeholder =
-      'Search cards (Scryfall syntax). Examples: t:creature o:"draw a card" c>=ug. Enter=Group, Esc=Close';
+      'Search cards (Scryfall syntax). Examples: t:creature o:"draw a card" c>=ug (t:instant OR t:sorcery). Enter=Group, Esc=Close';
     inputEl.className = "ui-input ui-input-lg";
     inputEl.style.width = "100%";
     // opt-out spell/grammar/autocap
@@ -176,20 +176,20 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
   <div style="margin-top:6px"></div>
   <div><b>Basics</b></div>
   <ul style="margin:6px 0 8px 18px;">
-  <li>Free text matches name + type + oracle (Scryfall-like). Use quotes for phrases: <code>"draw a card"</code></li>
-    <li>Negate with <code>-</code>: <code>-o:land</code>. OR with the word <code>OR</code>. Parentheses supported.</li>
-    <li>Exact name: prefix token with <code>!</code> e.g. <code>!"Lightning Bolt"</code></li>
-    <li>Regex: wrap in slashes (case‑insensitive): <code>o:/^\\{T\\}:/</code>. Wildcard <code>*</code> works in text fields.</li>
+  <li>Free text matches name + type + oracle. Use quotes for phrases: <code>"draw a card"</code></li>
+    <li>Negate with <code>-</code>. Combine with <code>OR</code>. Parentheses <code>( )</code> supported.</li>
+    <li>Exact name: prefix with <code>!</code> e.g. <code>!"Lightning Bolt"</code></li>
+    <li>Regex only with text fields: <code>o:/^\\{T\\}:/</code>. Wildcard <code>*</code> works in text fields.</li>
   </ul>
   <div><b>Fields</b></div>
   <div style="margin:6px 0 8px 0;">
-    <code>name</code>, <code>o</code> (oracle), <code>t</code> (type), <code>a</code> (artist), <code>ft</code> (flavor), <code>wm</code> (watermark),
-    <code>r</code> (rarity), <code>e</code>/<code>set</code>, <code>lang</code>, <code>game</code>, <code>frame</code>, <code>border</code>, <code>stamp</code>
+  <code>name</code>, <code>o/oracle</code>, <code>t/type</code>, <code>a/artist</code>, <code>ft/flavor</code>, <code>wm/watermark</code>,
+    <code>r/rarity</code>, <code>e/s/set/edition</code>, <code>lang</code>, <code>game</code>, <code>frame</code>, <code>border</code>, <code>stamp</code>
   </div>
   <div><b>Colors</b></div>
   <ul style="margin:6px 0 8px 18px;">
-    <li><code>c</code> / <code>ci</code> = color identity (Scryfall): <code>c=uw</code> (exact UW), <code>c>=ug</code> (includes U and G), <code>c<=wub</code> (subset of W/U/B), <code>c!=g</code></li>
-    <li><code>color</code> = printed colors (use when you need printed, not identity): <code>color=rg</code></li>
+    <li><code>c/color</code> = printed colors (e.g., <code>c:rg</code>, <code>c>=uw</code>)</li>
+    <li><code>id/identity</code> = color identity (e.g., <code>id=uw</code>, <code>id<=wub</code>)</li>
   </ul>
   <div><b>Mana / Symbols</b></div>
   <ul style="margin:6px 0 8px 18px;">
@@ -218,7 +218,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     <li><code>is:</code> <em>spell</em>, <em>permanent</em>, <em>dfc</em>, <em>modal</em>, <em>vanilla</em>, <em>frenchvanilla</em>, <em>bear</em>, <em>hybrid</em>, <em>phyrexian</em>, <em>foil</em>, <em>etched</em>, <em>hires</em>, <em>promo</em>, <em>spotlight</em>, <em>digital</em>, <em>reserved</em>, <em>commander</em>…</li>
     <li><code>has:</code> <em>indicator</em>, <em>watermark</em>, <em>flavor</em>, <em>security_stamp</em></li>
   </ul>
-  <div style="opacity:.8">Tip: plain text without fields matches names and oracle. Use <code>n:</code> to target name only, or <code>o:</code> for oracle‑only text.</div>
+  <div style="opacity:.8">Tip: plain text without fields matches names and oracle. Use <code>name:</code> to target name only, or <code>o:</code> for oracle‑only text.</div>
 </details>`;
     wrap.appendChild(hint);
     document.body.appendChild(wrap);
@@ -282,60 +282,7 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     return wrap;
   }
 
-  // Tokenizer with quoting & nuanced + handling.
-  // Rules:
-  //  - Quoted segments ("...") become single tokens; supports escaped \".
-  //  - Leading + makes a MUST token only if the next character is a letter (A-Z) or a quote.
-  //    So "+infect" => MUST("infect"), but "+1/+1" stays a normal token " +1/+1" literal unless quoted (user wants phrase including symbols).
-  //  - +"phrase here" makes a MUST phrase.
-  //  - Inside tokens a|b splits into OR alts in match phase (existing logic already handles token containing '|').
-  function tokenize(q: string) {
-    const src = q.trim();
-    if (!src) return { any: [], must: [] };
-    const any: string[] = [];
-    const must: string[] = [];
-    const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|\S+/g; // quoted block or bare token
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(src))) {
-      let token = m[0];
-      let isMust = false;
-      if (
-        token.startsWith("+") &&
-        token.length > 1 &&
-        /[A-Za-z"]/.test(token[1])
-      ) {
-        isMust = true;
-        token = token.slice(1); // strip leading +
-      }
-      // Remove surrounding quotes if present
-      if (token.startsWith('"') && token.endsWith('"') && token.length >= 2) {
-        token = token.slice(1, -1).replace(/\\"/g, '"');
-      }
-      token = token.toLowerCase();
-      if (!token) continue;
-      (isMust ? must : any).push(token);
-    }
-    return { any, must };
-  }
-
-  function match(card: Card, tk: { any: string[]; must: string[] }) {
-    const hay = (
-      (card.name || "") +
-      "\n" +
-      (card.oracle_text || "")
-    ).toLowerCase();
-    // MUST tokens: all must appear
-    for (const m of tk.must) if (!hay.includes(m)) return false;
-    if (!tk.any.length) return true; // only + tokens
-    // ANY tokens: OR semantics; also allow explicit a|b syntax inside token
-    for (const a of tk.any) {
-      if (a.includes("|")) {
-        const alts = a.split("|");
-        if (alts.some((alt) => alt && hay.includes(alt))) return true;
-      } else if (hay.includes(a)) return true;
-    }
-    return false;
-  }
+  // Deprecation notes for old local syntax
 
   function runSearch(commit: boolean) {
     if (!inputEl || !infoEl) return;
@@ -353,11 +300,9 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       if (commit) hide();
       return;
     }
-    // Try advanced Scryfall-like parse first
+    // Parse query (Scryfall-compatible). No local fallback tokenizer.
     const adv = parseScryfallQuery(q);
-    const tk = adv ? null : tokenize(q);
     const sprites = getSprites();
-    // const MAX = 800; // safety cap
     const matched: CardSprite[] = [];
     for (const s of sprites) {
       const c = s.__card;
@@ -366,7 +311,6 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
       if (filterMode === "grouped" && !s.__groupId) continue;
       let ok = false;
       if (adv) ok = adv(c);
-      else if (tk) ok = match(c, tk);
       if (ok) matched.push(s);
     }
     currentMatches = matched;
@@ -379,9 +323,6 @@ export function installSearchPalette(opts: SearchPaletteOptions) {
     // Update nav and center on first match when not committing (preview mode)
     if (!commit && matched.length) {
       focusSprite(matched[0]);
-    }
-    if (navEl && (navEl as any).firstChild) {
-      /* noop placeholder */
     }
     // Refresh nav controls
     if (typeof window !== "undefined") {

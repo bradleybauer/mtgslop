@@ -9,18 +9,22 @@
 // If parsing throws, the system falls back to a simple token matcher.
 // Token forms
 
-// Field filters (colon form): fieldAlias:value Supported aliases: name / n o / oracle (oracle_text) t / type (type_line) layout cmc / mv (numerical) c / ci (color_identity) Examples: o:infect name:"glistener elf" cmc:3 (equals 3) cmc:>=5 c:uw (contains U and W, maybe more) c:=uw (exactly UW) c:<=wub (subset of WUB; i.e. mono-W, mono-U, mono-B, UW, WB, UB, or WUB) c:!=g (color identity not exactly G)
+// Field filters (colon form): fieldAlias:value
+// Supported aliases: name, o / oracle (oracle_text), t / type (type_line), layout,
+// cmc / mv (numerical), c / color (printed colors), id / identity (color identity)
+// Examples: o:infect name:"glistener elf" cmc:3 (equals 3) cmc:>=5 c:uw (contains U and W, maybe more)
+// c=uw (exactly WU printed), id<=wub (subset of WUB color identity)
 
 // Bare numeric comparison (no colon): cmc>=3, mv=2, cmc!=5, mv<4 (Operator required in bare form; otherwise use cmc:3.)
 
-// Bare color identity form (no colon): c=uw, c>=uw, c<=wub, c!=g, cwu
+// Bare printed colors form (no colon): c=uw, c>=uw, c<=wub, c!=g, cwu
 
 // If only letters (e.g. cwu) it means “contains at least these letters” (>= semantics).
 // Letters are deduplicated; case-insensitive.
 // Valid letters: w u b r g (colorless is just absence; no special symbol).
 // Free text token (no recognized field pattern):
 
-// Matches (case-insensitive) against (name + newline + oracle_text).
+// Matches (case-insensitive) against (name + newline + type_line + oracle_text).
 // Wildcard * allowed inside token (draw* => draw, drawing, draws).
 // Quoted phrase "draw a card" keeps spaces (exact substring match unless you add * inside).
 // Example: poison infect (both must appear somewhere in name or oracle_text unless OR used).
@@ -81,7 +85,7 @@
 // Complex color ops like is:monocolor, identity comparisons beyond current simple operators.
 // Comparison on power/toughness/loyalty.
 // Mana cost pattern searching.
-// Regex mode, fuzzy (~) searching, distance/word boundary logic.
+// Regex mode for bare tokens, fuzzy (~) searching, distance/word boundary logic.
 // Implicit phrase semantics (currently all substring).
 // Edge/caveats
 
@@ -188,7 +192,6 @@ function ciString(ci: CardLike["color_identity"]): string {
 const FIELD_ALIASES: Record<string, string> = {
   // Text
   name: "name",
-  n: "name",
   o: "oracle_text",
   oracle: "oracle_text",
   fo: "oracle_text",
@@ -198,12 +201,11 @@ const FIELD_ALIASES: Record<string, string> = {
   t: "type_line",
   type: "type_line",
   layout: "layout",
-  // Colors / identity (Scryfall semantics: c -> color identity; printed colors via 'color')
-  c: "color_identity",
-  ci: "color_identity",
+  // Colors / identity (Scryfall semantics: c/color -> printed colors; id/identity -> color identity)
+  c: "colors",
+  color: "colors",
   id: "color_identity",
   identity: "color_identity",
-  color: "colors",
   // Mana & values
   mana: "mana_cost",
   m: "mana_cost",
@@ -268,6 +270,88 @@ const TEXT_FIELDS = new Set([
   "security_stamp",
   "lang",
 ]);
+
+// Only these support /regex/ literals per Scryfall docs
+const REGEX_TEXT_FIELDS = new Set([
+  "name",
+  "oracle_text",
+  "flavor_text",
+  "type_line",
+]);
+
+// Color nicknames and full names -> letters
+const COLOR_WORDS: Record<string, string> = {
+  // single colors
+  white: "W",
+  blue: "U",
+  black: "B",
+  red: "R",
+  green: "G",
+  w: "W",
+  u: "U",
+  b: "B",
+  r: "R",
+  g: "G",
+  // colleges
+  quandrix: "UG",
+  lorehold: "RW",
+  silverquill: "WB",
+  prismari: "UR",
+  witherbloom: "BG",
+  // guilds
+  azorius: "UW",
+  dimir: "UB",
+  rakdos: "BR",
+  gruul: "RG",
+  selesnya: "GW",
+  orzhov: "WB",
+  izzet: "UR",
+  golgari: "BG",
+  boros: "RW",
+  simic: "UG",
+  // shards
+  bant: "WUG",
+  esper: "WUB",
+  grixis: "UBR",
+  jund: "BRG",
+  naya: "WRG",
+  // wedges
+  abzan: "WBG",
+  jeskai: "URW",
+  sultai: "UBG",
+  mardu: "WRB",
+  temur: "URG",
+  // four-color nicknames
+  chaos: "WUBR",
+  aggression: "BRGW",
+  altruism: "WUG",
+  growth: "WBG",
+  artifice: "WUR",
+  // special
+  colorless: "__COLORLESS__",
+  c: "__COLORLESS__",
+  multicolor: "__MULTI__",
+  m: "__MULTI__",
+};
+
+function parseColorLetters(spec: string): {
+  kind: "letters" | "colorless" | "multicolor";
+  letters?: string;
+} {
+  const v = spec.trim().toLowerCase();
+  if (!v) return { kind: "letters", letters: "" };
+  const mapped = COLOR_WORDS[v];
+  if (mapped === "__COLORLESS__") return { kind: "colorless" };
+  if (mapped === "__MULTI__") return { kind: "multicolor" };
+  const letters = (mapped || v)
+    .toUpperCase()
+    .replace(/[^WUBRG]/g, "")
+    .split("")
+    .filter(Boolean)
+    .filter((c, i, a) => a.indexOf(c) === i)
+    .join("");
+  return { kind: "letters", letters };
+}
 
 // Rarity order for comparisons
 const RARITY_ORDER: Record<string, number> = {
@@ -440,7 +524,8 @@ function buildTokenPredicate(
       if (fieldAlias === "in") return gamesPredicate(value, neg);
       if (fieldAlias === "devotion") return devotionPredicate(value, neg);
       if (fieldAlias === "produces") return producesPredicate(value, neg);
-      return null;
+      // Unknown field alias -> treat as syntax error to mirror Scryfall's behavior
+      throw new Error(`Unknown field alias: ${fieldAlias}`);
     }
     if (field === "color_identity") return colorIdentityPredicate(value, neg);
     if (field === "colors") return colorsPredicate(value, neg);
@@ -487,11 +572,16 @@ function buildTokenPredicate(
     const alias = lhs === "mv" ? "cmc" : FIELD_ALIASES[lhs] || lhs;
     return numericFieldPredicate(alias, numBare[2] + numBare[3], neg);
   }
-  // Bare color identity forms: c=uw, c>=uw, c<=wub, c!=g, cwu (contains at least w,u)
-  const ciBare = raw.match(/^(c|ci)(<=|>=|=|!=)?([wubrg]+)$/i);
-  if (ciBare) {
-    const spec = (ciBare[2] || "") + ciBare[3];
-    // Scryfall semantics: 'c' refers to color identity, not printed colors
+  // Bare color forms (printed colors): c>=uw, color=rg, cwu (contains at least w,u)
+  const colorsBare = raw.match(/^(c|color)(<=|>=|=|!=)?([wubrg]+)$/i);
+  if (colorsBare) {
+    const spec = (colorsBare[2] || "") + colorsBare[3];
+    return colorsPredicate(spec, neg);
+  }
+  // Bare color identity forms: id=uw, identity<=wub, idw (contains at least w,u)
+  const idBare = raw.match(/^(id|identity)(<=|>=|=|!=)?([wubrg]+)$/i);
+  if (idBare) {
+    const spec = (idBare[2] || "") + idBare[3];
     return colorIdentityPredicate(spec, neg);
   }
   // Cross-field numeric comparisons: pow>tou, power<=toughness, etc.
@@ -511,18 +601,17 @@ function buildTokenPredicate(
 }
 
 function freeTextPredicate(txt: string, neg: boolean): Predicate {
-  // If simple alphanumeric (no wildcard/regex), prefer word-boundary match to emulate Scryfall token behavior
-  let needle = txt.toLowerCase();
+  // Free text (no field) behaves as simple substring across name + type + oracle.
+  // Regex is NOT supported for bare tokens (only for certain fields on Scryfall).
+  let needle = txt.trim();
   if (
-    !needle.includes("*") &&
-    !(needle.startsWith("/") && needle.endsWith("/")) &&
-    /^[a-z0-9]+$/i.test(needle)
+    (needle.startsWith('"') && needle.endsWith('"')) ||
+    (needle.startsWith("'") && needle.endsWith("'"))
   ) {
-    needle = `/${"\\b" + needle.replace(/\//g, "\\/") + "\\b"}/`;
+    needle = needle.slice(1, -1);
   }
-  const pattern = textToRegex(needle);
+  needle = needle.toLowerCase();
   return (card) => {
-    // Scryfall free-text searches name + type_line + oracle
     const hay = (
       (card.name || "") +
       "\n" +
@@ -530,7 +619,7 @@ function freeTextPredicate(txt: string, neg: boolean): Predicate {
       "\n" +
       (oracleAggregate(card) || "")
     ).toLowerCase();
-    const hit = pattern.test(hay);
+    const hit = needle.length ? hay.includes(needle) : true;
     return neg ? !hit : hit;
   };
 }
@@ -545,7 +634,13 @@ function textFieldPredicate(
     const needle = tmpl.includes("~")
       ? tmpl.replace(/~/g, String(card.name || "").toLowerCase())
       : tmpl;
-    const rx = textToRegex(needle);
+    // Only allow /regex/ on approved fields; otherwise treat as literal
+    const isRegex =
+      needle.length >= 2 && needle.startsWith("/") && needle.endsWith("/");
+    const rx =
+      isRegex && REGEX_TEXT_FIELDS.has(field)
+        ? textToRegex(needle)
+        : new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     const val = (card as any)[field];
     let got: string | null = null;
     if (typeof val === "string") got = val;
@@ -602,11 +697,30 @@ function numericFieldPredicate(
 }
 
 function colorIdentityPredicate(specRaw: string, neg: boolean): Predicate {
-  // Supported: =wubrg exact, >=uw (at least), <=gw (subset), !=w (not exact), plain letters -> contains ALL letters (>= semantics).
-  const m = specRaw.match(/^(<=|>=|=|!=)?([wubrg]+)/i);
+  // Support full color names, nicknames, c/colorless, m/multicolor, letters; operators optional (default >=)
+  const m = specRaw.match(/^(<=|>=|=|!=)?\s*(.+)$/i);
   if (!m) return () => true;
-  const op = m[1] || ">="; // default implicit -> contains all
-  const letters = [...new Set(m[2].toUpperCase().split(""))];
+  const op = (m[1] as string) || ">=";
+  const parsed = parseColorLetters(m[2] || "");
+  if (parsed.kind === "colorless") {
+    return (card) => {
+      const id = ciString(card.color_identity);
+      const size = id.length;
+      const pass = size === 0; // exact colorless identity
+      return neg ? !pass : pass;
+    };
+  }
+  if (parsed.kind === "multicolor") {
+    return (card) => {
+      const id = ciString(card.color_identity);
+      const letters = new Set(id.split("").filter(Boolean));
+      const pass = letters.size >= 2;
+      return neg ? !pass : pass;
+    };
+  }
+  const letters = [
+    ...new Set((parsed.letters || "").split("").filter(Boolean)),
+  ];
   return (card) => {
     const id = ciString(card.color_identity);
     const set = new Set(id.split("").filter((x) => x));
@@ -614,22 +728,40 @@ function colorIdentityPredicate(specRaw: string, neg: boolean): Predicate {
     let pass = false;
     if (op === "=") pass = eqSet(set, target);
     else if (op === "!=") pass = !eqSet(set, target);
-    else if (op === ">=")
-      pass = subset(target, set); // set has all target
-    else if (op === "<=") pass = subset(set, target); // set is subset
+    else if (op === ">=") pass = subset(target, set);
+    else if (op === "<=") pass = subset(set, target);
     return neg ? !pass : pass;
   };
 }
 
 function colorsPredicate(specRaw: string, neg: boolean): Predicate {
-  // Same operators as color identity but using printed colors set
-  const m = specRaw.match(/^(<=|>=|=|!=)?([wubrg]+)/i);
+  // Printed colors; support full names, nicknames, c/m specials
+  const m = specRaw.match(/^(<=|>=|=|!=)?\s*(.+)$/i);
   if (!m) return () => true;
-  const op = m[1] || ">=";
-  const letters = [...new Set(m[2].toUpperCase().split(""))];
+  const op = (m[1] as string) || ">=";
+  const parsed = parseColorLetters(m[2] || "");
+  if (parsed.kind === "colorless") {
+    return (card) => {
+      const arr = (card.colors || []) as string[];
+      const size = Array.isArray(arr) ? arr.length : 0;
+      const pass = size === 0;
+      return neg ? !pass : pass;
+    };
+  }
+  if (parsed.kind === "multicolor") {
+    return (card) => {
+      const arr = (card.colors || []) as string[];
+      const set = new Set((arr || []).map((x) => x.toUpperCase()));
+      const pass = set.size >= 2;
+      return neg ? !pass : pass;
+    };
+  }
+  const letters = [
+    ...new Set((parsed.letters || "").split("").filter(Boolean)),
+  ];
   return (card) => {
     const arr = (card.colors || []) as string[];
-    const set = new Set(arr.map((x) => x.toUpperCase()));
+    const set = new Set((arr || []).map((x) => x.toUpperCase()));
     const target = new Set(letters);
     let pass = false;
     if (op === "=") pass = eqSet(set, target);

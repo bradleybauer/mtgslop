@@ -367,13 +367,13 @@ export function ensureThemeStyles() {
   backdrop-filter:blur(6px) saturate(1.2);
   -webkit-backdrop-filter:blur(6px) saturate(1.2);
   /* Spacing/typography closer to other panels */
-  padding:calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));
+  padding:calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale));
   color:var(--panel-fg);
   font-family: var(--panel-font);
   font-weight:600;
   letter-spacing:.6px;
   text-transform:uppercase;
-  font-size:calc(16px * var(--ui-scale));
+  font-size:calc(22px * var(--ui-scale));
   line-height:1.2;
   /* Subtle accent tie-in */
   box-sizing:border-box;

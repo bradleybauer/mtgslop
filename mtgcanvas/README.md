@@ -75,7 +75,7 @@ Press Ctrl+F or "/" to open. Type Scryfall-like queries; Enter will create a gro
 - Navigate matches with the ◀ ▶ buttons or Alt+Left/Alt+Right
 - Query syntax highlights:
   - Free text matches name and oracle. Quote phrases: "draw a card"
-  - Fields: `o:` (oracle), `t:` (type), `name:`/`n:`, `r:` (rarity), `e:` (set), `c:`/`ci:` (colors/identity), `mv:` (mana value), `pow:`/`tou:`/`loy:`
+  - Fields: `o:` (oracle), `t:` (type), `name:`, `r:` (rarity), `e:` (set), `c:` (printed colors), `id:` (color identity), `mv:` (mana value), `pow:`/`tou:`/`loy:`
   - Colors: `c=uw`, `c>=ug`, `c<=wub`, `color=rg`
   - Comparisons: `mv>=3`, `pow>tou`, prices like `usd>1`
   - Flags: `is:dfc`, `is:modal`, `has:watermark`

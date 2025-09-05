@@ -92,10 +92,10 @@ async function workerLoop() {
       continue;
     }
     task.state = "running";
-    // if (activeDecodes > 8) { // optional
-    //   await runDecodeTask(task);
-    // }
-    // else
+    if (activeDecodes > 32) { // optional
+      await runDecodeTask(task);
+    }
+    else
     {
       runDecodeTask(task);
     }
@@ -316,8 +316,8 @@ export function clearTextureCaches() {
     while (decodePQ.size() > 0) decodePQ.popMin();
     // Destroy any tracked live textures
     liveTexturesByUrl.forEach((entry, url) => {
-  // Free GPU memory but keep resources intact to avoid triggering Pixi internal destroy flow
-  freeTextureGpu(entry.tex);
+      // Free GPU memory but keep resources intact to avoid triggering Pixi internal destroy flow
+      freeTextureGpu(entry.tex);
       liveTexturesByUrl.delete(url);
     });
   } catch {}

@@ -1,6 +1,33 @@
 // Lightweight Scryfall search client with paging and progress reporting.
 // Global concurrency for Scryfall requests (search + collection + named fallback)
-export const SCRYFALL_CONCURRENCY = 6;
+export const SCRYFALL_CONCURRENCY = 1;
+
+// Per Scryfall API guidance, insert ~50–100ms delay between requests to api.scryfall.com
+// We implement a global rate limiter shared by all requests in this module.
+const SCRYFALL_RATE_DELAY_MS = 80; // within 50–100ms range
+const DEFAULT_ACCEPT_HEADER = "application/json"; // required Accept header
+
+// Global, serialized scheduling so starts of requests are spaced apart
+let __scryfallNextTime = 0;
+let __scryfallChain: Promise<void> = Promise.resolve();
+const __delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function __scheduleScryfall(delayWindow = SCRYFALL_RATE_DELAY_MS) {
+  const run = __scryfallChain.then(async () => {
+    const wait = Math.max(0, __scryfallNextTime - Date.now());
+    if (wait > 0) await __delay(wait);
+    __scryfallNextTime = Date.now() + delayWindow;
+  });
+  // Prevent unhandled rejections from breaking the chain
+  __scryfallChain = run.catch(() => {});
+  return run;
+}
+
+function __withAcceptHeader(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers || undefined);
+  if (!headers.has("Accept")) headers.set("Accept", DEFAULT_ACCEPT_HEADER);
+  // Do NOT set User-Agent in browsers; keep browser UA intact as per docs.
+  return { ...init, headers };
+}
 // Usage: searchScryfall('o:infect t:creature cmc<=3', { maxCards: 120, unique: 'cards' })
 
 export interface ScryfallCard {
@@ -62,7 +89,7 @@ export async function searchScryfall(
     onProgress,
     onCards,
     signal,
-    throttleMs = 0,
+  throttleMs = 0,
     cache = "default",
     maxRetries = 4,
     backoffBaseMs = 250,
@@ -113,9 +140,10 @@ export async function searchScryfall(
     url: string,
     attempt = 0,
   ): Promise<ScryfallList> {
-    // Optional throttle to avoid bursting
-    if (throttleMs > 0) await delay(throttleMs);
-    const res = await fetch(url, { signal: ctrl.signal, cache });
+    // Respect optional local throttle and global rate limit
+    const spacing = Math.max(0, throttleMs | 0, SCRYFALL_RATE_DELAY_MS);
+    if (spacing > 0) await __scheduleScryfall(spacing);
+    const res = await fetch(url, __withAcceptHeader({ signal: ctrl.signal, cache }));
     if (res.ok) {
       const json = (await res.json()) as ScryfallList | any;
       if (!json || json.object !== "list" || !Array.isArray(json.data))
@@ -286,29 +314,53 @@ export async function fetchScryfallByNames(
   }
   async function runOne(batch: string[]) {
     const body = { identifiers: batch.map((name) => ({ name })) } as any;
-    const res = await fetch("https://api.scryfall.com/cards/collection", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
+    const doFetch = async (attempt = 0): Promise<void> => {
+      // Space requests globally
+      await __scheduleScryfall();
+      const res = await fetch(
+        "https://api.scryfall.com/cards/collection",
+        __withAcceptHeader({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+      );
+      if (res.ok) {
+        const json = (await res.json()) as any;
+        const data = Array.isArray(json?.data)
+          ? (json.data as ScryfallCard[])
+          : [];
+        for (const c of data) indexCardNames(c);
+        if (Array.isArray(json?.not_found)) {
+          for (const nf of json.not_found) {
+            const nm = (nf?.name || "").toString().toLowerCase();
+            if (nm) notFound.add(nm);
+          }
+        }
+        done += batch.length;
+        report();
+        return;
+      }
+      // Retry on 429/5xx with backoff and Retry-After support
+      if (
+        (res.status === 429 || (res.status >= 500 && res.status < 600)) &&
+        attempt < 4
+      ) {
+        const ra = res.headers.get("Retry-After");
+        let waitMs = ra
+          ? Math.max(0, Math.floor(parseFloat(ra) * 1000))
+          : 250 * Math.pow(2, attempt);
+        waitMs += Math.floor(Math.random() * 100);
+        await __delay(waitMs);
+        return doFetch(attempt + 1);
+      }
       const text = await safeText(res);
       throw new Error(
         `Scryfall collection error ${res.status}: ${text || res.statusText}`,
       );
-    }
-    const json = (await res.json()) as any;
-    const data = Array.isArray(json?.data) ? (json.data as ScryfallCard[]) : [];
-    for (const c of data) indexCardNames(c);
-    if (Array.isArray(json?.not_found)) {
-      for (const nf of json.not_found) {
-        const nm = (nf?.name || "").toString().toLowerCase();
-        if (nm) notFound.add(nm);
-      }
-    }
-    done += batch.length;
-    report();
+    };
+    await doFetch();
   }
   async function worker() {
     while (queue.length) {
@@ -335,7 +387,22 @@ export async function fetchScryfallByNames(
         if (!nm) break;
         try {
           const url = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(nm)}`;
-          const res = await fetch(url, { signal: controller.signal });
+          // Space requests globally
+          await __scheduleScryfall();
+          let res = await fetch(url, __withAcceptHeader({ signal: controller.signal }));
+          // Retry on 429/5xx with small backoff; 404 is expected for unknowns
+          let attempt = 0;
+          while (!res.ok && res.status !== 404 && attempt < 4) {
+            const ra = res.headers.get("Retry-After");
+            let waitMs = ra
+              ? Math.max(0, Math.floor(parseFloat(ra) * 1000))
+              : 250 * Math.pow(2, attempt);
+            waitMs += Math.floor(Math.random() * 100);
+            await __delay(waitMs);
+            await __scheduleScryfall();
+            res = await fetch(url, __withAcceptHeader({ signal: controller.signal }));
+            attempt++;
+          }
           if (!res.ok) {
             if (res.status === 404) {
               notFound.add(nm);

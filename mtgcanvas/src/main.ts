@@ -136,8 +136,13 @@ const splashEl = document.getElementById("splash");
   // Defensive shim for a rare Pixi internal race where a resource group briefly contains nulls
   try {
     const anyPIXI: any = PIXI as any;
-    const RG = anyPIXI?.BindGroup || anyPIXI?.resources?.BindGroup || anyPIXI?.Fi;
-    if (RG && RG.prototype && typeof RG.prototype.onResourceChange === "function") {
+    const RG =
+      anyPIXI?.BindGroup || anyPIXI?.resources?.BindGroup || anyPIXI?.Fi;
+    if (
+      RG &&
+      RG.prototype &&
+      typeof RG.prototype.onResourceChange === "function"
+    ) {
       const orig = RG.prototype.onResourceChange;
       RG.prototype.onResourceChange = function (res: any) {
         try {
