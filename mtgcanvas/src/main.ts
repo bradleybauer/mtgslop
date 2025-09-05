@@ -133,6 +133,26 @@ const splashEl = document.getElementById("splash");
     // Prefer WebGL over WebGPU on Linux for stability; can be toggled later if needed
     preference: "webgl" as any,
   });
+  // Defensive shim for a rare Pixi internal race where a resource group briefly contains nulls
+  try {
+    const anyPIXI: any = PIXI as any;
+    const RG = anyPIXI?.BindGroup || anyPIXI?.resources?.BindGroup || anyPIXI?.Fi;
+    if (RG && RG.prototype && typeof RG.prototype.onResourceChange === "function") {
+      const orig = RG.prototype.onResourceChange;
+      RG.prototype.onResourceChange = function (res: any) {
+        try {
+          // If the changed resource was destroyed, null out matching slots and bail safely
+          if (res && res.destroyed && this && this.resources) {
+            const e = this.resources;
+            for (const k in e) if (e[k] === res) e[k] = null;
+            this._dirty = true;
+            return; // don't call orig; avoids _updateKey on null entries
+          }
+        } catch {}
+        return orig.call(this, res);
+      };
+    }
+  } catch {}
   // Auto-detect a conservative GPU texture budget for this device (user override via localStorage: gpuBudgetMB)
   autoConfigureTextureBudget(app.renderer);
   function parseCssHexColor(v: string): number | null {

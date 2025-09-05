@@ -229,15 +229,23 @@ function retainTextureForUrl(url: string, tex: PIXI.Texture) {
   }
 }
 
+function freeTextureGpu(tex: PIXI.Texture | null | undefined) {
+  // Prefer non-destructive unload to avoid emitting `destroyed` on shared resources
+  try {
+    const src: any = (tex as any)?.source;
+    // Pixi v8 TextureSource.unload() frees GPU backing without destroying the resource
+    if (src && typeof src.unload === "function") src.unload();
+  } catch {}
+}
+
 function releaseTextureForUrl(url: string) {
   if (!url) return;
   const entry = liveTexturesByUrl.get(url);
   if (!entry) return;
   entry.refCount = Math.max(0, entry.refCount - 1);
   if (entry.refCount === 0) {
-    try {
-      (entry.tex as any)?.destroy?.(true);
-    } catch {}
+    // Only unload GPU memory; do not destroy Pixi resources to avoid internal nulls in bind groups
+    freeTextureGpu(entry.tex);
     liveTexturesByUrl.delete(url);
   }
 }
@@ -308,9 +316,8 @@ export function clearTextureCaches() {
     while (decodePQ.size() > 0) decodePQ.popMin();
     // Destroy any tracked live textures
     liveTexturesByUrl.forEach((entry, url) => {
-      try {
-        (entry.tex as any)?.destroy?.(true);
-      } catch {}
+  // Free GPU memory but keep resources intact to avoid triggering Pixi internal destroy flow
+  freeTextureGpu(entry.tex);
       liveTexturesByUrl.delete(url);
     });
   } catch {}
