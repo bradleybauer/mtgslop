@@ -3581,6 +3581,18 @@ const splashEl = document.getElementById("splash");
       // After tidying, center the view on the resulting content for clarity
       focusViewOnContent(180);
     });
+    // Remove duplicate card instances by Scryfall ID (keep first, delete the rest)
+    addBtn("De-duplicate Cards", async () => {
+      const seen = new Set<string>();
+      const toDelete: CardSprite[] = [];
+      for (const s of sprites) {
+        const sid = (s as any).__scryfallId as string | undefined;
+        if (!sid) continue; // skip items without a known id
+        if (seen.has(sid)) toDelete.push(s);
+        else seen.add(sid);
+      }
+      if (toDelete.length) await deleteSelectedCardsFast(toDelete);
+    });
     // Auto-Group tools (hold Shift/Alt to include singletons)
     addBtn("Auto-Group by Set", (ev) => {
       autoGroupUngroupedBy("set", {
