@@ -233,6 +233,9 @@ function attachCardInteractions(
     const hadDrag = !!dragState;
     pendingStartLocal = null;
     endDrag(!!dragState);
+    try {
+      (window as any).__mtgActiveCardDrag = null;
+    } catch {}
     if (!hadDrag && preFloatSprites) {
       // No drag occurred; end pre-float elevation cleanly
       for (const cs of preFloatSprites) endDragFloat(cs);
@@ -243,6 +246,9 @@ function attachCardInteractions(
     const hadDrag = !!dragState;
     pendingStartLocal = null;
     endDrag(!!dragState);
+    try {
+      (window as any).__mtgActiveCardDrag = null;
+    } catch {}
     if (!hadDrag && preFloatSprites) {
       for (const cs of preFloatSprites) endDragFloat(cs);
     }
@@ -266,6 +272,10 @@ function attachCardInteractions(
       }
     }
     if (!dragState) return;
+    try {
+      const ids = new Set<number>(dragState.sprites.map((cs) => cs.__id));
+      (window as any).__mtgActiveCardDrag = ids;
+    } catch {}
     const local = world.toLocal(e.global);
     let moved = false;
     const ha: any = (stage as any).hitArea as any;

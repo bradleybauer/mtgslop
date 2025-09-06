@@ -14,6 +14,7 @@ import {
   ensureTexture,
   updateFlipFab,
   updateFloatAndTilt,
+  updateDraggedTopLeft,
   clearTextureCaches,
   purgeTextureUrls,
   getDecodeQueueSize,
@@ -1617,6 +1618,16 @@ const splashEl = document.getElementById("splash");
         rows.push(
           `<div><span style="font-weight:600;">P/T:</span> ${card.power}/${card.toughness}</div>`,
         );
+      // Year (first printing). Start with this printing's year, refine async.
+      {
+        const curYear = card.released_at
+          ? new Date(card.released_at).getUTCFullYear()
+          : null;
+        const yrHtml = `<span id="cip-first-year" data-oracle="${encodeURIComponent(String((card as any).oracle_id || ""))}">${curYear != null ? curYear : "—"}</span>`;
+        rows.push(
+          `<div><span style=\"font-weight:600;\">Year:</span> ${yrHtml}</div>`,
+        );
+      }
       // Color identity as icons
       if (Array.isArray(card.color_identity) && card.color_identity.length)
         rows.push(
@@ -1659,6 +1670,15 @@ const splashEl = document.getElementById("splash");
       metaEl.innerHTML = rows.join("");
       attachManaIconFallbacks(metaEl);
       attachSetIconFallbacks(metaEl);
+      // Resolve earliest print year asynchronously
+      const yearSpan = metaEl.querySelector("#cip-first-year") as
+        | HTMLSpanElement
+        | null;
+      if (yearSpan) {
+        fetchFirstPrintYear(card).then((yr) => {
+          if (yr != null) yearSpan.textContent = String(yr);
+        });
+      }
     }
     // Defer heavy details (oracle text and/or faces content) to next frame to avoid blocking selection.
     requestAnimationFrame(() => {
@@ -1767,6 +1787,84 @@ const splashEl = document.getElementById("splash");
   }
   // Load persisted cache on startup
   loadSetIconCacheFromStorage();
+
+  // --- First printing year resolver (per oracle_id) ---
+  const FIRST_YEAR_CACHE_KEY = "mtgcanvas.firstYearCache.v1";
+  const __firstYearCache: Record<string, number> = Object.create(null);
+  const __firstYearFetches: Record<string, Promise<number | null>> =
+    Object.create(null);
+  (function loadFirstYearCacheFromStorage() {
+    try {
+      const raw = localStorage.getItem(FIRST_YEAR_CACHE_KEY);
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj)) {
+          const yr = typeof v === "number" ? v : parseInt(String(v) || "", 10);
+          if (k && !isNaN(yr)) __firstYearCache[k] = yr;
+        }
+      }
+    } catch {}
+  })();
+  function saveFirstYearCacheToStorageSoon() {
+    // Debounce writes
+    if ((saveFirstYearCacheToStorageSoon as any)._t) return;
+    (saveFirstYearCacheToStorageSoon as any)._t = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          FIRST_YEAR_CACHE_KEY,
+          JSON.stringify(__firstYearCache),
+        );
+      } catch {}
+      (saveFirstYearCacheToStorageSoon as any)._t = null;
+    }, 250);
+  }
+  async function fetchFirstPrintYear(card: any): Promise<number | null> {
+    const oracleId = String((card && (card as any).oracle_id) || "");
+    if (oracleId && __firstYearCache[oracleId] != null)
+      return __firstYearCache[oracleId];
+    const key = oracleId || String(card?.name || "");
+    if (Object.prototype.hasOwnProperty.call(__firstYearFetches, key))
+      return __firstYearFetches[key];
+    __firstYearFetches[key] = (async () => {
+      let url = String((card as any)?.prints_search_uri || "");
+      if (url) {
+        try {
+          const u = new URL(url);
+          u.searchParams.set("order", "released");
+          u.searchParams.set("dir", "asc");
+          u.searchParams.set("unique", "prints");
+          url = u.toString();
+        } catch {}
+      } else if (oracleId) {
+        url = `https://api.scryfall.com/cards/search?q=oracleid:${encodeURIComponent(oracleId)}&order=released&dir=asc&unique=prints`;
+      } else if (card?.name) {
+        url = `https://api.scryfall.com/cards/search?q=%21${encodeURIComponent(String(card.name))}&order=released&dir=asc&unique=prints`;
+      } else {
+        return null;
+      }
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        if (!res.ok) return null;
+        const json: any = await res.json();
+        const data: any[] = Array.isArray(json?.data) ? json.data : [];
+        const first = data.length ? data[0] : null;
+        const y = first?.released_at
+          ? new Date(first.released_at).getUTCFullYear()
+          : card?.released_at
+            ? new Date(card.released_at).getUTCFullYear()
+            : null;
+        if (y != null && oracleId) {
+          __firstYearCache[oracleId] = y;
+          saveFirstYearCacheToStorageSoon();
+        }
+        return y ?? null;
+      } catch {
+        return null;
+      }
+    })();
+    return __firstYearFetches[key];
+  }
 
   async function fetchSetIconUri(code: string): Promise<string | null> {
     const k = String(code || "").toLowerCase();
@@ -2357,7 +2455,7 @@ const splashEl = document.getElementById("splash");
   }
 
   function attachGroupInteractions(gv: GroupVisual) {
-    let drag = false;
+  let drag = false;
     let maybeDrag = false;
     let startLocal: { x: number; y: number } | null = null;
     let dx = 0;
@@ -2499,6 +2597,12 @@ const splashEl = document.getElementById("splash");
           drag = true;
           maybeDrag = false;
           beginGroupDragZRaise(gv);
+          // Mark active group-drag set for edge auto-pan
+          try {
+            const ids = new Set<number>(SelectionStore.getGroups());
+            ids.add(gv.id);
+            (window as any).__mtgActiveGroupDrag = ids;
+          } catch {}
           // Build member offsets (primary + any other selected groups) from sprite references
           memberOffsets = [...gv.items]
             .map((s) => ({ sprite: s, ox: s.x - g.x, oy: s.y - g.y }))
@@ -2570,6 +2674,10 @@ const splashEl = document.getElementById("splash");
       maybeDrag = false;
       startLocal = null;
       endGroupDragZRestore();
+      // Clear active group-drag marker
+      try {
+        (window as any).__mtgActiveGroupDrag = null;
+      } catch {}
       // Snap and re-clamp to bounds the primary group
       const p = clampGroupXY(gv, snap(g.x), snap(g.y));
       g.x = p.x;
@@ -5387,6 +5495,105 @@ const splashEl = document.getElementById("splash");
     }
     // Update any active drag float/tilt transforms
     updateFloatAndTilt(sprites, dt);
+    // Auto-pan when dragging near viewport edges
+    try {
+      const draggingCards: Set<number> | null = (window as any)
+        .__mtgActiveCardDrag || null;
+      const draggingGroups: Set<number> | null = (window as any)
+        .__mtgActiveGroupDrag || null;
+      if (draggingCards || draggingGroups) {
+        const vw = app.renderer.width;
+        const vh = app.renderer.height;
+        const mx = app.renderer.events.pointer.global.x;
+        const my = app.renderer.events.pointer.global.y;
+        const margin = 36; // px from edge to start panning
+        const maxSpeed = 22; // px per frame at 60fps
+        let panX = 0;
+        let panY = 0;
+        if (mx < margin) panX = ((margin - mx) / margin) * maxSpeed; // move world right => viewport left
+        else if (mx > vw - margin)
+          panX = -((mx - (vw - margin)) / margin) * maxSpeed; // move world left => viewport right
+        if (my < margin) panY = ((margin - my) / margin) * maxSpeed; // move world down => viewport up
+        else if (my > vh - margin)
+          panY = -((my - (vh - margin)) / margin) * maxSpeed; // move world up => viewport down
+        if (panX !== 0 || panY !== 0) {
+          // Pan the camera in screen space; use effective motion after clamp
+          const preX = world.position.x;
+          const preY = world.position.y;
+          camera.panBy(panX, panY);
+          const effPanX = world.position.x - preX;
+          const effPanY = world.position.y - preY;
+          // Move the active dragged content by the opposite world delta to keep under cursor
+          const inv = 1 / (world.scale.x || 1);
+          const dxWorld = -effPanX * inv;
+          const dyWorld = -effPanY * inv;
+          if (draggingCards) {
+            const idSet = draggingCards;
+            const moved: CardSprite[] = [];
+            for (const s of sprites) {
+              if (!idSet.has(s.__id)) continue;
+              const nx = s.x + dxWorld;
+              const ny = s.y + dyWorld;
+              if ((s as any).__tiltActive) {
+                const tlx = ((s as any).__tlx ?? s.x) + dxWorld;
+                const tly = ((s as any).__tly ?? s.y) + dyWorld;
+                // Drive via TL helper to keep transform coherent
+                updateDraggedTopLeft(s as any, tlx, tly);
+              } else {
+                s.x = nx;
+                s.y = ny;
+              }
+              moved.push(s);
+            }
+            if (moved.length) {
+              const items: SpatialItem[] = [] as any;
+              for (const ms of moved) {
+                const x = (ms as any).__tiltActive
+                  ? ((ms as any).__tlx ?? ms.x)
+                  : ms.x;
+                const y = (ms as any).__tiltActive
+                  ? ((ms as any).__tly ?? ms.y)
+                  : ms.y;
+                items.push({
+                  sprite: ms,
+                  minX: x,
+                  minY: y,
+                  maxX: x + CARD_W_GLOBAL,
+                  maxY: y + CARD_H_GLOBAL,
+                });
+              }
+              if (items.length) spatial.bulkUpdate(items);
+            }
+          }
+          if (draggingGroups) {
+            // Nudge entire selected groups by same world delta
+            draggingGroups.forEach((gid: number) => {
+              const g = groups.get(gid);
+              if (!g) return;
+              g.gfx.x += dxWorld;
+              g.gfx.y += dyWorld;
+              // Move members accordingly
+              g.items.forEach((sp: CardSprite) => {
+                sp.x += dxWorld;
+                sp.y += dyWorld;
+              });
+            });
+            // Spatial updates for all sprites (could be optimized to only selected)
+            const items: SpatialItem[] = [] as any;
+            for (const ms of sprites) {
+              items.push({
+                sprite: ms,
+                minX: ms.x,
+                minY: ms.y,
+                maxX: ms.x + CARD_W_GLOBAL,
+                maxY: ms.y + CARD_H_GLOBAL,
+              });
+            }
+            if (items.length) spatial.bulkUpdate(items);
+          }
+        }
+      }
+    } catch {}
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
