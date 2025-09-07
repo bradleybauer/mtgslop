@@ -275,6 +275,113 @@ const splashEl = document.getElementById("splash");
     lastBounds = { ...b };
   }
 
+  // Faint, theme-aware background grid rendered in screen space (aligned to world)
+  let gridGfx: PIXI.Graphics | null = null;
+  let gridDirty = true;
+  let lastGrid:
+    | { left: number; top: number; right: number; bottom: number; scale: number }
+    | null = null;
+  function ensureGridGfx() {
+    if (gridGfx) return gridGfx;
+    gridGfx = new PIXI.Graphics();
+    gridGfx.eventMode = "none";
+    // Put behind the world container so cards/groups draw over it
+    (gridGfx as any).zIndex = -2000000;
+    app.stage.addChild(gridGfx);
+    return gridGfx;
+  }
+  function drawGridForView(view: {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  }) {
+    const s = world.scale.x || 1;
+    // Always redraw on call; cheap enough and avoids subtle desync while zooming
+    ensureGridGfx();
+    const g = gridGfx!;
+    g.clear();
+    // Theme-aware color pulled from panel border, with faint alpha
+    const col = Colors.panelBorder();
+    const majorAlpha = 0.14;
+    const minorAlpha = 0.05;
+    // Screen-space step size
+    const stepPx = GRID_SIZE * s;
+    const majorEvery = 8;
+    const majorStepPx = stepPx * majorEvery;
+    const vw = app.renderer.width;
+    const vh = app.renderer.height;
+    // Estimate count to decide if we draw minors; hysteresis to avoid flicker near thresholds
+    const estMinorCount = Math.ceil(vw / stepPx) + Math.ceil(vh / stepPx);
+    const MINOR_ON = 2400;
+    const MINOR_OFF = 3200;
+    const state: any = (drawGridForView as any);
+    if (state._minorEnabled === undefined) state._minorEnabled = true;
+    if (state._minorEnabled && estMinorCount > MINOR_OFF) state._minorEnabled = false;
+    else if (!state._minorEnabled && estMinorCount < MINOR_ON) state._minorEnabled = true;
+    const drawMinor = !!state._minorEnabled;
+    // Start indices so that world x=0/y=0 are considered k=0 lines; major when k % 8 === 0
+    const kxStart = Math.ceil((-world.position.x) / stepPx) - 1; // -1 pad to cover left edge
+    const kyStart = Math.ceil((-world.position.y) / stepPx) - 1;
+    const kxEnd = Math.floor((vw - world.position.x) / stepPx) + 1;
+    const kyEnd = Math.floor((vh - world.position.y) / stepPx) + 1;
+    const lw = 1; // 1px stroke in screen space
+    // Minor lines
+    if (drawMinor) {
+      let anyMinor = false;
+      // Vertical minors
+      for (let k = kxStart; k <= kxEnd; k++) {
+        if (k % majorEvery === 0) continue;
+        const sx = world.position.x + k * stepPx;
+        const xx = sx; // no pixel rounding to avoid jitter during zoom
+        if (xx < -1 || xx > vw + 1) continue;
+        g.moveTo(xx, 0);
+        g.lineTo(xx, vh);
+        anyMinor = true;
+      }
+      // Horizontal minors
+      for (let k = kyStart; k <= kyEnd; k++) {
+        if (k % majorEvery === 0) continue;
+        const sy = world.position.y + k * stepPx;
+        const yy = sy; // avoid pixel rounding to reduce perceptual snapping
+        if (yy < -1 || yy > vh + 1) continue;
+        g.moveTo(0, yy);
+        g.lineTo(vw, yy);
+        anyMinor = true;
+      }
+      if (anyMinor) g.stroke({ color: col as any, width: lw, alpha: minorAlpha });
+    }
+    // Major lines
+    {
+      let anyMajor = false;
+      for (let k = kxStart; k <= kxEnd; k++) {
+        if (k % majorEvery !== 0) continue;
+        const sx = world.position.x + k * stepPx;
+        const xx = sx;
+        if (xx < -1 || xx > vw + 1) continue;
+        g.moveTo(xx, 0);
+        g.lineTo(xx, vh);
+        anyMajor = true;
+      }
+      for (let k = kyStart; k <= kyEnd; k++) {
+        if (k % majorEvery !== 0) continue;
+        const sy = world.position.y + k * stepPx;
+        const yy = sy;
+        if (yy < -1 || yy > vh + 1) continue;
+        g.moveTo(0, yy);
+        g.lineTo(vw, yy);
+        anyMajor = true;
+      }
+      if (anyMajor) g.stroke({ color: col as any, width: lw, alpha: majorAlpha });
+    }
+    lastGrid = { left: view.left, top: view.top, right: view.right, bottom: view.bottom, scale: s };
+    gridDirty = false;
+  }
+  // Redraw grid on theme change (color/alpha may differ visually)
+  registerThemeListener(() => {
+    gridDirty = true;
+  });
+
   app.stage.sortableChildren = true;
   // Initialize current project and derive per-project persistence keys
   const __projMeta = ensureInitialProject();
@@ -441,7 +548,10 @@ const splashEl = document.getElementById("splash");
           const res = deleteProject(m.id);
           // If we deleted the current project, ensure we switch and reload view
           if (m.id === currentProjectId && res?.nextProjectId) {
-            await switchProject(res.nextProjectId);
+            await switchProject(res.nextProjectId, {
+              skipFlush: true,
+              empty: !!res.createdNew,
+            });
           } else {
             renderList();
           }
@@ -459,12 +569,17 @@ const splashEl = document.getElementById("splash");
       }
     }
     // No search box; just render full list
-    async function switchProject(id: string, opts?: { empty?: boolean }) {
-      // Persist current project immediately
-      try {
-        persistence.flushGroups();
-        persistence.flushPositions();
-      } catch {}
+    async function switchProject(
+      id: string,
+      opts?: { empty?: boolean; skipFlush?: boolean },
+    ) {
+      // Persist current project immediately unless explicitly skipping (e.g., after delete)
+      if (!opts?.skipFlush) {
+        try {
+          persistence.flushGroups();
+          persistence.flushPositions();
+        } catch {}
+      }
       // Swap keys and set current id
       setCurrentProjectId(id);
       currentProjectId = id;
@@ -5827,6 +5942,10 @@ const splashEl = document.getElementById("splash");
       const right = left + vw * inv;
       const bottom = top + vh * inv;
       (window as any).__mtgView = { left, top, right, bottom };
+      // Update faint background grid using current view
+      try {
+        drawGridForView({ left, top, right, bottom });
+      } catch {}
     }
     // Throttle texture checks; during steady state skip alternate frames, and during window resize skip most work
     {

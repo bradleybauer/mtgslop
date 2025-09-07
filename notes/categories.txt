@@ -1,61 +1,23 @@
-Blink
+# Poison
+# Mill
+# Recursion
+# Sac
+# Theft
+# Flicker
+# Tokens
+# Counters
+# Landfall
+# AltWin
 
-Bounce
+# Protection
+# Lifegain
+# Ramp
+# Removal
+# Stax
+# Tutor
+# Untap
+# Copy
+# Finisher
+# Draw
 
-Burn
-
-Clones
-
-Copy
-
-Counters
-
-Creature
-
-Draw
-
-Enchantment
-
-Evasion
-
-Finisher
-
-Infect
-
-Instant
-
-Land
-
-Landfall
-
-Lifegain
-
-Mill
-
-Planeswalker
-
-Proliferate
-
-Protection
-
-Pump
-
-Ramp
-
-Recursion
-
-Removal
-
-Sac Outlet
-
-Sorcery
-
-Stax
-
-Theft
-
-Tokens
-
-Tutor
-
-Untap
+urza's workshop
