@@ -5900,8 +5900,69 @@ const splashEl = document.getElementById("splash");
     timer.end({ cards: cards.length });
   }
 
-  // Camera animation update loop (no animations scheduled yet; placeholder for future animateTo usage)
+  // Camera animation/render loop with idle-aware throttling
   let last = performance.now();
+  let lastActiveAt = last;
+  let isIdle = false;
+  function wake(reason?: string) {
+    // Resume ticker and reset timing when any activity happens
+    if (isIdle) {
+      isIdle = false;
+      last = performance.now();
+      try {
+        app.ticker.start?.();
+      } catch {}
+    }
+    lastActiveAt = performance.now();
+    (window as any).__mtgIdleState = { idle: isIdle, reason: reason || "wake" };
+  }
+  function maybeSleep(now: number) {
+    // Consider the app idle when camera is fully settled, no drags, and no resize activity
+    const draggingCards: Set<number> | null =
+      (window as any).__mtgActiveCardDrag || null;
+    const draggingGroups: Set<number> | null =
+      (window as any).__mtgActiveGroupDrag || null;
+    const resizing = !!(window as any).__isResizing;
+    const active =
+      camera.isAnimating() ||
+      camera.isPanning() ||
+      camera.getSpeed() > 0.02 ||
+      draggingCards != null ||
+      draggingGroups != null ||
+      resizing;
+    if (active) {
+      lastActiveAt = now;
+      return;
+    }
+    // After a short quiet period, stop the ticker entirely (WebGL canvas will keep last frame)
+    if (!isIdle && now - lastActiveAt > 800) {
+      isIdle = true;
+      (window as any).__mtgIdleState = { idle: true, since: now };
+      try {
+        app.ticker.stop?.();
+      } catch {}
+    }
+  }
+  // Wake the ticker on any user input or page visibility
+  const onUserActivity = () => wake("input");
+  window.addEventListener("pointerdown", onUserActivity, { capture: true });
+  // window.addEventListener("pointermove", onUserActivity, { capture: true });
+  window.addEventListener("wheel", onUserActivity, {
+    passive: true,
+    capture: true,
+  });
+  window.addEventListener("keydown", onUserActivity, { capture: true });
+  window.addEventListener("resize", () => wake("resize"));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      try {
+        app.ticker.stop?.();
+      } catch {}
+      isIdle = true;
+    } else {
+      wake("visible");
+    }
+  });
   // Keep simple center in world coords for hi-res scoring to avoid per-sprite toGlobal
   // app.ticker.maxFPS=30;
   let lastWorldPosX = world.position.x;
@@ -5951,8 +6012,16 @@ const splashEl = document.getElementById("splash");
         }
       }
     }
-    // Update any active drag float/tilt transforms
-    updateFloatAndTilt(sprites, dt);
+    // Update any active drag float/tilt transforms (only needed during drags)
+    {
+      const draggingCards: Set<number> | null =
+        (window as any).__mtgActiveCardDrag || null;
+      const draggingGroups: Set<number> | null =
+        (window as any).__mtgActiveGroupDrag || null;
+      if (draggingCards || draggingGroups) {
+        updateFloatAndTilt(sprites, dt);
+      }
+    }
     // Auto-pan when dragging near viewport edges
     try {
       const draggingCards: Set<number> | null =
@@ -6114,6 +6183,8 @@ const splashEl = document.getElementById("splash");
       });
     }
     updatePerf();
+    // If nothing is moving or being interacted with, stop the ticker to save CPU/GPU
+    maybeSleep(now);
   });
 
   window.addEventListener("beforeunload", () => {
