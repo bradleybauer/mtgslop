@@ -76,7 +76,6 @@ import {
 import { disableSpellAndGrammarGlobally } from "./ui/inputs";
 import {
   LS_GROUPS_KEY as GROUPS_KEY,
-  LS_POSITIONS_KEY as POSITIONS_KEY,
   createLocalPersistence,
 } from "./services/persistence";
 // createSprite is not needed directly; use bulk factory which calls it internally
@@ -91,6 +90,18 @@ import {
 } from "./config/dimensions";
 import { snap } from "./utils/snap";
 import { installNetworkActivitySpinner } from "./ui/networkSpinner";
+import {
+  ensureInitialProject,
+  getCurrentProjectMeta,
+  listProjects,
+  setCurrentProjectId,
+  updateProjectName,
+  touchProjectUpdated,
+  getProjectKeysFor,
+  createProject,
+  deleteProject,
+  duplicateProject,
+} from "./services/projects";
 
 // Global hard cap on number of card sprites in the scene
 const MAX_CARD_SPRITES = 40000;
@@ -265,25 +276,305 @@ const splashEl = document.getElementById("splash");
   }
 
   app.stage.sortableChildren = true;
+  // Initialize current project and derive per-project persistence keys
+  const __projMeta = ensureInitialProject();
+  let __projKeys = getProjectKeysFor(__projMeta.id);
+  // Track current project id early so UI hooks can reference it
+  let currentProjectId = __projMeta.id;
   let htmlBanner: HTMLDivElement | null = null;
   function ensureHtmlBanner() {
     if (htmlBanner) return htmlBanner;
     const el = document.createElement("div");
     el.id = "title-banner";
-    el.className = "title-banner ui-panel"; // reuse panel look/vars for consistency
-    el.textContent = "MTG Slop";
-    // Do not intercept mouse/touch so canvas interactions work underneath
-    el.style.pointerEvents = "none";
-    // Ensure fixed placement even before theme CSS is injected
+    el.className = "title-banner ui-panel"; // themed surface
+    // Ensure it can receive hover/focus for the project menu
+    el.style.pointerEvents = "auto";
     el.style.position = "fixed";
     el.style.left = "calc(16px * var(--ui-scale))";
     el.style.top = "calc(12px * var(--ui-scale))";
     el.style.zIndex = "10050";
+
+    // Banner head (title + caret)
+    const head = document.createElement("div");
+    head.className = "banner-head";
+    const title = document.createElement("div");
+    title.className = "app-title";
+    title.textContent = "MTG Slop";
+    head.appendChild(title);
+    el.appendChild(head);
+
+    // Project hover menu (CSS-expanded)
+    const menu = document.createElement("div");
+    menu.className = "project-menu";
+    // (Toolbar removed) – New button will sit in the name row
+    // Project Name row
+    const rowName = document.createElement("div");
+    rowName.className = "row";
+    const nameLabel = document.createElement("label");
+    nameLabel.textContent = "Current Project";
+    nameLabel.setAttribute("for", "project-name");
+    const nameInput = document.createElement("input");
+    nameInput.id = "project-name";
+    nameInput.className = "ui-input";
+    nameInput.placeholder = "Untitled Project";
+    nameInput.autocomplete = "off";
+    nameInput.spellcheck = false as any;
+    nameInput.inputMode = "text" as any;
+    rowName.appendChild(nameLabel);
+    rowName.appendChild(nameInput);
+    // Spacer + New button on the same row
+    const rowSpacer = document.createElement("div");
+    rowSpacer.className = "spacer";
+    const newBtn = document.createElement("button");
+    newBtn.className = "ui-btn";
+    newBtn.id = "project-new-btn";
+    newBtn.textContent = "New";
+    newBtn.title = "Create a new project";
+    rowName.appendChild(rowSpacer);
+    rowName.appendChild(newBtn);
+    menu.appendChild(rowName);
+    // Projects list section (clickable items will populate here)
+    const projectsLabelRow = document.createElement("div");
+    projectsLabelRow.className = "row";
+    const projectsLabel = document.createElement("label");
+    projectsLabel.textContent = "Projects";
+    projectsLabelRow.appendChild(projectsLabel);
+    menu.appendChild(projectsLabelRow);
+    const list = document.createElement("div");
+    list.className = "project-list";
+    list.id = "project-list";
+    menu.appendChild(list);
+    el.appendChild(menu);
+
     document.body.appendChild(el);
     htmlBanner = el;
     return el;
   }
   ensureHtmlBanner();
+  // Optional hook for UI list refresh (assigned inside initProjectUI)
+  let __refreshProjectList: (() => void) | null = null;
+  // Initialize Project UI: name field and list population
+  (function initProjectUI() {
+    const banner = document.getElementById("title-banner");
+    const nameInput = banner?.querySelector(
+      "#project-name",
+    ) as HTMLInputElement | null;
+    const listEl = banner?.querySelector(
+      "#project-list",
+    ) as HTMLDivElement | null;
+    const newBtnEl = banner?.querySelector(
+      "#project-new-btn",
+    ) as HTMLButtonElement | null;
+    // Seed current name
+    try {
+      if (nameInput) nameInput.value = getCurrentProjectMeta().name || "";
+    } catch {}
+    // Debounced rename
+    let rnTimer: any = null;
+    nameInput?.addEventListener("input", () => {
+      const nm = (nameInput.value || "").trim();
+      if (rnTimer) clearTimeout(rnTimer);
+      rnTimer = setTimeout(() => {
+        updateProjectName(currentProjectId, nm || "Untitled Project");
+        renderList();
+      }, 250);
+    });
+    // New project button row
+    newBtnEl &&
+      (newBtnEl.onclick = async () => {
+        const meta = createProject();
+        await switchProject(meta.id, { empty: true });
+        try {
+          nameInput?.focus();
+          (nameInput as HTMLInputElement | null)?.select?.();
+        } catch {}
+      });
+    function renderList() {
+      if (!listEl) return;
+      listEl.innerHTML = "";
+      const metas = listProjects();
+      for (const m of metas) {
+        const item = document.createElement("div");
+        item.className = "project-item";
+        const left = document.createElement("div");
+        left.className = "left";
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = m.name || "Untitled Project";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `Updated ${new Date(m.updatedAt).toLocaleString()}`;
+        left.appendChild(title);
+        left.appendChild(meta);
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const dupBtn = document.createElement("button");
+        dupBtn.className = "ui-pill";
+        dupBtn.textContent = "Duplicate";
+        dupBtn.title = "Duplicate project";
+        dupBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const copy = duplicateProject(m.id);
+          if (copy) {
+            await switchProject(copy.id);
+            try {
+              nameInput?.focus();
+              nameInput?.select?.();
+            } catch {}
+          }
+        };
+        // Expose list refresh for save routines to update timestamps live
+        __refreshProjectList = () => {
+          try {
+            renderList();
+          } catch {}
+        };
+        const delBtn = document.createElement("button");
+        delBtn.className = "ui-pill danger";
+        delBtn.textContent = "Delete";
+        delBtn.title = "Delete project";
+        delBtn.onclick = async (e) => {
+          e.stopPropagation();
+          // Simple confirmation to avoid accidental loss
+          if (!confirm(`Delete project "${m.name}"? This can’t be undone.`))
+            return;
+          const res = deleteProject(m.id);
+          // If we deleted the current project, ensure we switch and reload view
+          if (m.id === currentProjectId && res?.nextProjectId) {
+            await switchProject(res.nextProjectId);
+          } else {
+            renderList();
+          }
+        };
+        actions.appendChild(dupBtn);
+        actions.appendChild(delBtn);
+        item.appendChild(left);
+        item.appendChild(actions);
+        item.onclick = () => {
+          if (m.id !== currentProjectId) switchProject(m.id);
+        };
+        if (m.id === currentProjectId)
+          item.setAttribute("data-current", "true");
+        listEl.appendChild(item);
+      }
+    }
+    // No search box; just render full list
+    async function switchProject(id: string, opts?: { empty?: boolean }) {
+      // Persist current project immediately
+      try {
+        persistence.flushGroups();
+        persistence.flushPositions();
+      } catch {}
+      // Swap keys and set current id
+      setCurrentProjectId(id);
+      currentProjectId = id;
+      __projKeys = getProjectKeysFor(id);
+      LS_KEY = __projKeys.positionsKey;
+      LS_GROUPS_KEY = __projKeys.groupsKey;
+      // Recreate persistence with new keys
+      persistence = createLocalPersistence({
+        getSprites: () => sprites,
+        getGroups: () => groups,
+        spatial,
+        getCanvasBounds,
+        cardW: CARD_W_GLOBAL,
+        cardH: CARD_H_GLOBAL,
+        positionsKey: LS_KEY,
+        groupsKey: LS_GROUPS_KEY,
+      });
+      // Clear scene & memory state
+      SUPPRESS_SAVES = true;
+      try {
+        SelectionStore.clear();
+        // Destroy sprites
+        for (const s of sprites) {
+          try {
+            spatial.removeBySprite(s);
+          } catch {}
+          try {
+            s.destroy();
+          } catch {}
+        }
+        sprites.length = 0;
+        // Destroy groups
+        groups.forEach((gv) => {
+          try {
+            gv.gfx.destroy({ children: true });
+          } catch {}
+        });
+        groups.clear();
+        // Ensure world container is emptied
+        try {
+          world.removeChildren().forEach((c) => {
+            try {
+              c.destroy({ children: true });
+            } catch {}
+          });
+        } catch {}
+        // Clear spatial index entirely (defensive)
+        try {
+          spatial.clear();
+        } catch {}
+        // Clear in-memory repos backing state to avoid growth
+        try {
+          const instIds = (InstancesRepo.list() || [])
+            .map((r: any) => r.id)
+            .filter((n: any) => typeof n === "number");
+          if (instIds.length) InstancesRepo.deleteMany(instIds);
+        } catch {}
+        try {
+          const grpIds = (GroupsRepo.list() || [])
+            .map((g: any) => g.id)
+            .filter((n: any) => typeof n === "number");
+          if (grpIds.length) GroupsRepo.deleteMany(grpIds);
+        } catch {}
+        // Drop decoded textures to release GPU memory promptly; keep IDB caches intact
+        try {
+          clearTextureCaches();
+        } catch {}
+        // Also drop in-memory image object URLs and blobs so the tab memory shrinks between sessions (IDB persists)
+        try {
+          clearSessionCaches();
+        } catch {}
+      } finally {
+        SUPPRESS_SAVES = false;
+      }
+      // Load positions/groups for new project
+      memoryGroupsData = (function () {
+        try {
+          const raw = localStorage.getItem(LS_GROUPS_KEY);
+          return raw ? JSON.parse(raw) : null;
+        } catch {
+          return null;
+        }
+      })();
+      groupsRestored = false;
+      // Give the browser a tick to GC before rehydrating a heavy project
+      await new Promise((r) => setTimeout(r, 0));
+      // Rehydrate cards from IDB then apply positions
+      if (!opts?.empty) {
+        await rehydrateImportedCards();
+        persistence.applyStoredPositions();
+      }
+      restoreMemoryGroups();
+      // Focus camera on the new project's content
+      try {
+        (focusViewOnContent as any)?.(240);
+      } catch {
+        /* no-op */
+      }
+      // Update UI name and list
+      try {
+        if (nameInput) nameInput.value = getCurrentProjectMeta().name || "";
+      } catch {}
+      renderList();
+      // Ensure global helpers now reference the current sprite list only
+      try {
+        (window as any).__mtgGetSprites = () => sprites;
+      } catch {}
+    }
+    renderList();
+  })();
 
   // Controls helper overlay (on-canvas) — shown whenever there are zero cards & zero groups
   let ctrlsOverlay: PIXI.Container | null = null;
@@ -310,6 +601,17 @@ const splashEl = document.getElementById("splash");
       fontSize: 30,
       lineHeight: 28,
     } as any;
+    // Intro message for empty projects, placed before the Controls title
+    const intro = new PIXI.Text({
+      text: "Your project is empty — press Ctrl+I to import cards and get started.",
+      style: {
+        fill: theme.fg as any,
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontWeight: "600" as any,
+        fontSize: 34,
+        lineHeight: 30,
+      },
+    });
     const title = new PIXI.Text({
       text: "Controls",
       style: {
@@ -333,8 +635,8 @@ const splashEl = document.getElementById("splash");
       }),
     ];
     // Measure
-    let maxW = title.width;
-    let totalH = title.height;
+    let maxW = Math.max(intro.width, title.width);
+    let totalH = intro.height + lineGap + title.height;
     for (const t of lines) {
       if (t.width > maxW) maxW = t.width;
       totalH += lineGap + t.height;
@@ -352,6 +654,10 @@ const splashEl = document.getElementById("splash");
     layer.addChild(bg);
     // Position text
     let y = padY;
+    intro.x = padX;
+    intro.y = y;
+    layer.addChild(intro);
+    y += intro.height + lineGap;
     title.x = padX;
     title.y = y;
     layer.addChild(title);
@@ -399,10 +705,8 @@ const splashEl = document.getElementById("splash");
   }
   // Debounced window resize handling: coalesce rapid events to avoid thrash
   let __resizeTimer: number | null = null;
-  let __isResizing = false;
   (window as any).__isResizing = false;
   function scheduleResizeUpdate() {
-    __isResizing = true;
     (window as any).__isResizing = true;
     if (__resizeTimer) clearTimeout(__resizeTimer);
     __resizeTimer = window.setTimeout(() => {
@@ -413,8 +717,7 @@ const splashEl = document.getElementById("splash");
       const cam: any = (window as any).__mtgCamera;
       if (cam && ha && typeof ha.x === "number")
         cam.setWorldBounds({ x: ha.x, y: ha.y, w: ha.width, h: ha.height });
-    __isResizing = false;
-    (window as any).__isResizing = false;
+      (window as any).__isResizing = false;
       __resizeTimer = null;
     }, 120);
   }
@@ -602,24 +905,32 @@ const splashEl = document.getElementById("splash");
       __tm.end();
     }
   }
-  const LS_KEY = POSITIONS_KEY;
-  const LS_GROUPS_KEY = GROUPS_KEY;
+  // Use per-project keys for local persistence
+  let LS_KEY = __projKeys.positionsKey;
+  let LS_GROUPS_KEY = __projKeys.groupsKey;
   // Suppress any local save side effects (used when clearing data to avoid races that re-save)
   let SUPPRESS_SAVES = false;
   let memoryGroupsData: any = null;
   let groupsRestored = false;
   {
-    const raw = localStorage.getItem(LS_GROUPS_KEY);
-    if (raw) memoryGroupsData = JSON.parse(raw);
+    let raw = localStorage.getItem(LS_GROUPS_KEY);
+    if (!raw) raw = localStorage.getItem(GROUPS_KEY as any);
+    if (raw) {
+      try {
+        memoryGroupsData = JSON.parse(raw);
+      } catch {}
+    }
   }
   // (index-based pre-parse removed; id-based restore applies in applyStoredPositionsMemory)
-  const persistence = createLocalPersistence({
+  let persistence = createLocalPersistence({
     getSprites: () => sprites,
     getGroups: () => groups,
     spatial,
     getCanvasBounds,
     cardW: CARD_W_GLOBAL,
     cardH: CARD_H_GLOBAL,
+    positionsKey: LS_KEY,
+    groupsKey: LS_GROUPS_KEY,
   });
   (window as any).__mtgFlushPositions = () => persistence.flushPositions();
   function applyStoredPositionsMemory() {
@@ -1129,12 +1440,25 @@ const splashEl = document.getElementById("splash");
   }
   // Memory mode group persistence helpers
   let lsGroupsTimer: any = null;
-  function scheduleGroupSave() {
+  let __groupSaveTouchFlag = false;
+  function scheduleGroupSave(opts?: { touch?: boolean }) {
     if (SUPPRESS_SAVES) return;
     if (lsGroupsTimer) return;
+    // Default to touching updatedAt unless explicitly disabled
+    __groupSaveTouchFlag = opts?.touch !== false;
     lsGroupsTimer = setTimeout(() => {
       lsGroupsTimer = null;
       persistence.flushGroups();
+      // Update project recency only when requested (real edits)
+      if (__groupSaveTouchFlag) {
+        try {
+          touchProjectUpdated(currentProjectId);
+        } catch {}
+        try {
+          __refreshProjectList?.();
+        } catch {}
+      }
+      __groupSaveTouchFlag = false;
     }, 400);
   }
   function restoreMemoryGroups() {
@@ -1206,7 +1530,8 @@ const splashEl = document.getElementById("splash");
     (GroupsRepo as any).ensureNextId &&
       (GroupsRepo as any).ensureNextId(maxId + 1);
     timer.end({ groups: groups.size });
-    scheduleGroupSave();
+    // Do not bump recency during restore
+    scheduleGroupSave({ touch: false });
     updateEmptyStateOverlay();
   }
   // Rehydrate persisted groups
@@ -1671,9 +1996,9 @@ const splashEl = document.getElementById("splash");
       attachManaIconFallbacks(metaEl);
       attachSetIconFallbacks(metaEl);
       // Resolve earliest print year asynchronously
-      const yearSpan = metaEl.querySelector("#cip-first-year") as
-        | HTMLSpanElement
-        | null;
+      const yearSpan = metaEl.querySelector(
+        "#cip-first-year",
+      ) as HTMLSpanElement | null;
       if (yearSpan) {
         fetchFirstPrintYear(card).then((yr) => {
           if (yr != null) yearSpan.textContent = String(yr);
@@ -1791,8 +2116,10 @@ const splashEl = document.getElementById("splash");
   // --- First printing year resolver (per oracle_id) ---
   const FIRST_YEAR_CACHE_KEY = "mtgcanvas.firstYearCache.v1";
   const __firstYearCache: Record<string, number> = Object.create(null);
-  const __firstYearFetches: Record<string, Promise<number | null>> =
-    Object.create(null);
+  const __firstYearFetches: Record<
+    string,
+    Promise<number | null>
+  > = Object.create(null);
   (function loadFirstYearCacheFromStorage() {
     try {
       const raw = localStorage.getItem(FIRST_YEAR_CACHE_KEY);
@@ -1844,7 +2171,9 @@ const splashEl = document.getElementById("splash");
         return null;
       }
       try {
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const res = await fetch(url, {
+          headers: { Accept: "application/json" },
+        });
         if (!res.ok) return null;
         const json: any = await res.json();
         const data: any[] = Array.isArray(json?.data) ? json.data : [];
@@ -2455,7 +2784,7 @@ const splashEl = document.getElementById("splash");
   }
 
   function attachGroupInteractions(gv: GroupVisual) {
-  let drag = false;
+    let drag = false;
     let maybeDrag = false;
     let startLocal: { x: number; y: number } | null = null;
     let dx = 0;
@@ -3540,6 +3869,14 @@ const splashEl = document.getElementById("splash");
     lsTimer = setTimeout(() => {
       lsTimer = null;
       persistence.flushPositions();
+      // Only bump recency when there were real moves/edits; the callers of
+      // scheduleLocalSave are edit pathways (drag/move/group ops), so leave as-is.
+      try {
+        touchProjectUpdated(currentProjectId);
+      } catch {}
+      try {
+        __refreshProjectList?.();
+      } catch {}
     }, 350);
   }
   let lastMemSample = 0;
@@ -3689,15 +4026,31 @@ const splashEl = document.getElementById("splash");
       // After tidying, center the view on the resulting content for clarity
       focusViewOnContent(180);
     });
-    // Remove duplicate card instances by Scryfall ID (keep first, delete the rest)
+    // Remove duplicate card instances by oracle_id (ignores printing/art variation).
+    // Fallback to case-insensitive name when oracle_id is unavailable.
     addBtn("De-duplicate Cards", async () => {
       const seen = new Set<string>();
       const toDelete: CardSprite[] = [];
       for (const s of sprites) {
-        const sid = (s as any).__scryfallId as string | undefined;
-        if (!sid) continue; // skip items without a known id
-        if (seen.has(sid)) toDelete.push(s);
-        else seen.add(sid);
+        const c: any = (s as any).__card || null;
+        const oracle: string | undefined = c?.oracle_id
+          ? String(c.oracle_id)
+          : undefined;
+        // Prefer oracle_id; otherwise fall back to normalized name; lastly the specific printing id.
+        let key: string | null = null;
+        if (oracle) key = `oracle:${oracle}`;
+        else {
+          const nm: string | undefined = c?.name || c?.card_faces?.[0]?.name;
+          if (nm && typeof nm === "string" && nm.trim())
+            key = `name:${nm.trim().toLowerCase()}`;
+          else {
+            const sid = (s as any).__scryfallId as string | undefined;
+            if (sid) key = `id:${sid}`;
+          }
+        }
+        if (!key) continue; // skip if no identifying info
+        if (seen.has(key)) toDelete.push(s);
+        else seen.add(key);
       }
       if (toDelete.length) await deleteSelectedCardsFast(toDelete);
     });
@@ -5481,7 +5834,7 @@ const splashEl = document.getElementById("splash");
       const frame = ((window as any).__mtgFrameId =
         ((window as any).__mtgFrameId || 0) + 1);
       const skip =
-        (!!(window as any).__isResizing && (frame % 4) !== 0) ||
+        (!!(window as any).__isResizing && frame % 4 !== 0) ||
         ((window as any).__lastPanSpeed < 0.01 && (frame & 1) === 1);
       if (view) {
         for (let i = 0; i < sprites.length; i++) {
@@ -5497,25 +5850,32 @@ const splashEl = document.getElementById("splash");
     updateFloatAndTilt(sprites, dt);
     // Auto-pan when dragging near viewport edges
     try {
-      const draggingCards: Set<number> | null = (window as any)
-        .__mtgActiveCardDrag || null;
-      const draggingGroups: Set<number> | null = (window as any)
-        .__mtgActiveGroupDrag || null;
+      const draggingCards: Set<number> | null =
+        (window as any).__mtgActiveCardDrag || null;
+      const draggingGroups: Set<number> | null =
+        (window as any).__mtgActiveGroupDrag || null;
       if (draggingCards || draggingGroups) {
         const vw = app.renderer.width;
         const vh = app.renderer.height;
         const mx = app.renderer.events.pointer.global.x;
         const my = app.renderer.events.pointer.global.y;
         const margin = 36; // px from edge to start panning
-        const maxSpeed = 22; // px per frame at 60fps
-        let panX = 0;
-        let panY = 0;
-        if (mx < margin) panX = ((margin - mx) / margin) * maxSpeed; // move world right => viewport left
-        else if (mx > vw - margin)
-          panX = -((mx - (vw - margin)) / margin) * maxSpeed; // move world left => viewport right
-        if (my < margin) panY = ((margin - my) / margin) * maxSpeed; // move world down => viewport up
-        else if (my > vh - margin)
-          panY = -((my - (vh - margin)) / margin) * maxSpeed; // move world up => viewport down
+        // Use time-based speed for consistency across frame rates; 22px/frame @60fps = ~1320 px/sec
+        const maxSpeedPerSec = 22 * 60;
+        const dtSec = Math.max(0.001, dt / 1000);
+        let fx = 0;
+        let fy = 0;
+        if (mx < margin)
+          fx = (margin - mx) / margin; // move world right => viewport left
+        else if (mx > vw - margin) fx = -((mx - (vw - margin)) / margin); // move world left => viewport right
+        if (my < margin)
+          fy = (margin - my) / margin; // move world down => viewport up
+        else if (my > vh - margin) fy = -((my - (vh - margin)) / margin); // move world up => viewport down
+        // Clamp to [-1, 1]
+        fx = Math.max(-1, Math.min(1, fx));
+        fy = Math.max(-1, Math.min(1, fy));
+        const panX = fx * maxSpeedPerSec * dtSec;
+        const panY = fy * maxSpeedPerSec * dtSec;
         if (panX !== 0 || panY !== 0) {
           // Pan the camera in screen space; use effective motion after clamp
           const preX = world.position.x;
@@ -5597,7 +5957,7 @@ const splashEl = document.getElementById("splash");
     // Only refresh group text quality and overlay presentation when zoom has materially changed.
     const scale = world.scale.x;
     const lastScale: number = (window as any).__lastGroupUpdateScale ?? -1;
-  if (!((window as any).__isResizing) && Math.abs(scale - lastScale) > 0.01) {
+    if (!(window as any).__isResizing && Math.abs(scale - lastScale) > 0.01) {
       (window as any).__lastZoomChangedAt = now;
       // Compute expanded viewport bounds once (world space)
       const vw = window.innerWidth;
@@ -5623,7 +5983,7 @@ const splashEl = document.getElementById("splash");
       (window as any).__lastGroupUpdateScale = scale;
     }
     // If scale hasn't changed, still fix up groups that just entered the viewport so their overlay state is correct.
-  if (!((window as any).__isResizing)) {
+    if (!(window as any).__isResizing) {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const inv = 1 / scale;

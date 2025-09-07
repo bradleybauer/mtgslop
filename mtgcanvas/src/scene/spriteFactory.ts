@@ -173,7 +173,8 @@ function attachCardInteractions(
     pendingStartLocal = { x: startLocal.x, y: startLocal.y };
     // Immediately elevate currently selected sprites for visual feedback on click-and-hold
     preFloatSprites = SelectionStore.getCards().slice();
-    for (const cs of preFloatSprites) beginDragFloat(cs);
+    // Elevate lightly but defer creating the mesh until true drag begins
+    for (const cs of preFloatSprites) beginDragFloat(cs, false);
   });
   const endDrag = (commit: boolean) => {
     if (!dragState) return;
@@ -264,6 +265,10 @@ function attachCardInteractions(
       const dy = (localNow.y - pendingStartLocal.y) * sc;
       if (Math.hypot(dx, dy) >= LEFT_DRAG_THRESHOLD_PX) {
         beginDrag(localNow);
+        // Activate meshes now that drag is real
+        if (preFloatSprites) {
+          for (const cs of preFloatSprites) beginDragFloat(cs, true);
+        }
         // Now that a real drag has begun, clear pre-float tracker
         preFloatSprites = null;
         // fall-through to apply first move below in same tick

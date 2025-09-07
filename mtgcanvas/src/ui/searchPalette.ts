@@ -2,7 +2,6 @@
 // Searches across in-memory loaded card sprites (name + oracle_text) with OR semantics between tokens.
 
 import type { CardSprite } from "../scene/cardNode";
-import type { Card } from "../types/card";
 import { parseScryfallQuery } from "../search/scryfallQuery";
 
 export interface SearchPaletteOptions {

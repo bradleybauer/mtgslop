@@ -32,14 +32,17 @@ function buildPositionsPayload(sprites: CardSprite[]): PositionsPayload {
   };
 }
 
-function savePositionsLS(sprites: CardSprite[]) {
+function savePositionsLS(
+  sprites: CardSprite[],
+  key: string = LS_POSITIONS_KEY,
+) {
   try {
     const data = buildPositionsPayload(sprites);
     // Mirror z into repository for in-memory consistency
     InstancesRepo.updateMany(
       data.instances.map((r) => ({ id: r.id, z: r.z })) as any,
     );
-    localStorage.setItem(LS_POSITIONS_KEY, JSON.stringify(data));
+    localStorage.setItem(key, JSON.stringify(data));
   } catch {
     const minimal = {
       instances: sprites.map((s) => ({
@@ -50,11 +53,14 @@ function savePositionsLS(sprites: CardSprite[]) {
         group_id: (s as any).__groupId ?? null,
       })),
     };
-    localStorage.setItem(LS_POSITIONS_KEY, JSON.stringify(minimal));
+    localStorage.setItem(key, JSON.stringify(minimal));
   }
 }
 
-function saveGroupsLS(groups: Map<number, GroupVisual>) {
+function saveGroupsLS(
+  groups: Map<number, GroupVisual>,
+  key: string = LS_GROUPS_KEY,
+) {
   try {
     const data = {
       groups: [...groups.values()].map((gv) => ({
@@ -68,7 +74,7 @@ function saveGroupsLS(groups: Map<number, GroupVisual>) {
         membersById: gv.order.map((s: CardSprite) => s.__id),
       })),
     };
-    localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(data));
+    localStorage.setItem(key, JSON.stringify(data));
   } catch {
     const framesOnly = {
       groups: [...groups.values()].map((gv) => ({
@@ -81,12 +87,12 @@ function saveGroupsLS(groups: Map<number, GroupVisual>) {
         name: gv.name,
       })),
     };
-    localStorage.setItem(LS_GROUPS_KEY, JSON.stringify(framesOnly));
+    localStorage.setItem(key, JSON.stringify(framesOnly));
   }
 }
 
-export function readMemoryGroupsData(): any | null {
-  const raw = localStorage.getItem(LS_GROUPS_KEY);
+export function readMemoryGroupsData(key: string = LS_GROUPS_KEY): any | null {
+  const raw = localStorage.getItem(key);
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -95,8 +101,8 @@ export function readMemoryGroupsData(): any | null {
   }
 }
 
-export function readPositionsData(): any | null {
-  const raw = localStorage.getItem(LS_POSITIONS_KEY);
+export function readPositionsData(key: string = LS_POSITIONS_KEY): any | null {
+  const raw = localStorage.getItem(key);
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -111,8 +117,9 @@ export function applyStoredPositions(
   spatial: SpatialIndex,
   cardW: number,
   cardH: number,
+  key: string = LS_POSITIONS_KEY,
 ) {
-  const obj = readPositionsData();
+  const obj = readPositionsData(key);
   if (!obj) return;
   if (Array.isArray(obj.instances)) {
     const map = new Map<
@@ -173,6 +180,8 @@ export function createLocalPersistence(deps: {
   getCanvasBounds: () => { x: number; y: number; w: number; h: number };
   cardW: number;
   cardH: number;
+  positionsKey?: string;
+  groupsKey?: string;
 }): {
   schedulePositionsSave: () => void;
   flushPositions: () => void;
@@ -185,6 +194,8 @@ export function createLocalPersistence(deps: {
   let suppressed = false;
   let posTimer: any = null;
   let groupTimer: any = null;
+  const POS_KEY = deps.positionsKey || LS_POSITIONS_KEY;
+  const GRP_KEY = deps.groupsKey || LS_GROUPS_KEY;
 
   function schedulePositionsSave() {
     if (suppressed) return;
@@ -192,7 +203,7 @@ export function createLocalPersistence(deps: {
     posTimer = setTimeout(() => {
       posTimer = null;
       if (suppressed) return;
-      savePositionsLS(deps.getSprites());
+      savePositionsLS(deps.getSprites(), POS_KEY);
     }, 350);
   }
   function flushPositions() {
@@ -201,7 +212,7 @@ export function createLocalPersistence(deps: {
       return;
     }
     posTimer = null;
-    savePositionsLS(deps.getSprites());
+    savePositionsLS(deps.getSprites(), POS_KEY);
   }
   function scheduleGroupsSave() {
     if (suppressed) return;
@@ -209,7 +220,7 @@ export function createLocalPersistence(deps: {
     groupTimer = setTimeout(() => {
       groupTimer = null;
       if (suppressed) return;
-      saveGroupsLS(deps.getGroups());
+      saveGroupsLS(deps.getGroups(), GRP_KEY);
     }, 400);
   }
   function flushGroups() {
@@ -218,7 +229,7 @@ export function createLocalPersistence(deps: {
       return;
     }
     groupTimer = null;
-    saveGroupsLS(deps.getGroups());
+    saveGroupsLS(deps.getGroups(), GRP_KEY);
   }
   function setSuppressed(v: boolean) {
     suppressed = v;
@@ -230,10 +241,11 @@ export function createLocalPersistence(deps: {
       deps.spatial,
       deps.cardW,
       deps.cardH,
+      POS_KEY,
     );
   }
   function getMemoryGroupsData() {
-    return readMemoryGroupsData();
+    return readMemoryGroupsData(GRP_KEY);
   }
   return {
     schedulePositionsSave,

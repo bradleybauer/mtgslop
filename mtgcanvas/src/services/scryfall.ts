@@ -89,7 +89,7 @@ export async function searchScryfall(
     onProgress,
     onCards,
     signal,
-  throttleMs = 0,
+    throttleMs = 0,
     cache = "default",
     maxRetries = 4,
     backoffBaseMs = 250,
@@ -143,7 +143,10 @@ export async function searchScryfall(
     // Respect optional local throttle and global rate limit
     const spacing = Math.max(0, throttleMs | 0, SCRYFALL_RATE_DELAY_MS);
     if (spacing > 0) await __scheduleScryfall(spacing);
-    const res = await fetch(url, __withAcceptHeader({ signal: ctrl.signal, cache }));
+    const res = await fetch(
+      url,
+      __withAcceptHeader({ signal: ctrl.signal, cache }),
+    );
     if (res.ok) {
       const json = (await res.json()) as ScryfallList | any;
       if (!json || json.object !== "list" || !Array.isArray(json.data))
@@ -389,7 +392,10 @@ export async function fetchScryfallByNames(
           const url = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(nm)}`;
           // Space requests globally
           await __scheduleScryfall();
-          let res = await fetch(url, __withAcceptHeader({ signal: controller.signal }));
+          let res = await fetch(
+            url,
+            __withAcceptHeader({ signal: controller.signal }),
+          );
           // Retry on 429/5xx with small backoff; 404 is expected for unknowns
           let attempt = 0;
           while (!res.ok && res.status !== 404 && attempt < 4) {
@@ -400,7 +406,10 @@ export async function fetchScryfallByNames(
             waitMs += Math.floor(Math.random() * 100);
             await __delay(waitMs);
             await __scheduleScryfall();
-            res = await fetch(url, __withAcceptHeader({ signal: controller.signal }));
+            res = await fetch(
+              url,
+              __withAcceptHeader({ signal: controller.signal }),
+            );
             attempt++;
           }
           if (!res.ok) {

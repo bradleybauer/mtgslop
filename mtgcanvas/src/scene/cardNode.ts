@@ -92,11 +92,10 @@ async function workerLoop() {
       continue;
     }
     task.state = "running";
-    if (activeDecodes > 32) { // optional
+    if (activeDecodes > 32) {
+      // optional
       await runDecodeTask(task);
-    }
-    else
-    {
+    } else {
       runDecodeTask(task);
     }
   }
@@ -229,14 +228,7 @@ function retainTextureForUrl(url: string, tex: PIXI.Texture) {
   }
 }
 
-function freeTextureGpu(tex: PIXI.Texture | null | undefined) {
-  // Prefer non-destructive unload to avoid emitting `destroyed` on shared resources
-  try {
-    const src: any = (tex as any)?.source;
-    // Pixi v8 TextureSource.unload() frees GPU backing without destroying the resource
-    if (src && typeof src.unload === "function") src.unload();
-  } catch {}
-}
+// Note: previously had a freeTextureGpu() helper for non-destructive unload; now we destroy textures fully.
 
 function releaseTextureForUrl(url: string) {
   if (!url) return;
@@ -244,8 +236,10 @@ function releaseTextureForUrl(url: string) {
   if (!entry) return;
   entry.refCount = Math.max(0, entry.refCount - 1);
   if (entry.refCount === 0) {
-    // Only unload GPU memory; do not destroy Pixi resources to avoid internal nulls in bind groups
-    freeTextureGpu(entry.tex);
+    // Fully destroy textures when no longer referenced to release CPU+GPU memory
+    try {
+      (entry.tex as any)?.destroy?.(true);
+    } catch {}
     liveTexturesByUrl.delete(url);
   }
 }
@@ -274,16 +268,24 @@ export function createCardSprite(opts: CardVisualOptions) {
   // Ensure FAB is cleaned up when this sprite is removed or destroyed
   sp.on("removed", () => {
     cleanupFlipFab(sp);
+    // Also ensure any active tilt mesh is torn down
+    cleanupTiltMesh(sp);
     // If a decode for this sprite's scheduled URL exists, decrement desire
     if (sp.__scheduledUrl) {
       const oldTask = tasksByUrl.get(sp.__scheduledUrl);
       if (oldTask) oldTask.refCount = Math.max(0, oldTask.refCount - 1);
       sp.__scheduledUrl = undefined;
     }
+    // Drop any lingering fields that might keep card JSON alive
+    (sp as any).__card = null;
+    (sp as any).__scryfallId = undefined;
+    (sp as any).__groupId = undefined;
   });
   const __origDestroy = sp.destroy.bind(sp);
   sp.destroy = (...args: any[]) => {
     cleanupFlipFab(sp);
+    // Tear down tilt mesh first so it doesn't try to render with a freed texture
+    cleanupTiltMesh(sp);
     // Cancel any pending decode desire
     if (sp.__scheduledUrl) {
       const oldTask = tasksByUrl.get(sp.__scheduledUrl);
@@ -292,6 +294,10 @@ export function createCardSprite(opts: CardVisualOptions) {
     }
     // Release any current decoded texture reference
     releaseSpriteTextureByUrl(sp);
+    // Null out heavy fields to help GC promptly
+    (sp as any).__card = null;
+    (sp as any).__scryfallId = undefined;
+    (sp as any).__groupId = undefined;
     return __origDestroy(...(args as any));
   };
   return sp;
@@ -314,12 +320,22 @@ export function clearTextureCaches() {
     tasksByUrl.forEach((t) => (t.refCount = 0));
     // Drain the heap
     while (decodePQ.size() > 0) decodePQ.popMin();
+    // Clear task index to drop references to URLs/tasks immediately
+    tasksByUrl.clear();
+    // Wake any idle workers so their pending wait Promises resolve and they repark cleanly
+    while (pqWaiters.length) {
+      try {
+        const w = pqWaiters.shift();
+        w && w();
+      } catch {}
+    }
     // Destroy any tracked live textures
-    liveTexturesByUrl.forEach((entry, url) => {
-      // Free GPU memory but keep resources intact to avoid triggering Pixi internal destroy flow
-      freeTextureGpu(entry.tex);
-      liveTexturesByUrl.delete(url);
+    liveTexturesByUrl.forEach((entry) => {
+      try {
+        (entry.tex as any)?.destroy?.(true);
+      } catch {}
     });
+    liveTexturesByUrl.clear();
   } catch {}
 }
 
@@ -714,6 +730,19 @@ function cleanupFlipFab(sprite: CardSprite) {
   sprite.__flipFab = undefined;
 }
 
+function cleanupTiltMesh(sprite: CardSprite) {
+  const mesh = sprite.__tiltMesh;
+  if (!mesh) return;
+  try {
+    mesh.parent?.removeChild(mesh);
+  } catch {}
+  try {
+    // Do not destroy texture here; sprite/texture lifecycle manages that
+    mesh.destroy({ texture: false });
+  } catch {}
+  sprite.__tiltMesh = undefined;
+}
+
 // Refresh FAB theming when the app theme changes
 registerThemeListener(() => {
   try {
@@ -820,7 +849,9 @@ function ensureTiltMesh(sprite: CardSprite): PIXI.PerspectiveMesh | undefined {
   if (sprite.__tiltMesh && !(sprite.__tiltMesh as any).destroyed)
     return sprite.__tiltMesh;
   // Build a simple textured quad mesh; vertices are local to mesh.position (we use center-origin)
-  const tex = sprite.texture || PIXI.Texture.WHITE;
+  // Use a safe texture; if sprite.texture is destroyed (no source), use WHITE
+  const sprTex = sprite.texture as PIXI.Texture | undefined;
+  const tex = sprTex && (sprTex as any).source ? sprTex : PIXI.Texture.WHITE;
   // Use a denser grid for smoother perspective (aspect ~ 100x140)
   const vx = 12,
     vy = 18;
@@ -847,7 +878,11 @@ function ensureTiltMesh(sprite: CardSprite): PIXI.PerspectiveMesh | undefined {
 function updateMeshTextureFromSprite(sprite: CardSprite) {
   const mesh = sprite.__tiltMesh;
   if (!mesh) return;
-  if (mesh.texture !== sprite.texture) mesh.texture = sprite.texture;
+  // Only assign valid textures; fallback to WHITE if sprite's texture was destroyed
+  const sprTex = sprite.texture as PIXI.Texture | undefined;
+  const nextTex =
+    sprTex && (sprTex as any).source ? sprTex : PIXI.Texture.WHITE;
+  if (mesh.texture !== nextTex) mesh.texture = nextTex;
   (mesh as any).tint = sprite.tint;
   try {
     const ts = mesh.texture?.source;
@@ -928,8 +963,24 @@ function applyTransformFromCenter(
   sprite.y = cy;
 }
 
-export function beginDragFloat(sprite: CardSprite) {
+export function beginDragFloat(
+  sprite: CardSprite,
+  activateMesh: boolean = true,
+) {
   if ((sprite as any)?.destroyed) return;
+  // If already in float mode and the caller requests mesh activation now, promote to mesh view
+  if (sprite.__tiltActive && activateMesh && sprite.renderable !== false) {
+    const mesh = ensureTiltMesh(sprite);
+    if (mesh) {
+      mesh.visible = true;
+      mesh.zIndex = (sprite.zIndex || 0) + 1;
+      const cx = sprite.__cx ?? sprite.x + (sprite.width || CARD_W) / 2;
+      const cy = sprite.__cy ?? sprite.y + (sprite.height || CARD_H) / 2;
+      mesh.position.set(cx, cy);
+    }
+    sprite.renderable = false;
+    return;
+  }
   if (sprite.__tiltActive) return;
   sprite.__tiltActive = true;
   // no tilt state
@@ -945,14 +996,16 @@ export function beginDragFloat(sprite: CardSprite) {
   sprite.__cy = sprite.y + dispH / 2;
   sprite.__useCenterAnchor = true;
   applyTransformFromCenter(sprite, sprite.__cx, sprite.__cy, 0, 1);
-  // Prepare 3D mesh and hide the 2D sprite while dragging
-  const mesh = ensureTiltMesh(sprite);
-  if (mesh) {
-    mesh.visible = true;
-    mesh.zIndex = (sprite.zIndex || 0) + 1;
-    mesh.position.set(sprite.__cx!, sprite.__cy!);
+  // Prepare 3D mesh and hide the 2D sprite only when an actual drag begins
+  if (activateMesh) {
+    const mesh = ensureTiltMesh(sprite);
+    if (mesh) {
+      mesh.visible = true;
+      mesh.zIndex = (sprite.zIndex || 0) + 1;
+      mesh.position.set(sprite.__cx!, sprite.__cy!);
+    }
+    sprite.renderable = false;
   }
-  sprite.renderable = false;
   sprite.__tiltPitch = 0;
   sprite.__tiltRoll = 0;
   sprite.__tiltTargetPitch = 0;
