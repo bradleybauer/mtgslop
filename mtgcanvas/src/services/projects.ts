@@ -250,7 +250,10 @@ export function duplicateProject(
 
 // Delete a project by id. Removes from index and clears stored payloads/meta.
 // If deleting the current project, switches to the most-recent remaining project or creates a new one.
-export function deleteProject(id: string): { nextProjectId: string; createdNew: boolean } {
+export function deleteProject(id: string): {
+  nextProjectId: string;
+  createdNew: boolean;
+} {
   // Remove storage entries
   try {
     localStorage.removeItem(projectPositionsKey(id));
@@ -283,5 +286,8 @@ export function deleteProject(id: string): { nextProjectId: string; createdNew: 
     setCurrentProjectId(nextId);
     return { nextProjectId: nextId, createdNew };
   }
-  return { nextProjectId: getCurrentProjectId() || ensureInitialProject().id, createdNew: false };
+  return {
+    nextProjectId: getCurrentProjectId() || ensureInitialProject().id,
+    createdNew: false,
+  };
 }
