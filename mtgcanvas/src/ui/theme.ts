@@ -393,6 +393,9 @@ export function ensureThemeStyles() {
   .title-banner .app-title{ font-size:calc(20px * var(--ui-scale)); letter-spacing:.8px; white-space:nowrap; line-height:1; display:inline-block; }
   .title-banner .project-menu{ display:none; margin-top:0; overflow:hidden; max-height:0; opacity:0; pointer-events:none; padding:calc(4px * var(--ui-scale)); }
   .title-banner:hover .project-menu, .title-banner:focus-within .project-menu{ display:block; margin-top:calc(10px * var(--ui-scale)); max-height:1000px; opacity:1; pointer-events:auto; }
+  /* Allow JS to force-close the project menu even when hovered/focused */
+  .title-banner.menu-closed .project-menu{ display:none !important; max-height:0 !important; opacity:0 !important; pointer-events:none !important; }
+  .title-banner.menu-closed:hover, .title-banner.menu-closed:focus-within{ width:max-content !important; }
   .project-menu .row{ display:flex; gap:calc(8px * var(--ui-scale)); align-items:center; margin-top:calc(10px * var(--ui-scale)); padding:calc(2px * var(--ui-scale)); }
   .project-menu .row:first-child{ margin-top:0; }
   .project-menu label{ font-size:calc(12px * var(--ui-scale)); opacity:.8; text-transform:uppercase; letter-spacing:.6px; }

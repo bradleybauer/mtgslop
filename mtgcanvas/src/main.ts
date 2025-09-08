@@ -377,6 +377,25 @@ const splashEl = document.getElementById("splash");
   // Track current project id early so UI hooks can reference it
   let currentProjectId = __projMeta.id;
   let htmlBanner: HTMLDivElement | null = null;
+  let __bannerHovered = false;
+  function closeProjectMenu() {
+    const banner = document.getElementById("title-banner") as HTMLDivElement | null;
+    if (!banner) return;
+    banner.classList.add("menu-closed");
+    try {
+      const focused = document.activeElement as HTMLElement | null;
+      if (focused && banner.contains(focused)) focused.blur?.();
+    } catch {}
+    // Remove the forced-closed state once the user moves the mouse away or focus leaves
+    const onLeave = () => {
+      banner.classList.remove("menu-closed");
+      banner.removeEventListener("mouseleave", onLeave);
+      banner.removeEventListener("blur", onLeave, true);
+    };
+    banner.addEventListener("mouseleave", onLeave, { once: true } as any);
+    // Use capture to catch focus leaving children
+    banner.addEventListener("blur", onLeave, true);
+  }
   function ensureHtmlBanner() {
     if (htmlBanner) return htmlBanner;
     const el = document.createElement("div");
@@ -441,11 +460,35 @@ const splashEl = document.getElementById("splash");
     menu.appendChild(list);
     el.appendChild(menu);
 
+    // Track hover state to allow ESC to cancel only when menu is interacted with
+    el.addEventListener("mouseenter", () => {
+      __bannerHovered = true;
+    });
+    el.addEventListener("mouseleave", () => {
+      __bannerHovered = false;
+    });
+
     document.body.appendChild(el);
     htmlBanner = el;
     return el;
   }
   ensureHtmlBanner();
+  // Global ESC handler: close the project management menu when active/hovered
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape") return;
+      const banner = document.getElementById("title-banner") as HTMLDivElement | null;
+      const ae = (document.activeElement as HTMLElement | null) || null;
+      const hasFocusWithin = !!(banner && ae && banner.contains(ae));
+      if (__bannerHovered || hasFocusWithin) {
+        closeProjectMenu();
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    { capture: true },
+  );
   // Optional hook for UI list refresh (assigned inside initProjectUI)
   let __refreshProjectList: (() => void) | null = null;
   // Initialize Project UI: name field and list population
@@ -479,9 +522,9 @@ const splashEl = document.getElementById("splash");
       (newBtnEl.onclick = async () => {
         const meta = createProject();
         await switchProject(meta.id, { empty: true });
+        // Close the project menu after creating a new project
         try {
-          nameInput?.focus();
-          (nameInput as HTMLInputElement | null)?.select?.();
+          closeProjectMenu();
         } catch {}
       });
     function renderList() {
@@ -3327,15 +3370,19 @@ const splashEl = document.getElementById("splash");
             addCardToGroupOrdered(gv, card, gv.order.length);
             card.__groupId = gv.id;
             InstancesRepo.updateMany([{ id: card.__id, group_id: gv.id }]);
-            placeCardInGroup(gv, card, sprites, (s) =>
-              spatial.update({
+            // Fast path for large groups: reflow on the group's fixed grid once (O(n))
+            // instead of expensive collision search inside dense groups.
+            const moved: SpatialItem[] = [];
+            layoutGroup(gv, sprites, (s) => {
+              moved.push({
                 sprite: s,
                 minX: s.x,
                 minY: s.y,
                 maxX: s.x + CARD_W_GLOBAL,
                 maxY: s.y + CARD_H_GLOBAL,
-              }),
-            );
+              });
+            });
+            if (moved.length) spatial.bulkUpdate(moved);
             updateGroupMetrics(gv);
             drawGroup(gv, SelectionStore.state.groupIds.has(gv.id));
             scheduleGroupSave();
@@ -3364,6 +3411,8 @@ const splashEl = document.getElementById("splash");
   // Attach right-click listeners to existing cards once (after menu helpers defined)
   // Right-click gesture logic: open on button release if not dragged beyond threshold.
   const RIGHT_THRESHOLD_PX = 6; // screen-space threshold
+  // Track last known pointer position (screen coords) to create groups under cursor
+  let __lastPointerGlobal: PIXI.Point | null = null;
   const rightPresses = new Map<
     number,
     { x: number; y: number; sprite: CardSprite; moved: boolean }
@@ -3387,6 +3436,12 @@ const splashEl = document.getElementById("splash");
   }
   // Global move/up handling
   app.stage.on("pointermove", (e: any) => {
+    // Update last pointer global position for cursor-relative actions
+    if (e && e.global) {
+      const g = e.global as PIXI.Point;
+      // Clone to avoid mutations by Pixi reusing point objects
+      __lastPointerGlobal = new PIXI.Point(g.x, g.y);
+    }
     const rp = rightPresses.get(e.pointerId);
     if (!rp) return;
     if (!rp.moved) {
@@ -3532,13 +3587,13 @@ const splashEl = document.getElementById("splash");
         timer.end({ cards: ids.length });
       } else {
         const timer2 = createPhaseTimer("create-empty-group");
-        const center = new PIXI.Point(
-          window.innerWidth / 2,
-          window.innerHeight / 2,
-        );
-        const worldCenter = world.toLocal(center);
-        const gx = snap(worldCenter.x - 150);
-        const gy = snap(worldCenter.y - 150);
+        // Prefer creating under the cursor; fall back to screen center if unknown
+        const global = __lastPointerGlobal
+          ? new PIXI.Point(__lastPointerGlobal.x, __lastPointerGlobal.y)
+          : new PIXI.Point(window.innerWidth / 2, window.innerHeight / 2);
+        const worldPt = world.toLocal(global);
+        const gx = snap(worldPt.x - 150);
+        const gy = snap(worldPt.y - 150);
         id = (GroupsRepo as any).create
           ? (GroupsRepo as any).create(null, null, gx, gy, 300, 300)
           : id;
