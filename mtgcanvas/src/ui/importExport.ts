@@ -51,6 +51,9 @@ export interface ImportExportOptions {
   ) => Promise<{ imported: number; error?: string; limited?: number }>;
   // Optional: Debug helper to clear persisted data (positions, groups, imported cards)
   clearPersistedData?: () => Promise<void>;
+  // Optional: provide a file name (without path) for export downloads. Should include extension.
+  // Receives the current scope (all or selection). If omitted, a default name will be used.
+  getExportFileName?: (scope: "all" | "selection") => string;
 }
 
 export interface ImportExportAPI {
@@ -317,13 +320,20 @@ export function installImportExport(
     };
     dlBtn.onclick = () => {
       if (!exportArea) return;
+      const scope: "all" | "selection" = scopeAll ? "all" : "selection";
+      const fileName =
+        (typeof opts.getExportFileName === "function"
+          ? opts.getExportFileName(scope)
+          : null) ||
+        (scope === "selection" ? "mtg-selection-export.txt" : "mtg-export.txt");
+      const safeName = fileName.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
       const blob = new Blob([exportArea.value], {
         type: "text/plain;charset=utf-8",
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "mtg-export.txt";
+      a.download = safeName || "mtg-export.txt";
       document.body.appendChild(a);
       a.click();
       setTimeout(() => {

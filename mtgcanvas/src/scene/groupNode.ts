@@ -227,11 +227,16 @@ export function drawGroup(gv: GroupVisual, selected: boolean) {
   (label.style as any).fill = HEADER_TEXT_COLOR;
   (count.style as any).fill = COUNT_TEXT_COLOR;
   // Keep default header text fully opaque unless overlay presentation dims them later
-  // Unify title bar font sizes (label, count, price) to a comfortable size
+  
+  // Calculate proportional header text size based on group dimensions
   const innerHeaderH = Math.max(0, HEADER_HEIGHT - bw);
-  const desiredCommonBase = 18; // previous comfortable size
-  const desiredScaled = Math.round(desiredCommonBase * 1.5); // increase by 1.5x
-  const commonSize = Math.max(12, Math.min(desiredScaled, innerHeaderH - 6));
+  const baseDimension = Math.min(gv.w, gv.h);
+  
+  // Use proportional sizing: larger groups get slightly larger text, but constrained by header height
+  const proportionalSize = Math.max(14, Math.min(24, Math.floor(baseDimension * 0.06)));
+  const heightConstrainedSize = Math.max(12, innerHeaderH - 6);
+  const commonSize = Math.min(proportionalSize, heightConstrainedSize);
+  
   (label.style as any).fontSize = commonSize;
   (label.style as any).fontWeight = "500";
   (label.style as any).lineHeight = commonSize;
@@ -696,24 +701,55 @@ function positionZoomOverlay(gv: GroupVisual) {
   zl.text = `${gv.name}\n${gv.items.size} cards  $${gv.totalPrice.toFixed(2)}`;
   // Ensure color stays theme-appropriate (dark in light mode)
   (zl.style as any).fill = OVERLAY_TEXT_COLOR;
-  // Constrain width and adjust font size downward if necessary (simple heuristic)
+  
   const pad = 16;
   const maxWidth = Math.max(60, gv.w - pad * 2);
+  const maxHeight = Math.max(40, gv.h - pad * 2);
   const style: any = zl.style;
   style.wordWrap = true;
   style.wordWrapWidth = maxWidth;
-  let size = 96;
+  
+  // Calculate appropriate starting font size based on group dimensions
+  // Use a higher percentage for smaller groups to ensure readability
+  const baseDimension = Math.min(gv.w, gv.h);
+  const startingSize = Math.max(24, Math.min(72, Math.floor(baseDimension * 0.20)));
+  
+  let size = startingSize;
   style.fontSize = size;
   (zl as any).dirty = true;
   (zl as any).updateText && (zl as any).updateText();
-  while (zl.width > maxWidth && size > 18) {
-    size -= 2;
+  
+  // Fine-tune size: reduce if too large, but don't go below reasonable minimum
+  const minSize = Math.max(18, Math.floor(baseDimension * 0.12));
+  while ((zl.width > maxWidth || zl.height > maxHeight) && size > minSize) {
+    size -= 1;
     style.fontSize = size;
     (zl as any).dirty = true;
     (zl as any).updateText && (zl as any).updateText();
   }
-  zl.x = (gv.w - zl.width) / 2;
-  zl.y = (gv.h - zl.height) / 2;
+  
+  // If still too small, try increasing if there's room
+  while (size < startingSize && 
+         zl.width < maxWidth * 0.85 && 
+         zl.height < maxHeight * 0.85) {
+    size += 1;
+    style.fontSize = size;
+    (zl as any).dirty = true;
+    (zl as any).updateText && (zl as any).updateText();
+    
+    // Stop if we exceed bounds
+    if (zl.width > maxWidth || zl.height > maxHeight) {
+      size -= 1;
+      style.fontSize = size;
+      (zl as any).dirty = true;
+      (zl as any).updateText && (zl as any).updateText();
+      break;
+    }
+  }
+  
+  // Center the text within the group bounds
+  zl.x = Math.max(pad, (gv.w - zl.width) / 2);
+  zl.y = Math.max(pad, (gv.h - zl.height) / 2);
   // Make text non-interactive; a separate drag surface will receive input.
   (zl as any).eventMode = "none";
   (zl as any).cursor = "default";

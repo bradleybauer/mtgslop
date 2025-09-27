@@ -722,6 +722,74 @@ const splashEl = document.getElementById("splash");
     renderList();
   })();
 
+  // Create a new project from the cards in a group
+  async function createNewProjectFromGroup(gv: GroupVisual) {
+    try {
+      // Create the project name based on the group name
+      const groupName = gv.name || `Group ${gv.id}`;
+      const projectName = `${groupName} Project`;
+      
+      // Save current project state before switching
+      persistence.flushGroups();
+      persistence.flushPositions();
+      
+      // Create the new project
+      const newProject = createProject(projectName);
+      
+      // Extract cards from the group
+      const groupCards = [...gv.items];
+      if (groupCards.length === 0) {
+        // If group is empty, just set the current project to the new one and reload
+        setCurrentProjectId(newProject.id);
+        window.location.reload();
+        return;
+      }
+      
+      // Build positions data for the new project using only the group's cards
+      const positionsData = {
+        instances: groupCards.map((sprite) => ({
+          id: sprite.__id,
+          x: sprite.x,
+          y: sprite.y,
+          z: sprite.zIndex || sprite.__baseZ || 0,
+          group_id: gv.id,
+          scryfall_id: sprite.__scryfallId || null,
+        })),
+      };
+      
+      // Build groups data for the new project using only this group  
+      const groupsData = {
+        groups: [{
+          id: gv.id,
+          x: gv.gfx.x,
+          y: gv.gfx.y,
+          w: gv.w,
+          h: gv.h,
+          z: gv.gfx.zIndex || 0,
+          name: gv.name,
+          membersById: gv.order.map((s: CardSprite) => s.__id),
+        }],
+      };
+      
+      // Save the data to the new project's storage keys
+      const newProjectKeys = getProjectKeysFor(newProject.id);
+      localStorage.setItem(newProjectKeys.positionsKey, JSON.stringify(positionsData));
+      localStorage.setItem(newProjectKeys.groupsKey, JSON.stringify(groupsData));
+      
+      // Set the new project as current and reload the page to switch to it
+      setCurrentProjectId(newProject.id);
+      console.log(`Created new project "${projectName}" with ${groupCards.length} cards from group "${groupName}"`);
+      
+      // Reload the page to switch to the new project
+      window.location.reload();
+      
+    } catch (error) {
+      console.error('Failed to create new project from group:', error);
+      // Show a simple alert to the user
+      alert('Failed to create new project from group. Please try again.');
+    }
+  }
+
   // Controls helper overlay (on-canvas) — shown whenever there are zero cards & zero groups
   let ctrlsOverlay: PIXI.Container | null = null;
   let ctrlsOverlayW = 0;
@@ -3273,6 +3341,9 @@ const splashEl = document.getElementById("splash");
     });
     // Layout submenu removed (group sections/faceted layout no longer supported)
     // Recolor removed; theme-driven
+    addItem("Start New Project", () => {
+      createNewProjectFromGroup(gv);
+    });
     addItem("Delete", () => {
       deleteGroupById(gv.id);
       SelectionStore.clear();
@@ -5298,6 +5369,28 @@ const splashEl = document.getElementById("splash");
     getAllNames: () => sprites.map((s) => (s as any).__card?.name || ""),
     getSelectedNames: () =>
       SelectionStore.getCards().map((s) => s.__card?.name || ""),
+    getExportFileName: (scope) => {
+      try {
+        const meta = getCurrentProjectMeta();
+        const baseRaw = meta?.name || "Project";
+        const date = new Date();
+        const stamp =
+          date.getFullYear().toString() +
+          String(date.getMonth() + 1).padStart(2, "0") +
+          String(date.getDate()).padStart(2, "0");
+        const slug = baseRaw
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 60) || "project";
+        const sc = scope === "selection" ? "selection" : "all";
+        return `${slug}-${sc}-${stamp}.txt`;
+      } catch {
+        return scope === "selection"
+          ? "mtg-selection-export.txt"
+          : "mtg-export.txt";
+      }
+    },
     importGroups: async (data, opt) => {
       // Build lookup by lowercase name from currently loaded sprites; extend by fetching from Scryfall if needed.
       const byName = new Map<string, any>();
